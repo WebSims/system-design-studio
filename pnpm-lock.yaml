@@ -8,12 +8,24 @@ importers:
 
   .:
     devDependencies:
+      '@sds/analytic':
+        specifier: workspace:*
+        version: link:packages/analytic
+      '@sds/core':
+        specifier: workspace:*
+        version: link:packages/core
+      '@sds/schema':
+        specifier: workspace:*
+        version: link:packages/schema
       '@types/node':
         specifier: ^22.10.2
         version: 22.20.1
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
+      vite-node:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@22.20.1)
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)

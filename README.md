@@ -10,9 +10,87 @@ holds the previous animation-driven build, kept as a visual reference.
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 159 tests
+pnpm verify     # typecheck + 159 tests (~35s)
 pnpm dev        # studio at localhost:5173
 ```
+
+## Testing it
+
+Four ways, cheapest first.
+
+### 1. The automated gate
+
+```bash
+pnpm verify                  # typecheck + all 159 tests
+pnpm test                    # tests only
+pnpm vitest run -t "M/M/c"   # one group
+```
+
+Worth reading the failures rather than just the count: every assertion names the
+formula it checks.
+
+### 2. Cross-check the engine against theory yourself
+
+```bash
+pnpm sim --validate
+```
+
+Runs the current design against the exact M/M/c solution over 8 independent
+seeds and prints the error on `W`, `L`, `Lq`, `Wq`, utilization and p99. All six
+land inside ~2.4%. Anything above 5% means the run is too short — samples needed
+scale as `1/(1-rho)^2`, so raise `--duration`.
+
+### 3. Full report on any design
+
+```bash
+pnpm sim                             # the default design
+pnpm sim --duration 300 --seed 5     # override scenario
+pnpm sim --file my-design.json       # a design exported from the studio
+```
+
+Prints throughput, percentiles, per-station utilization and queue stats, the
+invariants, the tool's own error estimate, and an analytic-vs-simulated
+comparison. Two things to look at:
+
+- **Invariants all PASS.** Little's Law should read `error 0.00%`.
+- **`analytic` and `simulated` agree** within the reported precision. They are
+  independent code paths, so disagreement beyond that means one is wrong.
+
+Note `--duration 300` reports `TOO LOOSE TO ACT ON` (mean ±5.5%, p99 ±11.5%).
+That is the tool working: 8,000 samples is not enough at 80% utilization.
+
+### 4. Find where a design breaks
+
+```bash
+pnpm sim --sweep
+```
+
+17 full simulations in under half a second. Throughput saturates at exactly
+`c * mu` (100/s for the default: 4 servers, 40ms service) while offered load keeps
+climbing, the p99 knee appears around 80/s, and past 96/s the design is reported
+`unstable` rather than given a latency number.
+
+This is the clearest evidence for the headless split. Under the previous
+architecture, where the model advanced only on animation frames, seventeen
+200-second runs would have taken 57 minutes.
+
+### Manual check in the studio
+
+`pnpm dev`, then:
+
+| Do this | Expect |
+|---|---|
+| Open it | Estimate before any run: 80% bottleneck load, ~70.8ms mean, ~276.7ms p99 |
+| Press **run simulation** | p99 ~302ms, `MISSES SLO` against the 250ms target, all invariants green, Little's Law error 0.00% |
+| Read the precision box | `mean ±1.8%, p99 ±3.9%` — two figures, not one |
+| Press **play** under trace playback | Packets animate along the pipe; scrubbing and 4x work because playback cannot affect the model |
+| Click the client, set rate to **260** | Estimate immediately withholds every number: *"does not scale — api server is offered 260/s against a capacity of 100/s (ρ = 2.60)"* |
+| Run it | Names the growing queue (~160 req/s) and warns the latency figures are a function of run length |
+| Set the server's service time to **lognormal**, mean 40, p99 200 | Inspector badges it `M/G/c (approx)`; the estimate's p99 is withheld with a reason |
+| Drag a second connection out of the client | Run refuses: *"Phase 1 models linear chains only"* — it will not invent a routing policy |
+
+The last two are the point of the exercise. A tool that declines to answer is
+more useful than one that guesses.
 
 ## Why this exists in this shape
 
