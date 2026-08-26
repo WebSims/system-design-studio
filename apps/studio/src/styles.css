@@ -1,0 +1,673 @@
+/*
+ * Visual language carried over from the previous build: warm near-black, muted
+ * paper-toned text, one orange accent, tabular figures everywhere a number
+ * appears. Numbers are the product here, so they get the monospace treatment and
+ * consistent alignment rather than being set in the body face.
+ */
+:root {
+  --bg: #14110d;
+  --bg-2: #1a1713;
+  --bg-3: #211d18;
+  --line: #2c2721;
+  --line-2: #3a342c;
+  --fg: #f0ede6;
+  --fg-2: #a8a196;
+  --fg-3: #6f675c;
+  --accent: #f08d2c;
+  --ok: #6cb33e;
+  --warn: #f5c518;
+  --bad: #ed7923;
+  --crit: #ed2923;
+  --sky: #4ab4e6;
+  --purple: #7b51a1;
+
+  --rail-left: 340px;
+  --rail-right: 300px;
+  --topbar: 52px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ---------- shell ---------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-left) 1fr var(--rail-right);
+  grid-template-rows: var(--topbar) 1fr;
+  grid-template-areas:
+    "top top top"
+    "left canvas right";
+  height: 100%;
+}
+
+.topbar {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: linear-gradient(140deg, var(--accent), #c96a14);
+}
+
+.brand-name {
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+.brand-name b {
+  color: var(--accent);
+}
+.brand-sub {
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
+.tb-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tb-spacer {
+  flex: 1;
+}
+.tb-meta {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-right: 4px;
+}
+
+/* ---------- rails ---------- */
+
+.rail {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 14px 40px;
+  background: var(--bg-2);
+}
+.rail.left {
+  grid-area: left;
+  border-right: 1px solid var(--line);
+}
+.rail.right {
+  grid-area: right;
+  border-left: 1px solid var(--line);
+}
+
+.rail-title {
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-bottom: 12px;
+}
+
+.section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin: 18px 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--line);
+}
+.section-tag {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10px;
+  color: var(--fg-3);
+  opacity: 0.85;
+}
+
+.empty {
+  padding: 22px 10px;
+  text-align: center;
+  color: var(--fg-3);
+  font-size: 12px;
+  border: 1px dashed var(--line-2);
+  border-radius: 8px;
+}
+.empty-sub {
+  margin-top: 8px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+/* ---------- metrics ---------- */
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.metrics.four {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.metric {
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 9px;
+}
+.metric-value {
+  font-size: 17px;
+  line-height: 1.15;
+}
+.metric-value.ok {
+  color: var(--ok);
+}
+.metric-value.warn {
+  color: var(--warn);
+}
+.metric-value.bad {
+  color: var(--crit);
+}
+.metric-value.muted {
+  color: var(--fg-3);
+}
+.metric-unit {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-left: 2px;
+}
+.metric-label {
+  font-size: 10px;
+  color: var(--fg-3);
+  margin-top: 3px;
+  letter-spacing: 0.02em;
+}
+
+/* ---------- verdicts ---------- */
+
+.verdict {
+  border-radius: 8px;
+  padding: 10px 11px;
+  margin: 10px 0;
+  border-left: 3px solid var(--line-2);
+  background: var(--bg-3);
+}
+.verdict-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.verdict-body {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  line-height: 1.55;
+}
+.verdict.ok {
+  border-left-color: var(--ok);
+}
+.verdict.ok .verdict-title {
+  color: var(--ok);
+}
+.verdict.bad {
+  border-left-color: var(--bad);
+}
+.verdict.bad .verdict-title {
+  color: var(--bad);
+}
+.verdict.crit {
+  border-left-color: var(--crit);
+  background: #23120f;
+}
+.verdict.crit .verdict-title {
+  color: var(--crit);
+}
+
+.note {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--fg-3);
+  margin: 8px 0;
+}
+.note b {
+  color: var(--fg-2);
+}
+.note.warn {
+  color: var(--warn);
+  opacity: 0.9;
+}
+
+.confidence {
+  margin: 10px 0;
+  padding: 9px 10px;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.55;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  color: var(--fg-2);
+}
+.confidence b {
+  display: block;
+  margin-bottom: 3px;
+}
+.confidence.ok b {
+  color: var(--ok);
+}
+.confidence.warn {
+  border-color: #4a3c14;
+  background: #1f1a0f;
+}
+.confidence.warn b {
+  color: var(--warn);
+}
+
+/* ---------- invariants ---------- */
+
+.invariant {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 2px 6px;
+  font-size: 11px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.inv-mark {
+  grid-row: span 2;
+}
+.invariant.ok .inv-mark {
+  color: var(--ok);
+}
+.invariant.bad .inv-mark {
+  color: var(--crit);
+}
+.inv-name {
+  color: var(--fg-2);
+}
+.inv-detail {
+  grid-column: 2;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+/* ---------- stations ---------- */
+
+.station-row {
+  margin: 10px 0 14px;
+}
+.station-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.station-detail {
+  font-size: 10.5px;
+  color: var(--fg-3);
+  margin-bottom: 5px;
+}
+
+/* ---------- forms ---------- */
+
+.field {
+  display: block;
+  margin-bottom: 8px;
+}
+.field-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--fg-2);
+  margin-bottom: 4px;
+}
+.field-hint {
+  font-size: 10px;
+  color: var(--fg-3);
+}
+
+.input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  color: var(--fg);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.input:disabled {
+  opacity: 0.45;
+}
+.input.tiny {
+  width: auto;
+  padding: 3px 5px;
+  font-size: 11px;
+}
+
+.dist-editor {
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 10px 3px;
+}
+
+.btn {
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 6px 11px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--fg-3);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn.small {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #14110d;
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) {
+  background: #ffa243;
+}
+.btn.danger {
+  border-color: #5a2320;
+  color: var(--crit);
+}
+.btn.run {
+  width: 100%;
+  margin: 14px 0 4px;
+  padding: 9px;
+}
+
+.model-badge {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.model-badge b {
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+.approx {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #1f1a0f;
+  color: var(--warn);
+  font-size: 10px;
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.transport input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+/* ---------- canvas ---------- */
+
+.canvas-wrap {
+  grid-area: canvas;
+  position: relative;
+  min-width: 0;
+}
+
+.packet-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+}
+
+.react-flow {
+  background: var(--bg);
+}
+.react-flow__attribution {
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 9px;
+}
+.react-flow__controls-button {
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--line);
+  fill: var(--fg-2);
+}
+.react-flow__controls-button:hover {
+  background: var(--line);
+}
+.react-flow__minimap {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.react-flow__handle {
+  width: 8px;
+  height: 8px;
+  background: var(--line-2);
+  border: 1px solid var(--bg);
+}
+.react-flow__handle:hover {
+  background: var(--accent);
+}
+
+.pipe-casing {
+  stroke: #241f1a;
+  stroke-width: 13;
+  stroke-linecap: round;
+  fill: none;
+}
+.pipe-core {
+  stroke: #4a4238;
+  stroke-width: 2.5;
+  fill: none;
+}
+.pipe-core.selected {
+  stroke: var(--accent);
+}
+
+.edge-chip {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--fg-3);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.edge-loss {
+  color: var(--crit);
+}
+
+/* ---------- nodes ---------- */
+
+.node {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  padding: 8px 10px;
+  /*
+   * Fixed height, and overflow hidden. React Flow measures node dimensions, so a
+   * node that grew with its occupancy list would trigger re-measurement many
+   * times per second during playback.
+   */
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.node-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+}
+.node-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.node-cap {
+  font-size: 10px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.node-service {
+  font-size: 10.5px;
+  color: var(--fg-2);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.node-service b {
+  color: var(--fg);
+}
+
+.util-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: auto;
+}
+.util-bar {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.util-fill {
+  height: 100%;
+  background: var(--ok);
+  transition: width 140ms ease-out;
+}
+.util-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-2);
+}
+.util-value {
+  font-size: 11px;
+  color: var(--fg-2);
+  min-width: 30px;
+  text-align: right;
+}
+
+.tone-warn .util-fill {
+  background: var(--warn);
+}
+.tone-bad .util-fill {
+  background: var(--bad);
+}
+.tone-crit .util-fill {
+  background: var(--crit);
+}
+.tone-bad,
+.tone-crit {
+  border-color: #5a2f20;
+}
+
+.node-foot {
+  margin-top: 5px;
+  min-height: 14px;
+}
+.node-src,
+.occ {
+  font-size: 10px;
+  color: var(--fg-3);
+}
+.occ {
+  color: var(--sky);
+}
+
+.node.client {
+  border-color: #24485c;
+}
+.node.client .node-label {
+  color: var(--sky);
+}
+
+/* ---------- charts ---------- */
+
+.chart {
+  width: 100%;
+}
+.chart-empty {
+  font-size: 10.5px;
+  color: var(--fg-3);
+  padding: 6px 0;
+}
+.uplot,
+.u-wrap {
+  font-family: ui-monospace, monospace;
+}

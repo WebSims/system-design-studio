@@ -1,5 +1,13 @@
 packages:
   - "packages/*"
   - "apps/*"
+
+# esbuild ships a prebuilt binary and its postinstall only links that binary
+# into place. Approved explicitly so `pnpm install` does not halt waiting for
+# interactive confirmation, which would break CI.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@xyflow/react@12.11.5'
+  - '@xyflow/system@0.0.81'

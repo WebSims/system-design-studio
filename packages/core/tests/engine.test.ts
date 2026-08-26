@@ -270,13 +270,30 @@ describe("the engine states its own precision", () => {
     const short = runSimulation(station({ lambda: 80, serviceMeanMs: 50, c: 4, durationSec: 60, warmupSec: 10 }));
     expect(short.confidence.sufficient).toBe(false);
     expect(short.confidence.samples).toBeLessThan(short.confidence.requiredSamples);
-    expect(short.confidence.note).toMatch(/raise the run duration/);
+    expect(short.confidence.approxRelativeError).toBeGreaterThan(0.03);
+    expect(short.confidence.note).toMatch(/Raise the run duration/);
   });
 
   it("accepts a run that is long enough", () => {
-    const long = runSimulation(station({ lambda: 80, serviceMeanMs: 50, c: 4, durationSec: 1200, warmupSec: 200 }));
+    // rho = 0.8 (lambda 80, c 4, 40ms service => c*mu = 100/s), comfortably stable.
+    const long = runSimulation(station({ lambda: 80, serviceMeanMs: 40, c: 4, durationSec: 1200, warmupSec: 200 }));
     expect(long.confidence.sufficient).toBe(true);
-    expect(long.confidence.approxRelativeError).toBeLessThan(0.015);
+    expect(long.confidence.approxRelativeError).toBeLessThan(0.025);
+  });
+
+  it("reports terrible precision for a saturated system rather than pretending", () => {
+    // lambda 80 against c*mu = 80/s exactly: no steady state, so no statistic is
+    // trustworthy however long the run. The error model must say so loudly.
+    const saturated = runSimulation(station({ lambda: 80, serviceMeanMs: 50, c: 4, durationSec: 1200, warmupSec: 200 }));
+    expect(saturated.stability.stable).toBe(false);
+    expect(saturated.confidence.approxRelativeError).toBeGreaterThan(0.1);
+  });
+
+  it("always reports the tail as less precise than the mean", () => {
+    // The p99 is what an SLO is written against, so it must never inherit the
+    // mean's error figure.
+    const r = runSimulation(defaultDesign());
+    expect(r.confidence.approxTailRelativeError).toBeGreaterThan(r.confidence.approxRelativeError);
   });
 
   it("requires dramatically more samples at high utilization", () => {

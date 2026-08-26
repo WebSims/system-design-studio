@@ -9,7 +9,7 @@
     "build": "pnpm -r --filter './packages/**' build && pnpm --filter @sds/studio build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b && tsc -p tsconfig.tests.json",
+    "typecheck": "tsc -b && tsc -p tsconfig.tests.json && tsc -p apps/studio/tsconfig.json",
     "verify": "pnpm typecheck && pnpm test"
   },
   "devDependencies": {
