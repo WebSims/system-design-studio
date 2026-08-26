@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"],
+    "paths": {
+      "@sds/schema": ["./packages/schema/src/index.ts"],
+      "@sds/core": ["./packages/core/src/index.ts"],
+      "@sds/analytic": ["./packages/analytic/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/tests/**/*.ts", "vitest.config.ts"]
+}
