@@ -1,0 +1,406 @@
+/* ============================================================
+ *  HEMA Design System — colors_and_type.css
+ *  All design tokens. Import once at the root of any prototype.
+ * ============================================================ */
+
+/* --- Webfont: Hurme for HEMA (Hurme Geometric Sans No.3, custom HEMA cut) --- */
+@font-face {
+  font-family: "Hurme HEMA";
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/HurmeHEMA-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Hurme HEMA";
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/HurmeHEMA-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Hurme HEMA";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/HurmeHEMA-Bold.woff2") format("woff2");
+}
+
+:root {
+  /* ---------- CORE BRAND ---------- */
+  --hema-red:           #ed2923;   /* the one true HEMA red */
+  --hema-red-hover:     #cf2118;   /* -8% L for hover */
+  --hema-red-active:    #b41c14;   /* -14% L for press */
+  --hema-red-tint:      #fde9e8;   /* very light wash for backgrounds */
+
+  /* ---------- 13-COLOUR LABEL PALETTE (descended from 2007 Koeweiden Postma rebrand) ---------- */
+  --label-red:          #ed2923;
+  --label-pink:         #ec6ca0;
+  --label-orange:       #f08d2c;
+  --label-yellow:       #f5c518;
+  --label-lime:         #b9ce47;
+  --label-green:        #6cb33e;
+  --label-teal:         #2aa8a8;
+  --label-sky:          #4ab4e6;
+  --label-blue:         #1f6fb4;
+  --label-purple:       #7b51a1;
+  --label-brown:        #8a5a3b;
+  --label-grey:         #6c6c6c;
+  --label-black:        #1a1a1a;
+
+  /* ---------- NEUTRALS (warm-grey, never blue-grey) ---------- */
+  --white:              #ffffff;
+  --paper:              #fbf9f5;   /* off-white for sectioned backgrounds */
+  --stone-50:           #f5f3ee;
+  --stone-100:          #ecebe5;
+  --stone-200:          #e6e2dc;   /* default hairline */
+  --stone-300:          #c9c4ba;
+  --stone-400:          #a8a298;
+  --stone-500:          #7b766e;
+  --stone-600:          #5a554f;
+  --stone-700:          #3d3a35;
+  --stone-800:          #26241f;
+  --stone-900:          #14100c;
+
+  /* ---------- SEMANTIC FG / BG ---------- */
+  --fg-1:               #14100c;   /* body text, headlines */
+  --fg-2:               #3d3a35;   /* secondary text */
+  --fg-3:               #7b766e;   /* tertiary, meta, captions */
+  --fg-inverse:         #ffffff;
+  --fg-link:            #1f6fb4;
+  --fg-price:           #14100c;
+  --fg-price-sale:      #ed2923;
+
+  --bg-canvas:          #ffffff;
+  --bg-subtle:          #fbf9f5;
+  --bg-muted:           #f5f3ee;
+  --bg-inverse:         #14100c;
+  --bg-promo:           #ed2923;    /* the top promo bar */
+  --bg-overlay:         rgba(20, 16, 12, 0.48);
+
+  --border-1:           #e6e2dc;   /* default hairline */
+  --border-2:           #c9c4ba;   /* emphasized */
+  --border-focus:       #ed2923;
+
+  /* ---------- SEMANTIC STATUS ---------- */
+  --success:            #2f8a3e;
+  --success-bg:         #e7f3ea;
+  --warning:            #c47a08;
+  --warning-bg:         #fcf2dc;
+  --danger:             #c92216;
+  --danger-bg:          #fde9e8;
+  --info:               #1f6fb4;
+  --info-bg:            #e3eef8;
+
+  /* ---------- TYPE FAMILIES ---------- */
+  --font-sans:          "Hurme HEMA", "Hurme Geometric Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono:          ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* ---------- TYPE SCALE (px) ---------- */
+  --fs-display:         56px;   /* hero */
+  --fs-h1:              40px;
+  --fs-h2:              30px;
+  --fs-h3:              22px;
+  --fs-h4:              18px;
+  --fs-body-lg:         18px;
+  --fs-body:            16px;
+  --fs-body-sm:         14px;
+  --fs-caption:         13px;
+  --fs-micro:           11px;
+
+  /* ---------- WEIGHTS ---------- */
+  --fw-regular:         400;
+  --fw-medium:          500;
+  --fw-semibold:        600;
+  --fw-bold:            700;
+  --fw-extrabold:       700;   /* Hurme HEMA ships in 3 weights; map extrabold → bold */
+
+  /* ---------- LINE HEIGHTS ---------- */
+  --lh-tight:           1.1;
+  --lh-snug:            1.25;
+  --lh-normal:          1.45;
+  --lh-relaxed:         1.6;
+
+  /* ---------- LETTER SPACING ---------- */
+  --ls-tight:           -0.01em;
+  --ls-normal:          0;
+  --ls-wide:            0.02em;
+
+  /* ---------- SPACING (4px base) ---------- */
+  --space-0:            0;
+  --space-1:            4px;
+  --space-2:            8px;
+  --space-3:            12px;
+  --space-4:            16px;
+  --space-5:            20px;
+  --space-6:            24px;
+  --space-7:            32px;
+  --space-8:            40px;
+  --space-9:            48px;
+  --space-10:           56px;
+  --space-11:           64px;
+  --space-12:           80px;
+  --space-13:           96px;
+
+  /* ---------- RADII ---------- */
+  --radius-xs:          2px;
+  --radius-sm:          4px;       /* inputs */
+  --radius-md:          8px;       /* buttons, cards */
+  --radius-lg:          12px;      /* modal sheets */
+  --radius-xl:          16px;      /* hero modules */
+  --radius-logo:        18px;      /* the red-square mark at icon size */
+  --radius-pill:        999px;     /* pill buttons */
+
+  /* ---------- SHADOWS ---------- */
+  --shadow-none:        none;
+  --shadow-sticky:      0 1px 0 rgba(20,16,12,0.06);
+  --shadow-hover:       0 4px 16px rgba(20,16,12,0.06), 0 1px 2px rgba(20,16,12,0.04);
+  --shadow-modal:       0 24px 48px rgba(20,16,12,0.18), 0 4px 12px rgba(20,16,12,0.08);
+
+  /* ---------- MOTION ---------- */
+  --ease-out:           cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in:            cubic-bezier(0.55, 0, 1, 0.45);
+  --ease-standard:      cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast:           120ms;
+  --dur-base:           180ms;
+  --dur-slow:           260ms;
+
+  /* ---------- LAYOUT ---------- */
+  --container-max:      1280px;
+  --header-h-desktop:   64px;
+  --header-h-mobile:    56px;
+  --promo-bar-h:        32px;
+
+  /* ---------- Z-INDEX ---------- */
+  --z-promo:            40;
+  --z-header:           50;
+  --z-overlay:          80;
+  --z-modal:            90;
+  --z-toast:            100;
+}
+
+/* ============================================================
+ *  SEMANTIC TYPE STYLES
+ *  Apply as bare elements OR as utility classes (.h1, .h2, etc).
+ * ============================================================ */
+
+html, body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  color: var(--fg-1);
+  background: var(--bg-canvas);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.display, h1.display {
+  font-size: var(--fs-display);
+  font-weight: var(--fw-extrabold);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-tight);
+  text-transform: lowercase;
+  margin: 0;
+}
+
+h1, .h1 {
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-tight);
+  text-transform: lowercase;
+  margin: 0;
+}
+
+h2, .h2 {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-snug);
+  text-transform: lowercase;
+  margin: 0;
+}
+
+h3, .h3 {
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+  text-transform: lowercase;
+  margin: 0;
+}
+
+h4, .h4 {
+  font-size: var(--fs-h4);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+  margin: 0;
+}
+
+p, .p {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-normal);
+  color: var(--fg-1);
+  margin: 0;
+}
+
+.lead {
+  font-size: var(--fs-body-lg);
+  line-height: var(--lh-normal);
+  color: var(--fg-2);
+}
+
+.caption {
+  font-size: var(--fs-caption);
+  color: var(--fg-3);
+}
+
+.micro {
+  font-size: var(--fs-micro);
+  color: var(--fg-3);
+  letter-spacing: var(--ls-wide);
+}
+
+.price {
+  font-weight: var(--fw-bold);
+  color: var(--fg-price);
+  font-variant-numeric: tabular-nums;
+}
+.price--sale { color: var(--fg-price-sale); }
+.price__was {
+  font-weight: var(--fw-regular);
+  color: var(--fg-3);
+  text-decoration: line-through;
+  font-size: 0.85em;
+  margin-left: 0.4em;
+}
+
+code, .code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-muted);
+  padding: 0.1em 0.4em;
+  border-radius: var(--radius-sm);
+}
+
+a {
+  color: var(--fg-link);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+/* ============================================================
+ *  BUTTONS — used across UI kits and previews.
+ * ============================================================ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: inherit;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  text-transform: lowercase;
+  padding: 12px 22px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard),
+    color var(--dur-base) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+  user-select: none;
+}
+.btn:active { transform: scale(0.98); }
+.btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+
+.btn--primary {
+  background: var(--hema-red);
+  color: var(--fg-inverse);
+}
+.btn--primary:hover { background: var(--hema-red-hover); }
+.btn--primary:active { background: var(--hema-red-active); }
+
+.btn--dark {
+  background: var(--stone-900);
+  color: var(--fg-inverse);
+}
+.btn--dark:hover { background: var(--stone-700); }
+
+.btn--outline {
+  background: transparent;
+  color: var(--fg-1);
+  border-color: var(--stone-900);
+}
+.btn--outline:hover { background: var(--stone-900); color: var(--fg-inverse); }
+
+.btn--ghost {
+  background: transparent;
+  color: var(--fg-1);
+}
+.btn--ghost:hover { background: var(--bg-muted); }
+
+.btn--sm { padding: 8px 16px; font-size: var(--fs-body-sm); }
+.btn--lg { padding: 16px 28px; font-size: var(--fs-body-lg); }
+.btn--square { border-radius: var(--radius-md); }
+
+/* ============================================================
+ *  FORM INPUTS
+ * ============================================================ */
+
+.input, .select, .textarea {
+  font-family: inherit;
+  font-size: var(--fs-body);
+  color: var(--fg-1);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  padding: 11px 14px;
+  width: 100%;
+  transition: border-color var(--dur-base) var(--ease-standard);
+}
+.input::placeholder { color: var(--fg-3); }
+.input:hover, .select:hover, .textarea:hover { border-color: var(--border-2); }
+.input:focus, .select:focus, .textarea:focus {
+  outline: none;
+  border-color: var(--hema-red);
+  box-shadow: 0 0 0 3px rgba(237, 41, 35, 0.18);
+}
+
+/* ============================================================
+ *  CARD
+ * ============================================================ */
+
+.card {
+  background: var(--bg-canvas);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-hover);
+}
+
+/* ============================================================
+ *  BADGE
+ * ============================================================ */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semibold);
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  text-transform: lowercase;
+  letter-spacing: var(--ls-normal);
+}
+.badge--red    { background: var(--hema-red);    color: var(--fg-inverse); }
+.badge--dark   { background: var(--stone-900);   color: var(--fg-inverse); }
+.badge--soft   { background: var(--stone-100);   color: var(--fg-1); }
+.badge--success { background: var(--success-bg); color: var(--success); }
+.badge--info   { background: var(--info-bg);     color: var(--info); }
