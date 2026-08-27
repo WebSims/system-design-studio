@@ -3,10 +3,14 @@
 A discrete-event simulator for finding bottlenecks and scaling limits in system
 designs, validated against closed-form queueing theory.
 
-## Status: Phase 7 + visual layer
+## Status: feature-complete
 
-Validated engine, component library, studio, and trace-driven visualisation.
+Phases 1-7 are done: validated engine, component library, analyzer, measured
+uncertainty, realtime connections and fan-out, and the trace-driven visual layer.
 `legacy/` holds the previous animation-driven build, kept as a visual reference.
+
+There is no natural-language layer, by decision rather than by omission — see
+[Scope](#scope).
 
 ```bash
 pnpm install
@@ -708,6 +712,15 @@ accept and delivery work contend more than they do here. The connection capacity
 memory figures still belong to the gateway, which is where the "how many users"
 question lives.
 
-Still outstanding: the identicon and occupancy choreography on the trace player
-(Phase 6, deferred), the LLM layer (Phase 8, awaiting a spec), and resource-unit
-accounting so cost could be layered on later.
+**There is no natural-language or LLM layer, and it is not on the roadmap in that
+shape.** The intended route is instead to expose the tool over
+[WebMCP](https://github.com/webmachinelearning/webmcp), so an external agent can drive
+the studio through a typed tool surface rather than having a model embedded inside it.
+That inverts the trust boundary in the direction this project already leans: the engine
+stays the only source of numbers, the schema stays the only way to describe a design,
+and a model becomes one more caller subject to the same validation as the UI. A model
+that emitted latency figures directly would violate the first rule the tool holds itself
+to. Not started.
+
+Also outstanding: resource-unit accounting, so cost could be layered on later without
+the engine having to know about money.
