@@ -311,6 +311,11 @@ const MIGRATIONS: Record<number, Migration> = {
   // only contained clients and servers, both of which carry over unchanged; the
   // new fields all have defaults.
   1: (doc) => ({ ...doc, version: 2, classes: [] }),
+
+  // 2 -> 3: failure probabilities and per-edge call policies arrive. Every new
+  // field defaults to "off", so a Phase 2 document keeps behaving identically --
+  // which is the property that makes a schema bump safe.
+  2: (doc) => ({ ...doc, version: 3 }),
 };
 
 /**

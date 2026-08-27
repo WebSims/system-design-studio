@@ -79,16 +79,24 @@ function PreviewPanel({ preview }: { preview: DesignPreview }) {
           <div className="verdict-title">does not scale</div>
           <div className="verdict-body">
             {bottleneck ? (
-              <>
-                <b>{bottleneck.label}</b> is offered{" "}
-                <b className="tnum">{bottleneck.arrivalRatePerSec.toFixed(0)}/s</b> against a
-                capacity of{" "}
-                <b className="tnum">
-                  {((bottleneck.capacity * 1000) / bottleneck.effectiveServiceMeanMs).toFixed(0)}/s
-                </b>{" "}
-                (&rho; = <b className="tnum">{bottleneck.rho.toFixed(2)}</b>). Its queue grows
-                without bound, so there is no steady state and no latency figure to report.
-              </>
+              isFinite(bottleneck.effectiveServiceMeanMs) ? (
+                <>
+                  <b>{bottleneck.label}</b> is offered{" "}
+                  <b className="tnum">{bottleneck.arrivalRatePerSec.toFixed(0)}/s</b> against a
+                  capacity of{" "}
+                  <b className="tnum">
+                    {((bottleneck.capacity * 1000) / bottleneck.effectiveServiceMeanMs).toFixed(0)}/s
+                  </b>{" "}
+                  (&rho; = <b className="tnum">{bottleneck.rho.toFixed(2)}</b>). Its queue grows
+                  without bound, so there is no steady state and no latency figure to report.
+                </>
+              ) : (
+                <>
+                  <b>{bottleneck.label}</b> has no steady state: it holds a slot while waiting on
+                  a dependency that is itself saturated, so its effective service time is
+                  unbounded. Fix the station below it first.
+                </>
+              )
             ) : (
               "a station is offered more work than it can serve."
             )}
@@ -126,6 +134,29 @@ function PreviewPanel({ preview }: { preview: DesignPreview }) {
         into the stability verdict -- but it is a real outage in progress and gets
         its own callout.
       */}
+      {/*
+        Non-convergence of the retry fixed point is not a numerical nuisance: it IS
+        the storm. Retries raise load, load raises failures, failures raise retries,
+        and when that loop has positive gain there is no steady state to report.
+      */}
+      {!preview.converged && (
+        <div className="verdict crit">
+          <div className="verdict-title">retry feedback has no fixed point</div>
+          <div className="verdict-body">
+            Each round of retries causes more failures than it recovers, so predicted load
+            diverges after {preview.iterations} iterations. That divergence is a retry storm.
+            A retry budget is the fix; more capacity is not.
+          </div>
+        </div>
+      )}
+
+      {preview.converged && preview.retryStormWarning && (
+        <div className="verdict bad">
+          <div className="verdict-title">retries will amplify load</div>
+          <div className="verdict-body">{preview.retryStormWarning}</div>
+        </div>
+      )}
+
       {preview.asyncBacklogWarning && (
         <div className="verdict crit">
           <div className="verdict-title">async backlog will grow without bound</div>
@@ -232,6 +263,25 @@ function ComponentDetail({ node }: { node: NodeResult }) {
         <div className="station-detail tnum dim">
           {lb.perBackend.map((b) => `${b.label} ${b.sharePct.toFixed(1)}%`).join(" · ")}
         </div>
+        {lb.healthCheckEnabled && (
+          <>
+            {lb.perBackend
+              .filter((b) => b.ejections > 0)
+              .map((b) => (
+                <div className="station-detail tnum warn" key={b.nodeId}>
+                  {b.label} ejected {b.ejections}× · {pct(b.ejectedFraction)} of the window ·{" "}
+                  {pct(b.failureRate)} failing when ejected
+                </div>
+              ))}
+            {lb.ejectionsWithheld > 0 && (
+              <p className="note warn">
+                {num(lb.ejectionsWithheld)} ejections withheld to stay within the capacity cap.
+                Under a shared failure every backend looks unhealthy at once, and ejecting them
+                all would remove the capacity that was still partly working.
+              </p>
+            )}
+          </>
+        )}
       </>
     );
   }
@@ -308,6 +358,7 @@ function ResultPanel({ result }: { result: RunResult }) {
   const errTone = result.errors.ratePct > 1 ? "bad" : result.errors.ratePct > 0 ? "warn" : "ok";
   const failedInvariants = result.invariants.filter((i) => !i.passed);
   const stations = result.nodes.filter((n) => n.kind !== "client");
+  const policyEdges = result.edges.filter((e) => e.hasPolicy && e.calls > 0);
 
   return (
     <>
@@ -319,6 +370,13 @@ function ResultPanel({ result }: { result: RunResult }) {
         <div className="verdict crit">
           <div className="verdict-title">unstable — latency below is not meaningful</div>
           <div className="verdict-body">{result.stability.detail}</div>
+        </div>
+      )}
+
+      {result.stability.retryStormWarning && (
+        <div className="verdict crit">
+          <div className="verdict-title">retry amplification</div>
+          <div className="verdict-body">{result.stability.retryStormWarning}</div>
         </div>
       )}
 
@@ -427,11 +485,64 @@ function ResultPanel({ result }: { result: RunResult }) {
         <>
           <div className="section">error breakdown</div>
           <div className="metrics four">
-            <Metric label="shed" value={num(result.errors.shed)} />
+            <Metric label="error" value={num(result.errors.error)} />
             <Metric label="timeout" value={num(result.errors.timeout)} />
+            <Metric label="shed" value={num(result.errors.shed)} />
             <Metric label="network" value={num(result.errors.network)} />
             <Metric label="queue full" value={num(result.errors.queueFull)} />
+            <Metric label="circuit open" value={num(result.errors.circuitOpen)} />
+            <Metric label="bulkhead" value={num(result.errors.bulkheadFull)} />
           </div>
+        </>
+      )}
+
+      {policyEdges.length > 0 && (
+        <>
+          <div className="section">
+            calls &amp; failure policies
+            <span className="section-tag">
+              {result.retryAmplification.toFixed(2)}&times; system-wide
+            </span>
+          </div>
+          {policyEdges.map((e) => {
+            const ampTone =
+              e.amplification > 1.5 ? "bad" : e.amplification > 1.15 ? "warn" : "";
+            return (
+              <div className="class-row" key={e.edgeId}>
+                <div className="class-head">
+                  <span>
+                    {e.fromLabel} <span className="arrow">&rarr;</span> {e.toLabel}
+                  </span>
+                  <span className={`tnum ${ampTone}`}>{e.amplification.toFixed(2)}&times;</span>
+                </div>
+                <div className="class-detail tnum">
+                  {num(e.calls)} calls &middot; {num(e.attempts)} attempts &middot; {num(e.retries)}{" "}
+                  retries &middot; {num(e.failures)} failed
+                </div>
+                {(e.budgetRejections > 0 ||
+                  e.breakerTrips > 0 ||
+                  e.bulkheadRejections > 0) && (
+                  <div className="class-detail tnum dim">
+                    {e.budgetRejections > 0 && `${num(e.budgetRejections)} budget-capped `}
+                    {e.breakerTrips > 0 &&
+                      `· breaker tripped ${e.breakerTrips}× (open ${pct(e.breakerOpenFraction)}) `}
+                    {e.bulkheadRejections > 0 && `· ${num(e.bulkheadRejections)} bulkhead-rejected`}
+                  </div>
+                )}
+                {e.bulkheadUtilization !== null && (
+                  <div className="class-detail tnum dim">
+                    bulkhead {pct(e.bulkheadUtilization)} busy &middot; outstanding calls avg{" "}
+                    {e.avgConcurrency.toFixed(1)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <p className="note">
+            Amplification is attempts over calls. Each tier multiplies, so three layers
+            retrying three times is 27&times; &mdash; which is why a budget matters more than
+            the attempt count.
+          </p>
         </>
       )}
 

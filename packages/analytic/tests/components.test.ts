@@ -24,7 +24,7 @@ function design(parts: {
   warmupSec?: number;
 }): Design {
   return DesignSchema.parse({
-    version: 2,
+    version: 3,
     name: "validation",
     nodes: parts.nodes,
     edges: parts.edges,

@@ -1,6 +1,7 @@
 import {
   DESIGN_SCHEMA_VERSION,
   DesignSchema,
+  NodeSchema,
   type Design,
   type NodeKind,
   type SdsNode,
@@ -23,6 +24,15 @@ export interface ComponentPreset {
   build: (id: string, x: number, y: number) => SdsNode;
 }
 
+/**
+ * Presets are parsed through the schema rather than typed by hand.
+ *
+ * Two reasons: new fields pick up their defaults automatically, and a preset that
+ * would not validate fails loudly here instead of producing a node the engine
+ * later refuses to run.
+ */
+const node = (raw: unknown): SdsNode => NodeSchema.parse(raw);
+
 const bench = (id: string) => {
   const b = BY_ID[id];
   if (!b) throw new Error(`unknown benchmark ${id}`);
@@ -40,14 +50,15 @@ export const PRESETS: ComponentPreset[] = [
     label: "client",
     kind: "client",
     blurb: "originates work. Poisson arrivals are burstier than a fixed rate at the same average.",
-    build: (id, x, y) => ({
-      id,
-      kind: "client",
-      label: "users",
-      x,
-      y,
-      client: { arrival: { kind: "poisson", ratePerSec: 100 }, timeoutMs: null },
-    }),
+    build: (id, x, y) =>
+      node({
+        id,
+        kind: "client",
+        label: "users",
+        x,
+        y,
+        client: { arrival: { kind: "poisson", ratePerSec: 100 }, timeoutMs: null },
+      }),
   },
   {
     id: "loadbalancer",
@@ -58,7 +69,7 @@ export const PRESETS: ComponentPreset[] = [
     build: (id, x, y) => {
       const b = bench("nginx-proxy");
       const c = capacity("proxy-concurrency");
-      return {
+      return node({
         id,
         kind: "loadbalancer",
         label: "load balancer",
@@ -70,7 +81,7 @@ export const PRESETS: ComponentPreset[] = [
           concurrency: c.value,
           citation: b.citation,
         },
-      };
+      });
     },
   },
   {
@@ -82,7 +93,7 @@ export const PRESETS: ComponentPreset[] = [
     build: (id, x, y) => {
       const b = bench("app-json-endpoint");
       const c = capacity("app-worker-concurrency");
-      return {
+      return node({
         id,
         kind: "server",
         label: "api",
@@ -99,7 +110,7 @@ export const PRESETS: ComponentPreset[] = [
           blocksOnDependencies: true,
           citation: b.citation,
         },
-      };
+      });
     },
   },
   {
@@ -111,7 +122,7 @@ export const PRESETS: ComponentPreset[] = [
     build: (id, x, y) => {
       const b = bench("redis-get");
       const c = capacity("redis-concurrency");
-      return {
+      return node({
         id,
         kind: "cache",
         label: "cache",
@@ -125,7 +136,7 @@ export const PRESETS: ComponentPreset[] = [
           ttlMs: null,
           citation: b.citation,
         },
-      };
+      });
     },
   },
   {
@@ -138,7 +149,7 @@ export const PRESETS: ComponentPreset[] = [
       const b = bench("postgres-point-read");
       const pool = capacity("postgres-pool");
       const par = capacity("postgres-parallelism");
-      return {
+      return node({
         id,
         kind: "database",
         label: "database",
@@ -152,7 +163,7 @@ export const PRESETS: ComponentPreset[] = [
           admissionPolicy: "block",
           citation: b.citation,
         },
-      };
+      });
     },
   },
   {
@@ -163,7 +174,7 @@ export const PRESETS: ComponentPreset[] = [
       "asynchronous. Publishing returns immediately, so a growing backlog is invisible in request latency.",
     build: (id, x, y) => {
       const b = bench("queue-publish");
-      return {
+      return node({
         id,
         kind: "queue",
         label: "queue",
@@ -176,7 +187,7 @@ export const PRESETS: ComponentPreset[] = [
           publishTime: b.distribution,
           citation: b.citation,
         },
-      };
+      });
     },
   },
   {
@@ -186,7 +197,7 @@ export const PRESETS: ComponentPreset[] = [
     blurb: "high latency, very high concurrency. Almost never the bottleneck; often the tail.",
     build: (id, x, y) => {
       const b = bench("object-store-get");
-      return {
+      return node({
         id,
         kind: "server",
         label: "object store",
@@ -203,7 +214,7 @@ export const PRESETS: ComponentPreset[] = [
           blocksOnDependencies: true,
           citation: b.citation,
         },
-      };
+      });
     },
   },
   {
@@ -214,7 +225,7 @@ export const PRESETS: ComponentPreset[] = [
       "someone else's system. Heavy tail by nature, which is what timeouts and retries exist for.",
     build: (id, x, y) => {
       const b = bench("external-http-call");
-      return {
+      return node({
         id,
         kind: "server",
         label: "third-party api",
@@ -231,7 +242,7 @@ export const PRESETS: ComponentPreset[] = [
           blocksOnDependencies: true,
           citation: b.citation,
         },
-      };
+      });
     },
   },
 ];
@@ -510,6 +521,214 @@ export function asyncWritePath(): Design {
   });
 }
 
+/**
+ * A retry storm, and the same design with the storm contained.
+ *
+ * The two share a topology and a workload and differ only in policy, so the
+ * comparison isolates the effect of the policies rather than confounding it.
+ *
+ * The broken version is what almost every service does by default: retry on
+ * failure, three attempts, no budget, no breaker, no bulkhead, and a blocking
+ * caller. A database that fails 30% of the time then receives roughly double the
+ * load it would otherwise see, which makes it fail more, which produces more
+ * retries. The caller, holding a worker for every attempt plus backoff, runs out of
+ * workers and starts failing requests that never needed the database at all.
+ *
+ * The fixed version changes no capacity anywhere. It adds a retry budget, a circuit
+ * breaker and a bulkhead, and the failure stops spreading: the caller stays near
+ * 12% utilization instead of pinned at 100%, and p99 lands around 140ms instead of
+ * 2 seconds.
+ *
+ * THE TRADE IS REAL, AND WORTH SEEING RATHER THAN HIDING.
+ *
+ * The broken version delivers slightly MORE successful throughput (~400/s against
+ * ~340/s) and reports a far lower error rate (~11% against ~24%), because
+ * unbudgeted retries do genuinely recover more requests. It buys that by running
+ * both stations at 100% with a 2-second p99, one perturbation away from collapse,
+ * and by masking a 30% dependency failure rate that an operator ought to know
+ * about. The contained version refuses to spend the caller's capacity hiding a
+ * broken dependency. Which trade is right is a judgement; the tool's job is to
+ * quantify both sides of it rather than to declare the fix free.
+ */
+function retryStormBase(fixed: boolean): Design {
+  const dbFailure = 0.3;
+  return DesignSchema.parse({
+    version: DESIGN_SCHEMA_VERSION,
+    name: fixed ? "retry storm, contained" : "retry storm",
+    classes: [],
+    nodes: [
+      {
+        id: "client",
+        kind: "client",
+        label: "users",
+        x: 40,
+        y: 240,
+        // Sized so the database has headroom WITHOUT retries. Amplification eats
+        // that margin, and then the caller's own pool goes with it.
+        client: { arrival: { kind: "poisson", ratePerSec: 450 }, timeoutMs: 2000 },
+      },
+      {
+        id: "api",
+        kind: "server",
+        label: "api",
+        x: 380,
+        y: 240,
+        server: {
+          concurrency: 64,
+          serviceTime: bench("app-json-endpoint").distribution,
+          replicas: 2,
+          // Thread-per-request: a worker is held for every attempt and every
+          // backoff. This is what turns the dependency's problem into the caller's.
+          blocksOnDependencies: true,
+          citation: bench("app-json-endpoint").citation,
+        },
+      },
+      {
+        id: "db",
+        kind: "database",
+        label: "flaky database",
+        x: 760,
+        y: 240,
+        database: {
+          poolSize: 20,
+          parallelism: 8,
+          // 15ms queries over 8 execution slots is a ceiling of 533/s. At 380/s
+          // offered the station is at 71%: comfortable, with no headroom for a
+          // 1.4x retry multiplier.
+          serviceTime: { kind: "lognormal", mean: 15, p99: 90 },
+          // The injected fault everything else reacts to.
+          failureProbability: dbFailure,
+          citation: bench("postgres-range-scan").citation,
+        },
+      },
+    ],
+    edges: [
+      { id: "e-c-api", from: "client", to: "api", latency: SAME_RACK, classes: [] },
+      {
+        id: "e-api-db",
+        from: "api",
+        to: "db",
+        latency: SAME_RACK,
+        classes: [],
+        policy: fixed
+          ? {
+              timeoutMs: 200,
+              retry: {
+                maxAttempts: 3,
+                backoff: { kind: "exponential", baseMs: 20, maxMs: 500, jitter: true },
+                retryOn: ["error", "timeout"],
+                // The whole fix, in one field: retries may add at most 10%.
+                budgetRatio: 0.1,
+              },
+              // Return the caller's workers instead of parking them on a failing
+              // dependency.
+              circuitBreaker: {
+                enabled: true,
+                failureThreshold: 0.5,
+                minimumRequests: 20,
+                windowMs: 5000,
+                openMs: 2000,
+                halfOpenProbes: 2,
+              },
+              // Confine the damage to traffic that needs this dependency.
+              bulkhead: { enabled: true, maxConcurrent: 24, queueCapacity: 8 },
+            }
+          : {
+              timeoutMs: 200,
+              retry: {
+                maxAttempts: 3,
+                backoff: { kind: "exponential", baseMs: 20, maxMs: 500, jitter: true },
+                retryOn: ["error", "timeout"],
+                // No budget. This is the default almost everywhere.
+                budgetRatio: null,
+              },
+              circuitBreaker: { enabled: false },
+              bulkhead: { enabled: false },
+            },
+      },
+    ],
+    scenario: { durationSec: 600, warmupSec: 100, seed: 1, traceLimit: 3000 },
+    slo: { p99LatencyMs: 250, maxErrorRatePct: 5 },
+  });
+}
+
+export const retryStorm = (): Design => retryStormBase(false);
+export const retryStormContained = (): Design => retryStormBase(true);
+
+/**
+ * A load balancer over backends where one is broken.
+ *
+ * With health checking off, the bad backend keeps taking its full share and one
+ * request in three fails. With it on, the backend is ejected and the failure rate
+ * collapses -- which is the difference between a balancer and a splitter.
+ */
+export function outlierBackend(): Design {
+  const backend = (i: number, failureProbability: number) => ({
+    id: `api${i}`,
+    kind: "server" as const,
+    label: failureProbability > 0 ? `api ${i + 1} (broken)` : `api ${i + 1}`,
+    x: 700,
+    y: 100 + i * 160,
+    server: {
+      concurrency: 32,
+      serviceTime: bench("app-json-endpoint").distribution,
+      failureProbability,
+      citation: bench("app-json-endpoint").citation,
+    },
+  });
+
+  return DesignSchema.parse({
+    version: DESIGN_SCHEMA_VERSION,
+    name: "one broken backend",
+    classes: [],
+    nodes: [
+      {
+        id: "client",
+        kind: "client",
+        label: "users",
+        x: 40,
+        y: 260,
+        client: { arrival: { kind: "poisson", ratePerSec: 600 }, timeoutMs: 1000 },
+      },
+      {
+        id: "lb",
+        kind: "loadbalancer",
+        label: "load balancer",
+        x: 340,
+        y: 260,
+        loadbalancer: {
+          algorithm: "round-robin",
+          serviceTime: bench("nginx-proxy").distribution,
+          concurrency: 1024,
+          healthCheck: {
+            enabled: true,
+            failureThreshold: 0.5,
+            minimumRequests: 20,
+            ejectionMs: 5000,
+            maxEjectedFraction: 0.5,
+          },
+          citation: bench("nginx-proxy").citation,
+        },
+      },
+      backend(0, 0),
+      backend(1, 0),
+      backend(2, 0.9),
+    ],
+    edges: [
+      { id: "e-c-lb", from: "client", to: "lb", latency: SAME_RACK, classes: [] },
+      ...[0, 1, 2].map((i) => ({
+        id: `e-lb-api${i}`,
+        from: "lb",
+        to: `api${i}`,
+        latency: SAME_RACK,
+        classes: [],
+      })),
+    ],
+    scenario: { durationSec: 600, warmupSec: 100, seed: 1, traceLimit: 3000 },
+    slo: { p99LatencyMs: 150, maxErrorRatePct: 1 },
+  });
+}
+
 export const EXAMPLES: Array<{ id: string; label: string; blurb: string; build: () => Design }> = [
   {
     id: "single-service",
@@ -528,5 +747,23 @@ export const EXAMPLES: Array<{ id: string; label: string; blurb: string; build: 
     label: "async write path",
     blurb: "a queue whose backlog grows while every request still looks fast",
     build: asyncWritePath,
+  },
+  {
+    id: "retry-storm",
+    label: "retry storm",
+    blurb: "a flaky database, unbudgeted retries, and a caller that runs out of workers",
+    build: retryStorm,
+  },
+  {
+    id: "retry-storm-contained",
+    label: "retry storm, contained",
+    blurb: "the same design with a budget, a breaker and a bulkhead — no extra capacity",
+    build: retryStormContained,
+  },
+  {
+    id: "outlier-backend",
+    label: "one broken backend",
+    blurb: "health checking ejects the outlier instead of routing a third of traffic into it",
+    build: outlierBackend,
   },
 ];

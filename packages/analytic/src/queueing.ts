@@ -49,6 +49,16 @@ export interface MMcSolution {
    * an unstable queue has no quantile to report.
    */
   quantileMs: (q: number) => number | null;
+  /**
+   * P(sojourn > t), exact for M/M/c.
+   *
+   * This is what makes a per-attempt timeout predictable rather than guessable: the
+   * probability an attempt is cut off is exactly the probability the station takes
+   * longer than the timeout. Without it a preview cannot anticipate
+   * timeout-driven retry amplification, which is the dominant term whenever a
+   * dependency is near saturation.
+   */
+  survivalAt: (tMs: number) => number;
 }
 
 /**
@@ -146,6 +156,9 @@ export function solveMMc({ lambda, mu, c }: MMcInput): MMcSolution {
       lq: Number.POSITIVE_INFINITY,
       l: Number.POSITIVE_INFINITY,
       quantileMs: () => null,
+      // No steady state: an attempt is effectively certain to exceed any finite
+      // timeout once the queue is growing without bound.
+      survivalAt: () => 1,
     };
   }
 
@@ -167,6 +180,10 @@ export function solveMMc({ lambda, mu, c }: MMcInput): MMcSolution {
       if (q >= 1) return null;
       const tSec = invertSurvival((t) => sojournSurvival(lambda, mu, c, t), 1 - q);
       return tSec * 1000;
+    },
+    survivalAt: (tMs: number) => {
+      if (tMs <= 0) return 1;
+      return Math.min(1, Math.max(0, sojournSurvival(lambda, mu, c, tMs / 1000)));
     },
   };
 }

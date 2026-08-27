@@ -179,6 +179,17 @@ export const ServerConfigSchema = z.object({
    * capacity of every caller in the graph.
    */
   blocksOnDependencies: z.boolean().default(true),
+  /**
+   * Probability a request fails at this station for reasons unrelated to load.
+   *
+   * Bugs, bad deploys, a dependency this model does not include. Kept separate
+   * from the failures the model derives itself -- shedding, timeouts, drops --
+   * because those are consequences of the design and this is an input to it.
+   *
+   * Without it there is nothing for a retry to retry or a circuit breaker to
+   * trip on, which is why it arrives alongside them.
+   */
+  failureProbability: z.number().min(0).max(1).default(0),
   citation: CitationSchema.optional(),
 });
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
@@ -200,11 +211,44 @@ export const LbAlgorithmSchema = z.enum([
 ]);
 export type LbAlgorithm = z.infer<typeof LbAlgorithmSchema>;
 
+/**
+ * Passive health checking, also called outlier detection.
+ *
+ * Passive rather than active: health is inferred from the failures of real
+ * traffic, not from a separate probe endpoint. That is both what most proxies
+ * actually do and the more honest thing to model -- a probe endpoint frequently
+ * reports healthy while real requests fail.
+ *
+ * Ejection is what makes a balancer more than a splitter. Without it, a broken
+ * backend keeps receiving its full share of traffic forever, and the failures it
+ * produces are exactly the ones that trigger retries elsewhere.
+ */
+export const HealthCheckSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Failure rate above which a backend is ejected, [0,1]. */
+  failureThreshold: z.number().min(0).max(1).default(0.5),
+  /** Minimum observations before a backend can be judged, to avoid ejecting on noise. */
+  minimumRequests: z.number().int().positive().default(20),
+  /** How long a backend stays ejected before being tried again, ms. */
+  ejectionMs: z.number().positive().default(10_000),
+  /**
+   * Never eject more than this fraction of backends.
+   *
+   * The guard that stops health checking from causing the outage it is meant to
+   * contain: under a shared failure -- a bad deploy, a dependency everyone uses --
+   * every backend looks unhealthy at once, and ejecting them all removes the
+   * capacity that was still partially working.
+   */
+  maxEjectedFraction: z.number().min(0).max(1).default(0.5),
+});
+export type HealthCheck = z.infer<typeof HealthCheckSchema>;
+
 export const LoadBalancerConfigSchema = z.object({
   algorithm: LbAlgorithmSchema.default("round-robin"),
   /** The proxy's own overhead. Small, but it is not free and it can saturate. */
   serviceTime: DistributionSchema.default({ kind: "deterministic", value: 0.5 }),
   concurrency: z.number().int().positive().default(1024),
+  healthCheck: HealthCheckSchema.default({}),
   citation: CitationSchema.optional(),
 });
 export type LoadBalancerConfig = z.infer<typeof LoadBalancerConfigSchema>;
@@ -264,6 +308,8 @@ export const DatabaseConfigSchema = z.object({
   /** Waiters allowed on the pool. Null = unbounded. */
   queueCapacity: z.number().int().nonnegative().nullable().default(null),
   admissionPolicy: AdmissionPolicySchema.default("block"),
+  /** Probability a query fails for reasons unrelated to load. */
+  failureProbability: z.number().min(0).max(1).default(0),
   citation: CitationSchema.optional(),
 });
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
@@ -312,6 +358,117 @@ export const NodeSchema = z.object({
 export type SdsNode = z.infer<typeof NodeSchema>;
 
 // ---------------------------------------------------------------------------
+// call policies
+// ---------------------------------------------------------------------------
+
+/**
+ * Which failures are worth retrying.
+ *
+ * Retrying the wrong thing is worse than not retrying. A shed request means the
+ * dependency is already over capacity, so retrying it adds load to something that
+ * just said it had none -- the textbook way to convert a brownout into an outage.
+ * A timeout is ambiguous: the work may have completed, so retrying a
+ * non-idempotent operation can double-apply it.
+ */
+export const RetryableReasonSchema = z.enum(["error", "timeout", "shed", "network"]);
+export type RetryableReason = z.infer<typeof RetryableReasonSchema>;
+
+export const BackoffSchema = z.object({
+  kind: z.enum(["none", "fixed", "exponential"]).default("exponential"),
+  baseMs: z.number().nonnegative().default(20),
+  maxMs: z.number().nonnegative().default(1000),
+  /**
+   * Randomise each delay over [0, computed].
+   *
+   * Not cosmetic. Without jitter, every client that failed at the same instant
+   * retries at the same instant, so the recovering dependency is hit by a
+   * synchronised wave and fails again. Jitter is what turns a thundering herd back
+   * into a Poisson process, and it costs nothing.
+   */
+  jitter: z.boolean().default(true),
+});
+export type Backoff = z.infer<typeof BackoffSchema>;
+
+export const RetryPolicySchema = z.object({
+  /** TOTAL attempts including the first. 1 means no retrying. */
+  maxAttempts: z.number().int().min(1).default(3),
+  backoff: BackoffSchema.default({}),
+  retryOn: z.array(RetryableReasonSchema).default(["error", "timeout"]),
+  /**
+   * Retry budget: the share of extra calls retries may add, as a fraction of
+   * original calls. Null disables the cap.
+   *
+   * THE SINGLE MOST IMPORTANT FIELD IN THIS FILE.
+   *
+   * Unbudgeted retries multiply load on a struggling dependency by the attempt
+   * count exactly when it can least afford it, and each layer multiplies again:
+   * three tiers retrying three times is 27x. A budget makes retries a bounded tax
+   * on the healthy case rather than an amplifier of the unhealthy one. 10% is the
+   * conventional starting point.
+   */
+  budgetRatio: z.number().min(0).nullable().default(0.1),
+});
+export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
+
+/**
+ * A circuit breaker over one caller-to-dependency edge.
+ *
+ * Its purpose is not to protect the dependency; it is to stop the CALLER from
+ * spending its own capacity waiting on something that is already failing. A
+ * blocking caller with a dead dependency ties up a worker per request for the
+ * whole timeout, and that is how a downstream failure becomes an upstream outage.
+ * Failing fast returns those workers immediately.
+ */
+export const CircuitBreakerSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Failure rate over the window that opens the circuit, [0,1]. */
+  failureThreshold: z.number().min(0).max(1).default(0.5),
+  /** Observations required before the rate is trusted. */
+  minimumRequests: z.number().int().positive().default(20),
+  /** Rolling window the failure rate is measured over, ms. */
+  windowMs: z.number().positive().default(10_000),
+  /** How long the circuit stays open before probing again, ms. */
+  openMs: z.number().positive().default(5000),
+  /** Concurrent probes allowed while half-open. */
+  halfOpenProbes: z.number().int().positive().default(1),
+});
+export type CircuitBreaker = z.infer<typeof CircuitBreakerSchema>;
+
+/**
+ * A bulkhead: a cap on concurrent outstanding calls to one dependency.
+ *
+ * The direct fix for the failure mode a blocking caller creates. Without one, a
+ * dependency that slows from 10ms to 2s consumes every worker the caller has, and
+ * requests that do not even touch that dependency start queueing behind the ones
+ * that do. A bulkhead confines the damage to the traffic that needs the slow
+ * dependency, which is the definition of graceful degradation.
+ */
+export const BulkheadSchema = z.object({
+  enabled: z.boolean().default(false),
+  maxConcurrent: z.number().int().positive().default(16),
+  /** Waiters allowed for a bulkhead slot. 0 means reject immediately. */
+  queueCapacity: z.number().int().nonnegative().default(0),
+});
+export type Bulkhead = z.infer<typeof BulkheadSchema>;
+
+export const CallPolicySchema = z.object({
+  /**
+   * Per-ATTEMPT timeout, ms. Null inherits only the client's end-to-end deadline.
+   *
+   * Distinct from the client deadline on purpose: a per-attempt timeout is what
+   * makes retrying possible at all, since without one a hung attempt consumes the
+   * entire budget. Setting it too low is its own failure mode -- attempts are
+   * abandoned that would have succeeded, and each abandoned attempt is replaced by
+   * a retry, so the dependency does more work and gets slower still.
+   */
+  timeoutMs: z.number().positive().nullable().default(null),
+  retry: RetryPolicySchema.nullable().default(null),
+  circuitBreaker: CircuitBreakerSchema.default({}),
+  bulkhead: BulkheadSchema.default({}),
+});
+export type CallPolicy = z.infer<typeof CallPolicySchema>;
+
+// ---------------------------------------------------------------------------
 // edges
 // ---------------------------------------------------------------------------
 
@@ -352,6 +509,14 @@ export const EdgeSchema = z.object({
   probability: z.number().min(0).max(1).default(1),
   /** Relative weight for load-balancer target selection. */
   weight: z.number().positive().default(1),
+  /**
+   * Timeout, retry, circuit-breaker and bulkhead settings for this call.
+   *
+   * On the edge rather than the node because that is what these things are: the
+   * caller's client configuration for one particular dependency. The same service
+   * routinely retries its cache aggressively and its payment provider not at all.
+   */
+  policy: CallPolicySchema.default({}),
 });
 export type SdsEdge = z.infer<typeof EdgeSchema>;
 
@@ -397,7 +562,7 @@ export const SloSchema = z.object({
 });
 export type Slo = z.infer<typeof SloSchema>;
 
-export const DESIGN_SCHEMA_VERSION = 2 as const;
+export const DESIGN_SCHEMA_VERSION = 3 as const;
 
 export const DesignSchema = z.object({
   version: z.literal(DESIGN_SCHEMA_VERSION),

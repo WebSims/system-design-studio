@@ -865,3 +865,81 @@ body {
 .u-wrap {
   font-family: ui-monospace, monospace;
 }
+
+/* ---------- toggles ---------- */
+
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 9px;
+  margin-bottom: 8px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.toggle-row:hover {
+  border-color: var(--line-2);
+}
+
+.toggle-switch {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 15px;
+  margin-top: 1px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  transition: background 120ms ease-out;
+}
+.toggle-row.on .toggle-switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  transition: transform 120ms ease-out, background 120ms ease-out;
+}
+.toggle-row.on .toggle-knob {
+  transform: translateX(11px);
+  background: #14110d;
+}
+
+.toggle-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.toggle-hint {
+  font-size: 10.5px;
+  color: var(--fg-3);
+  line-height: 1.45;
+}
+
+.arrow {
+  color: var(--fg-3);
+}
+.class-detail.warn,
+.station-detail.warn {
+  color: var(--warn);
+}
+.class-head .bad {
+  color: var(--crit);
+}
+.class-head .warn {
+  color: var(--warn);
+}

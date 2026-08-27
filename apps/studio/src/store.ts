@@ -66,6 +66,11 @@ function recompute(design: Design): { preview: DesignPreview; issues: DesignIssu
       p99Reason: "design is incomplete",
       approximate: false,
       asyncBacklogWarning: null,
+      edges: [],
+      retryAmplification: 1,
+      retryStormWarning: null,
+      converged: true,
+      iterations: 0,
       notes: [],
     };
   }

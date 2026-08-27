@@ -1,5 +1,5 @@
 import { citationText } from "@sds/models";
-import type { Citation, Distribution } from "@sds/schema";
+import type { Citation, Distribution, RetryableReason } from "@sds/schema";
 import { useStudio } from "../store";
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -40,6 +40,30 @@ function NumberInput({
         if (Number.isFinite(v)) onChange(v);
       }}
     />
+  );
+}
+
+function Toggle({
+  label,
+  hint,
+  on,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  on: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button className={`toggle-row ${on ? "on" : ""}`} onClick={() => onChange(!on)}>
+      <span className="toggle-switch">
+        <span className="toggle-knob" />
+      </span>
+      <span className="toggle-body">
+        <span>{label}</span>
+        {hint && <span className="toggle-hint">{hint}</span>}
+      </span>
+    </button>
   );
 }
 
@@ -296,6 +320,8 @@ export function Inspector() {
           rather than stalling until a timeout.
         </p>
 
+        <PolicyEditor edgeId={selection.id} />
+
         <button
           className="btn danger"
           onClick={() =>
@@ -403,6 +429,71 @@ export function Inspector() {
               onChange={(v) => patch((n) => { if (n.loadbalancer) n.loadbalancer.concurrency = Math.max(1, Math.round(v)); })}
             />
           </Field>
+          <div className="section">health checking</div>
+          <Toggle
+            label={node.loadbalancer.healthCheck.enabled ? "outlier detection on" : "outlier detection off"}
+            hint={
+              node.loadbalancer.healthCheck.enabled
+                ? `ejects above ${(node.loadbalancer.healthCheck.failureThreshold * 100).toFixed(0)}% failures`
+                : "a broken backend keeps its full share forever"
+            }
+            on={node.loadbalancer.healthCheck.enabled}
+            onChange={(v) => patch((n) => { if (n.loadbalancer) n.loadbalancer.healthCheck.enabled = v; })}
+          />
+          {node.loadbalancer.healthCheck.enabled && (
+            <>
+              <Field label="failure threshold" hint="%">
+                <NumberInput
+                  value={Math.round(node.loadbalancer.healthCheck.failureThreshold * 1000) / 10}
+                  min={1}
+                  max={100}
+                  step={5}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.loadbalancer) {
+                        n.loadbalancer.healthCheck.failureThreshold = Math.min(1, Math.max(0.01, v / 100));
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <Field label="ejection time" hint="ms">
+                <NumberInput
+                  value={node.loadbalancer.healthCheck.ejectionMs}
+                  min={100}
+                  step={1000}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.loadbalancer) n.loadbalancer.healthCheck.ejectionMs = Math.max(100, v);
+                    })
+                  }
+                />
+              </Field>
+              <Field label="max ejected" hint="% of backends">
+                <NumberInput
+                  value={Math.round(node.loadbalancer.healthCheck.maxEjectedFraction * 1000) / 10}
+                  min={0}
+                  max={100}
+                  step={10}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.loadbalancer) {
+                        n.loadbalancer.healthCheck.maxEjectedFraction = Math.min(1, Math.max(0, v / 100));
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <p className="note">
+                Passive: health is inferred from real traffic, not a probe endpoint &mdash; which
+                is both what proxies actually do and more honest, since a probe frequently
+                reports healthy while real requests fail. The ejection cap matters: under a
+                shared failure every backend looks unhealthy at once, and ejecting them all
+                removes the capacity that was still partly working.
+              </p>
+            </>
+          )}
+
           <CitationNote citation={node.loadbalancer.citation} />
         </>
       )}
@@ -491,6 +582,23 @@ export function Inspector() {
           <p className="note">
             Parallel costs the slowest dependency; sequential costs their sum. Only relevant
             when this node calls more than one dependency for a single request class.
+          </p>
+
+          <div className="section">failure injection</div>
+          <Field label="failure rate" hint="%">
+            <NumberInput
+              value={Math.round(node.server.failureProbability * 1000) / 10}
+              min={0}
+              max={100}
+              step={1}
+              onChange={(v) => patch((n) => { if (n.server) n.server.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
+            />
+          </Field>
+          <p className="note">
+            Failures unrelated to load: bugs, bad deploys, a dependency this model does not
+            include. Charged <i>after</i> the work is done, because a server that fails still
+            consumed the capacity to discover that &mdash; failing for free would make an
+            unhealthy dependency look cheap and hide the load a retry storm adds.
           </p>
 
           <div className="section">queue</div>
@@ -664,6 +772,17 @@ export function Inspector() {
             onChange={(serviceTime) => patch((n) => { if (n.database) n.database.serviceTime = serviceTime; })}
           />
 
+          <div className="section">failure injection</div>
+          <Field label="failure rate" hint="%">
+            <NumberInput
+              value={Math.round(node.database.failureProbability * 1000) / 10}
+              min={0}
+              max={100}
+              step={1}
+              onChange={(v) => patch((n) => { if (n.database) n.database.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
+            />
+          </Field>
+
           <div className="section">pool queue</div>
           <QueueLimitEditor
             queueCapacity={node.database.queueCapacity}
@@ -752,6 +871,280 @@ export function Inspector() {
       <ClassEditor />
       <ScenarioEditor />
     </aside>
+  );
+}
+
+const RETRY_REASONS: Array<{ id: RetryableReason; label: string; note: string }> = [
+  { id: "error", label: "error", note: "the dependency returned a failure" },
+  { id: "timeout", label: "timeout", note: "ambiguous: the work may have completed" },
+  {
+    id: "shed",
+    label: "shed",
+    note: "dangerous: it just told you it had no capacity",
+  },
+  { id: "network", label: "network", note: "the message was dropped in transit" },
+];
+
+/**
+ * Timeout, retry, circuit breaker and bulkhead for one call.
+ *
+ * All four live on the edge because that is what they are: the caller's client
+ * configuration for one particular dependency. The same service routinely retries
+ * its cache aggressively and its payment provider not at all.
+ */
+function PolicyEditor({ edgeId }: { edgeId: string }) {
+  const edge = useStudio((s) => s.design.edges.find((e) => e.id === edgeId));
+  const preview = useStudio((s) => s.preview.edges.find((e) => e.edgeId === edgeId));
+  const measured = useStudio((s) => (s.runStale ? undefined : s.run?.edges.find((e) => e.edgeId === edgeId)));
+  const edit = useStudio((s) => s.edit);
+  if (!edge) return null;
+  const p = edge.policy;
+
+  const patch = (fn: (e: NonNullable<typeof edge>) => void) =>
+    edit((d) => {
+      const e = d.edges.find((x) => x.id === edgeId);
+      if (e) fn(e);
+    });
+
+  return (
+    <>
+      <div className="section">per-attempt timeout</div>
+      <Field label="timeout" hint="ms, 0 = none">
+        <NumberInput
+          value={p.timeoutMs ?? 0}
+          min={0}
+          step={50}
+          onChange={(v) => patch((e) => { e.policy.timeoutMs = v <= 0 ? null : v; })}
+        />
+      </Field>
+      <p className="note">
+        Distinct from the client's end-to-end deadline. A per-attempt timeout is what
+        makes retrying possible at all &mdash; without one, a hung attempt consumes the
+        whole budget. Setting it too low is its own failure mode: attempts that would
+        have succeeded are abandoned, each is replaced by a retry, and the dependency
+        does strictly more work.
+      </p>
+
+      <div className="section">retry</div>
+      <Toggle
+        label={p.retry ? "retrying" : "no retries"}
+        hint={p.retry ? `up to ${p.retry.maxAttempts} attempts` : "one attempt per call"}
+        on={p.retry !== null}
+        onChange={(on) =>
+          patch((e) => {
+            e.policy.retry = on
+              ? {
+                  maxAttempts: 3,
+                  backoff: { kind: "exponential", baseMs: 20, maxMs: 1000, jitter: true },
+                  retryOn: ["error", "timeout"],
+                  budgetRatio: 0.1,
+                }
+              : null;
+          })
+        }
+      />
+
+      {p.retry && (
+        <>
+          <Field label="max attempts" hint="including the first">
+            <NumberInput
+              value={p.retry.maxAttempts}
+              min={1}
+              onChange={(v) => patch((e) => { if (e.policy.retry) e.policy.retry.maxAttempts = Math.max(1, Math.round(v)); })}
+            />
+          </Field>
+
+          <Field label="retry budget" hint="%, 0 = unlimited">
+            <NumberInput
+              value={p.retry.budgetRatio === null ? 0 : Math.round(p.retry.budgetRatio * 1000) / 10}
+              min={0}
+              step={5}
+              onChange={(v) =>
+                patch((e) => {
+                  if (e.policy.retry) e.policy.retry.budgetRatio = v <= 0 ? null : v / 100;
+                })
+              }
+            />
+          </Field>
+          <p className={`note ${p.retry.budgetRatio === null ? "warn" : ""}`}>
+            {p.retry.budgetRatio === null ? (
+              <>
+                <b>No budget.</b> Retries will multiply load on this dependency by up to{" "}
+                <b className="tnum">{p.retry.maxAttempts}&times;</b> exactly when it can least
+                afford it, and every layer above multiplies again. This is the default almost
+                everywhere and it is how a brownout becomes an outage.
+              </>
+            ) : (
+              <>
+                Retries may add at most{" "}
+                <b className="tnum">{(p.retry.budgetRatio * 100).toFixed(0)}%</b> more calls, so
+                amplification is capped near{" "}
+                <b className="tnum">{(1 + p.retry.budgetRatio).toFixed(2)}&times;</b> however bad
+                things get. The trade is real: fewer retries means fewer recoveries and a higher
+                reported error rate.
+              </>
+            )}
+          </p>
+
+          <Field label="retry on">
+            <div className="chip-row">
+              {RETRY_REASONS.map((r) => {
+                const on = p.retry!.retryOn.includes(r.id);
+                return (
+                  <button
+                    key={r.id}
+                    className={`chip ${on ? "on" : ""}`}
+                    title={r.note}
+                    onClick={() =>
+                      patch((e) => {
+                        if (!e.policy.retry) return;
+                        e.policy.retry.retryOn = on
+                          ? e.policy.retry.retryOn.filter((x) => x !== r.id)
+                          : [...e.policy.retry.retryOn, r.id];
+                      })
+                    }
+                  >
+                    {r.label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+          {p.retry.retryOn.includes("shed") && (
+            <p className="note warn">
+              Retrying a shed request adds load to something that just told you it had no
+              capacity. This is the fastest way to turn a partial failure into a total one.
+            </p>
+          )}
+
+          <Field label="backoff">
+            <Select
+              value={p.retry.backoff.kind}
+              options={[
+                { value: "exponential" as const, label: "exponential" },
+                { value: "fixed" as const, label: "fixed" },
+                { value: "none" as const, label: "none (immediate)" },
+              ]}
+              onChange={(v) => patch((e) => { if (e.policy.retry) e.policy.retry.backoff.kind = v; })}
+            />
+          </Field>
+          {p.retry.backoff.kind !== "none" && (
+            <>
+              <Field label="base delay" hint="ms">
+                <NumberInput
+                  value={p.retry.backoff.baseMs}
+                  min={0}
+                  step={10}
+                  onChange={(v) => patch((e) => { if (e.policy.retry) e.policy.retry.backoff.baseMs = Math.max(0, v); })}
+                />
+              </Field>
+              <Toggle
+                label={p.retry.backoff.jitter ? "jittered" : "no jitter"}
+                hint={p.retry.backoff.jitter ? "randomised over [0, delay]" : "every client retries in lockstep"}
+                on={p.retry.backoff.jitter}
+                onChange={(v) => patch((e) => { if (e.policy.retry) e.policy.retry.backoff.jitter = v; })}
+              />
+              {!p.retry.backoff.jitter && (
+                <p className="note warn">
+                  Without jitter, every client that failed at the same instant retries at the
+                  same instant, so the recovering dependency is hit by a synchronised wave and
+                  fails again. Jitter costs nothing.
+                </p>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      <div className="section">circuit breaker</div>
+      <Toggle
+        label={p.circuitBreaker.enabled ? "breaker on" : "breaker off"}
+        hint={p.circuitBreaker.enabled ? `opens above ${(p.circuitBreaker.failureThreshold * 100).toFixed(0)}% failures` : "calls always attempted"}
+        on={p.circuitBreaker.enabled}
+        onChange={(v) => patch((e) => { e.policy.circuitBreaker.enabled = v; })}
+      />
+      {p.circuitBreaker.enabled && (
+        <>
+          <Field label="failure threshold" hint="%">
+            <NumberInput
+              value={Math.round(p.circuitBreaker.failureThreshold * 1000) / 10}
+              min={1}
+              max={100}
+              step={5}
+              onChange={(v) => patch((e) => { e.policy.circuitBreaker.failureThreshold = Math.min(1, Math.max(0.01, v / 100)); })}
+            />
+          </Field>
+          <Field label="stay open" hint="ms">
+            <NumberInput
+              value={p.circuitBreaker.openMs}
+              min={100}
+              step={500}
+              onChange={(v) => patch((e) => { e.policy.circuitBreaker.openMs = Math.max(100, v); })}
+            />
+          </Field>
+          <p className="note">
+            A breaker protects the <b>caller</b>, not the dependency. A blocking caller with a
+            failing dependency ties up a worker per request for the whole timeout; failing fast
+            returns those workers immediately. It is also blunt: a dependency failing 60% of the
+            time still succeeds 40% of the time, and a 50% threshold takes it almost entirely out
+            of service.
+          </p>
+        </>
+      )}
+
+      <div className="section">bulkhead</div>
+      <Toggle
+        label={p.bulkhead.enabled ? "bulkhead on" : "bulkhead off"}
+        hint={p.bulkhead.enabled ? `${p.bulkhead.maxConcurrent} concurrent calls` : "unbounded concurrent calls"}
+        on={p.bulkhead.enabled}
+        onChange={(v) => patch((e) => { e.policy.bulkhead.enabled = v; })}
+      />
+      {p.bulkhead.enabled && (
+        <>
+          <Field label="max concurrent">
+            <NumberInput
+              value={p.bulkhead.maxConcurrent}
+              min={1}
+              onChange={(v) => patch((e) => { e.policy.bulkhead.maxConcurrent = Math.max(1, Math.round(v)); })}
+            />
+          </Field>
+          <Field label="queue" hint="0 = reject at once">
+            <NumberInput
+              value={p.bulkhead.queueCapacity}
+              min={0}
+              onChange={(v) => patch((e) => { e.policy.bulkhead.queueCapacity = Math.max(0, Math.round(v)); })}
+            />
+          </Field>
+          <p className="note">
+            Confines a slow dependency's damage to the traffic that needs it, instead of letting
+            it consume every worker the caller has. This is the direct fix for a blocking caller.
+          </p>
+        </>
+      )}
+
+      {(preview || measured) && (
+        <>
+          <div className="section">predicted / measured</div>
+          {preview && (
+            <div className="station-detail tnum">
+              predicted amplification <b>{preview.amplification.toFixed(2)}&times;</b> at{" "}
+              {(preview.attemptFailureProbability * 100).toFixed(1)}% attempt failure
+              {preview.budgetBinding && " · budget binding"}
+            </div>
+          )}
+          {measured && measured.hasPolicy && (
+            <div className="station-detail tnum">
+              measured <b>{measured.amplification.toFixed(2)}&times;</b> ·{" "}
+              {measured.retries.toLocaleString()} retries
+              {measured.budgetRejections > 0 && ` · ${measured.budgetRejections.toLocaleString()} budget-capped`}
+              {measured.breakerTrips > 0 &&
+                ` · breaker tripped ${measured.breakerTrips}\u00d7, open ${(measured.breakerOpenFraction * 100).toFixed(0)}%`}
+              {measured.bulkheadRejections > 0 && ` · ${measured.bulkheadRejections.toLocaleString()} bulkhead-rejected`}
+            </div>
+          )}
+        </>
+      )}
+    </>
   );
 }
 

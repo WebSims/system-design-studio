@@ -2,6 +2,9 @@ import { mean as distMean, scv as distScv, zipfTopMass } from "@sds/core";
 import { classesOf, type Design, type RequestClass, type SdsEdge, type SdsNode } from "@sds/schema";
 import { allenCunneenWqMs, pkWqMs, solveMMc, solveMMcK } from "./queueing";
 
+/** Amplification above this is called out as a retry storm. Matches @sds/core. */
+const RETRY_AMPLIFICATION_THRESHOLD = 1.25;
+
 /** Cs^2 within this distance of 1 is treated as exponential, so M/M/c applies exactly. */
 const EXPONENTIAL_SCV_TOLERANCE = 1e-9;
 
@@ -38,11 +41,31 @@ export interface NodePreview {
   lq: number;
   l: number;
   p99Ms: number | null;
+  /**
+   * P(this station takes longer than `tMs`), where the model can say.
+   *
+   * Exact for M/M/c. Null elsewhere, in which case the preview cannot anticipate
+   * timeout-driven retries and says so rather than guessing.
+   */
+  survivalAt: ((tMs: number) => number) | null;
   blockingProbability: number;
   model: QueueingModel;
   approximate: boolean;
   /** Set when the closed form cannot cover this node exactly. */
   caveat: string | null;
+  /**
+   * Why this station is saturated, when it is.
+   *
+   * `own` means its own work exceeds its capacity. `dependency` means it inherited
+   * the saturation: a blocking caller whose dependency has no steady state has an
+   * infinite effective service time, and so an infinite rho, through no fault of
+   * its own.
+   *
+   * The distinction decides who gets blamed. Without it the caller always wins the
+   * highest-rho comparison -- infinity beats any finite number -- and the tool
+   * points at the victim instead of the cause.
+   */
+  saturationCause: "own" | "dependency" | null;
   /** Cache only: the perfect-cache hit ratio for this capacity and key skew. */
   hitRatio?: number;
   /** Queue only. */
@@ -75,6 +98,22 @@ export interface ClassPreview {
   meanIsLowerBound: boolean;
 }
 
+export interface EdgePreview {
+  edgeId: string;
+  from: string;
+  to: string;
+  /** Expected attempts per call, from the dependency's predicted failure rate. */
+  amplification: number;
+  /** Predicted probability one attempt fails, [0,1]. */
+  attemptFailureProbability: number;
+  /** Predicted probability the call ultimately succeeds after retries. */
+  successProbability: number;
+  maxAttempts: number;
+  budgetRatio: number | null;
+  /** True when the budget is what is holding amplification down. */
+  budgetBinding: boolean;
+}
+
 export interface DesignPreview {
   stable: boolean;
   /** Highest-utilization station: the thing to fix first. */
@@ -91,6 +130,20 @@ export interface DesignPreview {
   approximate: boolean;
   /** Async queues whose consumers cannot keep up, even though requests look fine. */
   asyncBacklogWarning: string | null;
+  edges: EdgePreview[];
+  /** Attempts issued over calls requested, across every edge. */
+  retryAmplification: number;
+  retryStormWarning: string | null;
+  /**
+   * False when the retry feedback loop has no fixed point.
+   *
+   * Retries raise load, load raises failures, failures raise retries. When that
+   * loop has positive gain the iteration diverges -- and that divergence IS the
+   * retry storm, not a numerical artefact. Reported rather than papered over with a
+   * capped result.
+   */
+  converged: boolean;
+  iterations: number;
   notes: string[];
 }
 
@@ -154,6 +207,113 @@ function routeShares(
   return eligible.map((e) => ({ edge: e, share: e.probability }));
 }
 
+/**
+ * Expected attempts per call, and the resulting success probability.
+ *
+ * With per-attempt failure probability p and at most n attempts, attempts follow a
+ * truncated geometric distribution:
+ *
+ *   E[attempts] = (1 - p^n) / (1 - p)        success = 1 - p^n
+ *
+ * Both exact, and both testable against the simulation -- which is what makes retry
+ * amplification a predicted quantity rather than a vibe.
+ *
+ * A retry budget caps the multiplier at 1 + ratio, because it limits retries to
+ * that share of original calls. That cap is the entire reason budgets exist: it
+ * turns amplification from something that grows with the failure rate into
+ * something bounded by configuration.
+ */
+export function retryMath(
+  p: number,
+  maxAttempts: number,
+  budgetRatio: number | null
+): { attempts: number; success: number; budgetBinding: boolean } {
+  const n = Math.max(1, maxAttempts);
+  const clamped = Math.min(Math.max(p, 0), 1);
+  const unbudgeted =
+    clamped >= 1 ? n : (1 - Math.pow(clamped, n)) / (1 - clamped);
+  const success = 1 - Math.pow(clamped, n);
+
+  if (budgetRatio === null) {
+    return { attempts: unbudgeted, success, budgetBinding: false };
+  }
+  const cap = 1 + budgetRatio;
+  if (unbudgeted <= cap) {
+    return { attempts: unbudgeted, success, budgetBinding: false };
+  }
+  // Budget-limited: only `cap` attempts per call on average, so the effective
+  // success rate falls back towards what a smaller attempt count would achieve.
+  const effectiveAttempts = cap;
+  const effectiveSuccess = 1 - Math.pow(clamped, effectiveAttempts);
+  return { attempts: effectiveAttempts, success: effectiveSuccess, budgetBinding: true };
+}
+
+/**
+ * Expected total backoff a caller waits across its retries.
+ *
+ * Approximate on purpose: the exact figure depends on which attempt succeeded, and
+ * the difference is small next to the attempts themselves. Included at all because
+ * omitting it would understate how long a retrying caller holds its slot.
+ */
+function expectedBackoffMs(edge: SdsEdge, expectedAttempts: number): number {
+  const retry = edge.policy.retry;
+  if (!retry) return 0;
+  const b = retry.backoff;
+  const retries = Math.max(0, expectedAttempts - 1);
+  if (retries === 0 || b.kind === "none") return 0;
+  let total = 0;
+  for (let i = 1; i <= Math.ceil(retries); i++) {
+    const raw = b.kind === "fixed" ? b.baseMs : Math.min(b.maxMs, b.baseMs * Math.pow(2, i - 1));
+    // Full jitter halves the expected delay.
+    total += (b.jitter ? raw / 2 : raw) * Math.min(1, retries - (i - 1));
+  }
+  return total;
+}
+
+/**
+ * Probability a single attempt on this edge fails.
+ *
+ * Three independent sources, which multiply:
+ *   - the message is dropped in transit
+ *   - the dependency (or anything below it) returns a failure
+ *   - the attempt exceeds its own timeout
+ *
+ * The third term is the one that matters near saturation and the one that is easy
+ * to omit: a dependency at 95% utilization succeeds almost every time it is allowed
+ * to finish, and times out constantly. Omitting it makes the preview blind to
+ * exactly the retry amplification that causes storms.
+ */
+function attemptFailureProbability(
+  edge: SdsEdge,
+  previews: Map<string, NodePreview>,
+  successProb: Map<string, number>,
+  classId: string
+): number {
+  const delivered = 1 - edge.lossProbability;
+  const downstreamSuccess = successProb.get(key(edge.to, classId)) ?? 1;
+
+  let completesInTime = 1;
+  const timeout = edge.policy.timeoutMs;
+  if (timeout !== null) {
+    const target = previews.get(edge.to);
+    const survival = target?.survivalAt;
+    if (survival) {
+      // Budget excludes the two network legs, which the attempt also has to fit in.
+      const netMs = 2 * distMean(edge.latency);
+      completesInTime = 1 - survival(Math.max(0, timeout - netMs));
+    }
+  }
+
+  return Math.min(1, Math.max(0, 1 - delivered * downstreamSuccess * completesInTime));
+}
+
+/** Load-independent failure probability declared on a station. */
+function stationFailureProbability(node: SdsNode): number {
+  if (node.kind === "server") return node.server!.failureProbability;
+  if (node.kind === "database") return node.database!.failureProbability;
+  return 0;
+}
+
 /** Perfect-cache hit ratio for a capacity and key population. */
 function analyticHitRatio(node: SdsNode): number {
   const cfg = node.cache!;
@@ -191,161 +351,235 @@ export function previewDesign(design: Design): DesignPreview {
   const totalWeight = classes.reduce((s, c) => s + c.weight, 0);
   const notes: string[] = [];
 
-  // ---- forward pass: arrival rates per (node, class) ----
-  const lambdaIn = new Map<string, number>();
-  const bump = (nodeId: string, classId: string, amount: number) => {
-    const k = key(nodeId, classId);
-    lambdaIn.set(k, (lambdaIn.get(k) ?? 0) + amount);
-  };
-
-  for (const id of order) {
-    const node = byId.get(id);
-    if (!node) continue;
-
-    for (const cls of classes) {
-      let outbound: number;
-      if (node.kind === "client") {
-        const rate = node.client?.arrival.ratePerSec ?? 0;
-        outbound = rate * (totalWeight > 0 ? cls.weight / totalWeight : 0);
-      } else {
-        outbound = lambdaIn.get(key(id, cls.id)) ?? 0;
-        // Only cache MISSES continue to the origin.
-        if (node.kind === "cache") outbound *= 1 - analyticHitRatio(node);
-      }
-      if (outbound <= 0) continue;
-
-      for (const { edge, share } of routeShares(design, node, cls.id)) {
-        bump(edge.to, cls.id, outbound * share * (1 - edge.lossProbability));
-      }
-    }
-  }
-
-  // ---- backward pass: effective service and response time ----
-  const previews = new Map<string, NodePreview>();
-  /** Mean response time of a node as its caller sees it, per class. */
-  const responseMs = new Map<string, number>();
   /**
-   * Probability a call into this node ultimately succeeds, per class.
+   * FIXED-POINT ITERATION.
    *
-   * Computed recursively because a request only succeeds if it survives every
-   * station it visits and every branch it fans out to. An earlier version derived
-   * throughput from edge loss alone, which silently ignored load shedding and
-   * reported 150/s of throughput for a station whose capacity was 100/s.
+   * Retries make the graph circular in a way the topology does not show: load on a
+   * dependency depends on its failure rate, its failure rate depends on its load,
+   * and retries connect the two. A single forward pass cannot solve that, so the
+   * two passes are iterated until arrival rates stop moving.
+   *
+   * When the loop has positive gain -- each round of retries causing more failures
+   * than it recovers -- the iteration diverges, and that divergence is not a
+   * numerical nuisance. It IS the retry storm. Reporting non-convergence is more
+   * honest than capping the numbers and presenting a fixed point that does not
+   * exist.
    */
-  const successProb = new Map<string, number>();
+  const MAX_ITERATIONS = 60;
+  const CONVERGENCE_TOLERANCE = 1e-4;
+
+  /** Expected attempts per call on each edge, updated each iteration. */
+  const attemptMultiplier = new Map<string, number>();
+  /** Probability a call succeeds after retries, per edge. */
+  const retrySuccess = new Map<string, number>();
+
+  let lambdaIn = new Map<string, number>();
+  let previews = new Map<string, NodePreview>();
+  let successProb = new Map<string, number>();
   let anyApproximate = false;
   let anyForkJoin = false;
   let asyncBacklogWarning: string | null = null;
+  let converged = false;
+  let iterations = 0;
 
-  for (const id of [...order].reverse()) {
-    const node = byId.get(id);
-    if (!node || node.kind === "client") continue;
+  for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+    iterations = iteration;
+    const previousLambda = lambdaIn;
 
-    /** Expected time this node spends waiting on dependencies, per class. */
-    const dependencyMs = new Map<string, number>();
-    for (const cls of classes) {
-      const routes = routeShares(design, node, cls.id);
-      if (routes.length === 0) {
-        dependencyMs.set(cls.id, 0);
-        continue;
-      }
-      const legs = routes.map(({ edge, share }) => {
-        // Both directions cross the wire.
-        const net = 2 * distMean(edge.latency);
-        const downstream = responseMs.get(key(edge.to, cls.id)) ?? 0;
-        return { cost: net + downstream, share };
-      });
+    // ---- forward pass: arrival rates per (node, class) ----
+    lambdaIn = new Map<string, number>();
+    const bump = (nodeId: string, classId: string, amount: number) => {
+      const k = key(nodeId, classId);
+      lambdaIn.set(k, (lambdaIn.get(k) ?? 0) + amount);
+    };
 
-      let total: number;
-      if (node.kind === "loadbalancer") {
-        // Exactly one backend is chosen, so the cost is the weighted average.
-        total = legs.reduce((s, l) => s + l.cost * l.share, 0);
-      } else if (node.kind === "queue") {
-        // Consumers call downstream, and nobody is waiting. Contributes nothing
-        // to request latency.
-        total = 0;
-      } else if (node.kind === "cache") {
-        // Origin is reached only on a miss, and that is already reflected in the
-        // arrival rate; here it is the conditional cost.
-        total = (1 - analyticHitRatio(node)) * legs.reduce((s, l) => s + l.cost, 0);
-      } else {
-        const parallel = node.server?.fanout !== "sequential";
-        const called = legs.filter((l) => l.share > 0);
-        if (parallel && called.length > 1) {
-          anyForkJoin = true;
-          // E[max] > max(E). Using max(E) makes the result a lower bound, which is
-          // stated rather than presented as an estimate.
-          total = called.reduce((m, l) => Math.max(m, l.cost * 1), 0);
+    for (const id of order) {
+      const node = byId.get(id);
+      if (!node) continue;
+
+      for (const cls of classes) {
+        let outbound: number;
+        if (node.kind === "client") {
+          const rate = node.client?.arrival.ratePerSec ?? 0;
+          outbound = rate * (totalWeight > 0 ? cls.weight / totalWeight : 0);
         } else {
-          total = called.reduce((s, l) => s + l.cost * l.share, 0);
+          outbound = lambdaIn.get(key(id, cls.id)) ?? 0;
+          // Only cache MISSES continue to the origin.
+          if (node.kind === "cache") outbound *= 1 - analyticHitRatio(node);
+        }
+        if (outbound <= 0) continue;
+
+        for (const { edge, share } of routeShares(design, node, cls.id)) {
+          // Retries multiply the load the dependency actually sees. This is the term
+          // that closes the feedback loop, and the reason a single pass is not enough.
+          const multiplier = attemptMultiplier.get(edge.id) ?? 1;
+          bump(edge.to, cls.id, outbound * share * multiplier * (1 - edge.lossProbability));
         }
       }
-      dependencyMs.set(cls.id, total);
     }
 
-    // Whether waiting on a dependency occupies this station's own slot.
-    //
-    // A thread-per-request server does hold it, and that is how a slow dependency
-    // exhausts its caller's pool. A non-blocking server does not, which makes a
-    // chain of them a genuine Jackson network and therefore exactly solvable. A
-    // cache does not either: in a cache-aside deployment the application performs
-    // the origin fetch, so the cache is idle during it.
-    const holdsSlot =
-      node.kind === "server"
-        ? node.server!.blocksOnDependencies
-        : node.kind === "loadbalancer";
+    // ---- backward pass: effective service and response time ----
+    /** Mean response time of a node as its caller sees it, per class. */
+    const responseMs = new Map<string, number>();
+    /**
+     * Probability a call into this node ultimately succeeds, per class.
+     *
+     * Computed recursively because a request only succeeds if it survives every
+     * station it visits and every branch it fans out to. An earlier version derived
+     * throughput from edge loss alone, which silently ignored load shedding and
+     * reported 150/s of throughput for a station whose capacity was 100/s.
+     */
+    successProb = new Map<string, number>();
 
-    const preview = solveStation(node, classes, totalWeight, lambdaIn, dependencyMs, holdsSlot);
-    previews.set(node.id, preview);
-    if (preview.approximate) anyApproximate = true;
+    for (const id of [...order].reverse()) {
+      const node = byId.get(id);
+      if (!node || node.kind === "client") continue;
 
-    if (node.kind === "queue" && preview.queue && !preview.queue.backlogStable) {
-      asyncBacklogWarning =
-        `queue "${node.label}" cannot keep up: ${preview.arrivalRatePerSec.toFixed(0)}/s arriving ` +
-        `against ${preview.queue.drainCapacityPerSec.toFixed(0)}/s of consumer capacity. ` +
-        `The backlog grows without bound. Request latency stays healthy because publishing returns ` +
-        `immediately, so this failure does not show up in any percentile.`;
-    }
+      /** Expected time this node spends waiting on dependencies, per class. */
+      const dependencyMs = new Map<string, number>();
+      for (const cls of classes) {
+        const routes = routeShares(design, node, cls.id);
+        if (routes.length === 0) {
+          dependencyMs.set(cls.id, 0);
+          continue;
+        }
+        const legs = routes.map(({ edge, share }) => {
+          // Both directions cross the wire.
+          const net = 2 * distMean(edge.latency);
+          const downstream = responseMs.get(key(edge.to, cls.id)) ?? 0;
+          // A retrying caller holds its slot across every attempt plus the backoff
+          // between them. That inflation is why retries hurt the CALLER as well as
+          // the dependency, and it is easy to miss.
+          const attempts = attemptMultiplier.get(edge.id) ?? 1;
+          const backoff = expectedBackoffMs(edge, attempts);
+          return { cost: attempts * (net + downstream) + backoff, share };
+        });
 
-    for (const cls of classes) {
-      // A caller waits for this node's own queueing and service, which already
-      // includes its dependency time via the effective service distribution.
-      responseMs.set(key(node.id, cls.id), preview.stable ? preview.wMs : Number.POSITIVE_INFINITY);
-
-      // Survival through this node and everything it calls.
-      const survivesHere = 1 - preview.blockingProbability;
-      const routes = routeShares(design, node, cls.id);
-      let downstreamSurvival = 1;
-
-      if (node.kind === "queue") {
-        // Consumers run detached; a publish succeeding does not depend on them.
-        downstreamSurvival = 1;
-      } else if (node.kind === "loadbalancer") {
-        downstreamSurvival = routes.reduce(
-          (s, r) =>
-            s +
-            r.share *
-              (1 - r.edge.lossProbability) *
-              (successProb.get(key(r.edge.to, cls.id)) ?? 1),
-          0
-        );
-      } else if (node.kind === "cache") {
-        const h = analyticHitRatio(node);
-        const originSurvival = routes.reduce(
-          (s, r) => s * (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1),
-          1
-        );
-        downstreamSurvival = h + (1 - h) * originSurvival;
-      } else {
-        // Every branch that is taken must succeed; a branch not taken cannot fail.
-        downstreamSurvival = routes.reduce((s, r) => {
-          const ifTaken =
-            (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1);
-          return s * (r.share * ifTaken + (1 - r.share));
-        }, 1);
+        let total: number;
+        if (node.kind === "loadbalancer") {
+          // Exactly one backend is chosen, so the cost is the weighted average.
+          total = legs.reduce((s, l) => s + l.cost * l.share, 0);
+        } else if (node.kind === "queue") {
+          // Consumers call downstream, and nobody is waiting. Contributes nothing
+          // to request latency.
+          total = 0;
+        } else if (node.kind === "cache") {
+          // Origin is reached only on a miss, and that is already reflected in the
+          // arrival rate; here it is the conditional cost.
+          total = (1 - analyticHitRatio(node)) * legs.reduce((s, l) => s + l.cost, 0);
+        } else {
+          const parallel = node.server?.fanout !== "sequential";
+          const called = legs.filter((l) => l.share > 0);
+          if (parallel && called.length > 1) {
+            anyForkJoin = true;
+            // E[max] > max(E). Using max(E) makes the result a lower bound, which is
+            // stated rather than presented as an estimate.
+            total = called.reduce((m, l) => Math.max(m, l.cost * 1), 0);
+          } else {
+            total = called.reduce((s, l) => s + l.cost * l.share, 0);
+          }
+        }
+        dependencyMs.set(cls.id, total);
       }
 
-      successProb.set(key(node.id, cls.id), survivesHere * downstreamSurvival);
+      // Whether waiting on a dependency occupies this station's own slot.
+      //
+      // A thread-per-request server does hold it, and that is how a slow dependency
+      // exhausts its caller's pool. A non-blocking server does not, which makes a
+      // chain of them a genuine Jackson network and therefore exactly solvable. A
+      // cache does not either: in a cache-aside deployment the application performs
+      // the origin fetch, so the cache is idle during it.
+      const holdsSlot =
+        node.kind === "server"
+          ? node.server!.blocksOnDependencies
+          : node.kind === "loadbalancer";
+
+      const preview = solveStation(node, classes, totalWeight, lambdaIn, dependencyMs, holdsSlot);
+      previews.set(node.id, preview);
+      if (preview.approximate) anyApproximate = true;
+
+      if (node.kind === "queue" && preview.queue && !preview.queue.backlogStable) {
+        asyncBacklogWarning =
+          `queue "${node.label}" cannot keep up: ${preview.arrivalRatePerSec.toFixed(0)}/s arriving ` +
+          `against ${preview.queue.drainCapacityPerSec.toFixed(0)}/s of consumer capacity. ` +
+          `The backlog grows without bound. Request latency stays healthy because publishing returns ` +
+          `immediately, so this failure does not show up in any percentile.`;
+      }
+
+      for (const cls of classes) {
+        // A caller waits for this node's own queueing and service, which already
+        // includes its dependency time via the effective service distribution.
+        responseMs.set(key(node.id, cls.id), preview.stable ? preview.wMs : Number.POSITIVE_INFINITY);
+
+        // Survival through this node and everything it calls. Station failure is
+        // independent of queueing failure, so the two multiply.
+        const ownFailure = stationFailureProbability(node);
+        const survivesHere = (1 - preview.blockingProbability) * (1 - ownFailure);
+        const routes = routeShares(design, node, cls.id);
+        let downstreamSurvival = 1;
+
+        if (node.kind === "queue") {
+          // Consumers run detached; a publish succeeding does not depend on them.
+          downstreamSurvival = 1;
+        } else if (node.kind === "loadbalancer") {
+          downstreamSurvival = routes.reduce((s, r) => {
+            const raw = (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1);
+            return s + r.share * (retrySuccess.get(r.edge.id) ?? raw);
+          }, 0);
+        } else if (node.kind === "cache") {
+          const h = analyticHitRatio(node);
+          const originSurvival = routes.reduce((s, r) => {
+            const raw = (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1);
+            return s * (retrySuccess.get(r.edge.id) ?? raw);
+          }, 1);
+          downstreamSurvival = h + (1 - h) * originSurvival;
+        } else {
+          // Every branch that is taken must succeed; a branch not taken cannot fail.
+          downstreamSurvival = routes.reduce((s, r) => {
+            const raw = (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1);
+            // Retries recover some failures, so the caller sees a better success rate
+            // than one attempt would give.
+            const ifTaken = retrySuccess.get(r.edge.id) ?? raw;
+            return s * (r.share * ifTaken + (1 - r.share));
+          }, 1);
+        }
+
+        successProb.set(key(node.id, cls.id), survivesHere * downstreamSurvival);
+      }
+    }
+
+
+    // ---- update the retry feedback terms ----
+    let maxDelta = 0;
+    for (const e of design.edges) {
+      const retry = e.policy.retry;
+      const attemptFailure = attemptFailureProbability(e, previews, successProb, classes[0]!.id);
+
+      const math = retry
+        ? retryMath(attemptFailure, retry.maxAttempts, retry.budgetRatio)
+        : { attempts: 1, success: 1 - attemptFailure, budgetBinding: false };
+
+      const previous = attemptMultiplier.get(e.id) ?? 1;
+      // Damped update: an undamped one oscillates badly near the stability edge and
+      // can report divergence for a system that does have a fixed point.
+      const next = previous + 0.5 * (math.attempts - previous);
+      attemptMultiplier.set(e.id, next);
+      retrySuccess.set(e.id, math.success);
+      maxDelta = Math.max(maxDelta, Math.abs(next - previous));
+    }
+
+    // Convergence is judged on arrival rates, the quantity everything else derives
+    // from.
+    let lambdaDelta = 0;
+    for (const [k, v] of lambdaIn) {
+      const before = previousLambda.get(k) ?? 0;
+      const scale = Math.max(1, Math.abs(v), Math.abs(before));
+      lambdaDelta = Math.max(lambdaDelta, Math.abs(v - before) / scale);
+    }
+
+    if (iteration > 1 && lambdaDelta < CONVERGENCE_TOLERANCE && maxDelta < CONVERGENCE_TOLERANCE) {
+      converged = true;
+      break;
     }
   }
 
@@ -358,15 +592,37 @@ export function previewDesign(design: Design): DesignPreview {
   // whole design "unstable" -- it gets its own warning instead.
   const stable = nodes.every((n) => n.kind === "queue" || n.stable);
 
+  /**
+   * Blame the cause, not the victim.
+   *
+   * A blocking caller whose dependency has no steady state inherits an infinite
+   * effective service time, and infinity beats every finite rho. Comparing rho
+   * naively therefore points at the caller and says its capacity is 0/s, which is
+   * both useless and wrong: the thing to fix is downstream. So stations whose
+   * saturation is inherited are considered only if nothing else is saturated.
+   */
+  const rootCauses = nodes.filter((n) => n.saturationCause !== "dependency");
+  const candidates = rootCauses.length > 0 ? rootCauses : nodes;
+
   let bottleneckNodeId: string | null = null;
   let bottleneckUtilization = 0;
-  for (const n of nodes) {
+  for (const n of candidates) {
     // Compare on rho, not utilization: a shedding station pins utilization near
     // 1 while rho keeps rising, and rho is what says how far past capacity it is.
     if (n.rho > bottleneckUtilization) {
       bottleneckUtilization = n.rho;
       bottleneckNodeId = n.nodeId;
     }
+  }
+
+  const inherited = nodes.filter((n) => n.saturationCause === "dependency");
+  if (inherited.length > 0 && bottleneckNodeId !== null) {
+    notes.push(
+      `${inherited.map((n) => `"${n.label}"`).join(", ")} ` +
+        `${inherited.length === 1 ? "is" : "are"} saturated as a consequence, not a cause: ` +
+        `holding a slot while waiting on a dependency that has no steady state. Fix the ` +
+        `bottleneck first.`
+    );
   }
 
   // ---- per-class end-to-end ----
@@ -450,6 +706,61 @@ export function previewDesign(design: Design): DesignPreview {
     p99Reason = "not available for this configuration \u2014 press Run";
   }
 
+  // ---- retry summary ----
+  const edgePreviews: EdgePreview[] = design.edges.map((e) => {
+    const retry = e.policy.retry;
+    const attemptFailure = attemptFailureProbability(e, previews, successProb, classes[0]!.id);
+    const math = retry
+      ? retryMath(attemptFailure, retry.maxAttempts, retry.budgetRatio)
+      : { attempts: 1, success: 1 - attemptFailure, budgetBinding: false };
+    return {
+      edgeId: e.id,
+      from: e.from,
+      to: e.to,
+      amplification: attemptMultiplier.get(e.id) ?? math.attempts,
+      attemptFailureProbability: attemptFailure,
+      successProbability: math.success,
+      maxAttempts: retry?.maxAttempts ?? 1,
+      budgetRatio: retry?.budgetRatio ?? null,
+      budgetBinding: math.budgetBinding,
+    };
+  });
+
+  // Weight by predicted load: an amplified edge carrying no traffic is not a storm.
+  let weightedAttempts = 0;
+  let weightedCalls = 0;
+  for (const e of edgePreviews) {
+    const load = classes.reduce((sum, c) => sum + (lambdaIn.get(key(e.to, c.id)) ?? 0), 0);
+    if (load <= 0) continue;
+    weightedCalls += load;
+    weightedAttempts += load * e.amplification;
+  }
+  const retryAmplification = weightedCalls > 0 ? weightedAttempts / weightedCalls : 1;
+
+  const worstEdge = edgePreviews.reduce<EdgePreview | null>(
+    (worst, e) => (!worst || e.amplification > worst.amplification ? e : worst),
+    null
+  );
+  let retryStormWarning: string | null = null;
+  if (worstEdge && worstEdge.amplification > RETRY_AMPLIFICATION_THRESHOLD) {
+    const fromLabel = byId.get(worstEdge.from)?.label ?? worstEdge.from;
+    const toLabel = byId.get(worstEdge.to)?.label ?? worstEdge.to;
+    retryStormWarning =
+      `retries on "${fromLabel}" \u2192 "${toLabel}" multiply load by ` +
+      `${worstEdge.amplification.toFixed(2)}x, because ` +
+      `${(worstEdge.attemptFailureProbability * 100).toFixed(0)}% of attempts fail. ` +
+      (worstEdge.budgetRatio === null
+        ? "There is no retry budget capping this."
+        : worstEdge.budgetBinding
+          ? `The ${(worstEdge.budgetRatio * 100).toFixed(0)}% budget is holding it down.`
+          : `The ${(worstEdge.budgetRatio * 100).toFixed(0)}% budget is not binding yet.`);
+  }
+
+  if (!converged) {
+    notes.push(
+      "retry feedback has no fixed point: each round of retries causes more failures than it recovers, so load diverges. This is a retry storm, not a numerical problem."
+    );
+  }
   if (anyApproximate) {
     notes.push(
       "some stations use approximations (Allen-Cunneen for M/G/c, or composite service time where a station waits on dependencies); the simulation is authoritative"
@@ -485,6 +796,11 @@ export function previewDesign(design: Design): DesignPreview {
     p99Reason,
     approximate: anyApproximate,
     asyncBacklogWarning,
+    edges: edgePreviews,
+    retryAmplification,
+    retryStormWarning,
+    converged,
+    iterations,
     notes,
   };
 }
@@ -539,6 +855,8 @@ function solveStation(
   }
   const effectiveServiceMeanMs = lambda > 0 ? slotDemandMsPerSec / lambda : ownServiceMs(node);
   const ownServiceMeanMs = lambda > 0 ? ownDemand / lambda : ownServiceMs(node);
+  /** True when a dependency's lack of a steady state made this station's demand infinite. */
+  const inheritedSaturation = !Number.isFinite(effectiveServiceMeanMs);
   /** Dependency time the caller waits for but this station does not occupy a slot for. */
   const detachedDependencyMs = lambda > 0 ? detachedDependencyMsPerSec / lambda : 0;
   const holdsSlotForDependencies = effectiveServiceMeanMs > ownServiceMeanMs * 1.0000001;
@@ -585,6 +903,8 @@ function solveStation(
       lq: 0,
       l: 0,
       p99Ms: null,
+      survivalAt: null,
+      saturationCause: load >= 1 ? "own" : null,
       blockingProbability: dropProbability,
       model: "async queue",
       approximate: false,
@@ -669,6 +989,8 @@ function solveStation(
       lq: s.lq,
       l: s.l,
       p99Ms: null,
+      survivalAt: null,
+      saturationCause: inheritedSaturation ? "dependency" : null,
       blockingProbability: s.blockingProbability,
       model: "M/M/c/K",
       approximate: !exponential,
@@ -691,6 +1013,8 @@ function solveStation(
       l: s.l,
       // Exact only when the caller waits for nothing beyond this station.
       p99Ms: detachedDependencyMs > 0 ? null : s.quantileMs(0.99),
+      survivalAt: detachedDependencyMs > 0 ? null : s.survivalAt,
+      saturationCause: s.stable ? null : inheritedSaturation ? "dependency" : "own",
       model: "M/M/c",
       approximate: false,
       caveat: null,
@@ -718,6 +1042,8 @@ function solveStation(
     lq: stationStable ? (lambda * wqMs) / 1000 : Number.POSITIVE_INFINITY,
     l: stationStable ? (lambda * wMs) / 1000 : Number.POSITIVE_INFINITY,
     p99Ms: null,
+    survivalAt: null,
+    saturationCause: stationStable ? null : inheritedSaturation ? "dependency" : "own",
     model: c === 1 ? "M/G/1" : "M/G/c (approx)",
     approximate: c !== 1 || holdsSlotForDependencies,
     caveat: compositeCaveat,

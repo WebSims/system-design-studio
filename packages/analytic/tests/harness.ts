@@ -43,7 +43,7 @@ export interface StationSpec {
  */
 export function singleStation(opts: StationSpec): Design {
   return DesignSchema.parse({
-    version: 2,
+    version: 3,
     name: "validation",
     nodes: [
       {
@@ -145,7 +145,7 @@ export function tandem(opts: TandemSpec): Design {
   });
 
   return DesignSchema.parse({
-    version: 2,
+    version: 3,
     name: "tandem",
     nodes,
     edges,

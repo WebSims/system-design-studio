@@ -84,6 +84,14 @@ function report(design: Design, result: RunResult): void {
     );
   }
 
+  if (result.stability.retryStormWarning) {
+    // Separate from saturation because the symptom misleads: the dependency looks
+    // overloaded, so the instinct is to add capacity, when the load is being
+    // manufactured by the callers' own retry policies.
+    heading("VERDICT: retry amplification");
+    console.log(`  ${RED}${result.stability.retryStormWarning}${OFF}`);
+  }
+
   if (result.stability.asyncBacklogWarning) {
     // Called out separately because it is invisible in every percentile: the
     // request path is genuinely healthy while the work silently piles up.
@@ -135,6 +143,41 @@ function report(design: Design, result: RunResult): void {
     );
   }
 
+  const policyEdges = result.edges.filter((e) => e.hasPolicy);
+  if (policyEdges.length > 0) {
+    heading("calls and failure policies");
+    console.log(
+      `  ${DIM}${pad("call", 30)}${rpad("calls", 10)}${rpad("attempts", 10)}${rpad("amp", 7)}${rpad("fail", 8)}  policy${OFF}`
+    );
+    for (const e of policyEdges) {
+      const ampColor = e.amplification > 1.5 ? RED : e.amplification > 1.15 ? YELLOW : GREEN;
+      const failRate = e.calls > 0 ? e.failures / e.calls : 0;
+      const bits: string[] = [];
+      if (e.retries > 0) bits.push(`${e.retries.toLocaleString()} retries`);
+      if (e.budgetRejections > 0) bits.push(`${e.budgetRejections.toLocaleString()} budget-capped`);
+      if (e.breakerTrips > 0) {
+        bits.push(`breaker ${e.breakerTrips}x, open ${pctOf(e.breakerOpenFraction)}`);
+      }
+      if (e.bulkheadRejections > 0) bits.push(`${e.bulkheadRejections.toLocaleString()} bulkhead-rejected`);
+      console.log(
+        `  ${pad(`${e.fromLabel} \u2192 ${e.toLabel}`.slice(0, 29), 30)}` +
+          `${rpad(e.calls.toLocaleString(), 10)}${rpad(e.attempts.toLocaleString(), 10)}` +
+          `${ampColor}${rpad(e.amplification.toFixed(2) + "x", 7)}${OFF}` +
+          `${rpad(pctOf(failRate), 8)}  ${DIM}${bits.join(" \u00b7 ") || "\u2014"}${OFF}`
+      );
+      if (e.bulkheadUtilization !== null) {
+        console.log(
+          `    ${DIM}bulkhead ${pctOf(e.bulkheadUtilization)} of ${e.bulkheadMaxInUse !== null ? Math.round(e.bulkheadMaxInUse) : "?"} slots peak \u00b7 ` +
+            `outstanding calls avg ${e.avgConcurrency.toFixed(1)}${OFF}`
+        );
+      }
+    }
+    console.log(
+      `  ${DIM}system-wide amplification ${result.retryAmplification.toFixed(2)}x. ` +
+        `Each tier multiplies, so layered retries compound.${OFF}`
+    );
+  }
+
   heading("stations");
   console.log(
     `  ${DIM}${pad("station", 16)}${pad("kind", 14)}${rpad("c", 4)}${rpad("util", 8)}${rpad("Lq", 8)}${rpad("wait", 9)}${rpad("shed", 8)}${OFF}`
@@ -156,6 +199,24 @@ function report(design: Design, result: RunResult): void {
           lb.perBackend.map((b) => `${b.label} ${b.sharePct.toFixed(1)}%`).join(" \u00b7 ") +
           `${OFF}`
       );
+      if (lb.healthCheckEnabled) {
+        const ejected = lb.perBackend.filter((b) => b.ejections > 0);
+        console.log(
+          `    ${DIM}health checking on \u00b7 ` +
+            (ejected.length > 0
+              ? ejected
+                  .map(
+                    (b) =>
+                      `${YELLOW}${b.label} ejected ${b.ejections}x (${pctOf(b.ejectedFraction)} of window, ${pctOf(b.failureRate)} failing)${OFF}${DIM}`
+                  )
+                  .join(" \u00b7 ")
+              : "no backends ejected") +
+            (lb.ejectionsWithheld > 0
+              ? ` \u00b7 ${lb.ejectionsWithheld} ejections withheld to preserve capacity`
+              : "") +
+            `${OFF}`
+        );
+      }
     }
     if (n.cache) {
       const c = n.cache;
@@ -237,6 +298,15 @@ function report(design: Design, result: RunResult): void {
   }
   if (preview.p99Reason) {
     console.log(`  ${DIM}p99 withheld: ${preview.p99Reason}${OFF}`);
+  }
+  if (!preview.converged) {
+    console.log(
+      `  ${RED}retry feedback has no fixed point after ${preview.iterations} iterations.${OFF}` +
+        `\n  ${DIM}Each round of retries causes more failures than it recovers. That divergence` +
+        `\n  is the retry storm, not a numerical problem.${OFF}`
+    );
+  } else if (preview.retryStormWarning) {
+    console.log(`  ${YELLOW}predicted: ${preview.retryStormWarning}${OFF}`);
   }
 
   if (result.sloPassed !== null) {

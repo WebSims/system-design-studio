@@ -1,4 +1,5 @@
 import type { Design, NodeKind, SdsEdge, SdsNode } from "@sds/schema";
+import { CallSite } from "./callsite";
 import { mean as distMean, sample, scv } from "./distribution";
 import { LatencyHistogram } from "./histogram";
 import { Resource } from "./resource";
@@ -51,7 +52,7 @@ export interface TraceSink {
     tEnqueue: number,
     tServiceStart: number | null,
     tExit: number,
-    outcome: "served" | "shed" | "timeout" | "hit" | "miss"
+    outcome: "served" | "shed" | "timeout" | "hit" | "miss" | "error"
   ): void;
   canTrace(): boolean;
 }
@@ -62,6 +63,8 @@ export interface ComponentEnv {
   design: Design;
   components: Map<string, Component>;
   outgoing: Map<string, SdsEdge[]>;
+  /** Per-edge failure-policy state, keyed by edge id. */
+  callSites: Map<string, CallSite>;
   trace: TraceSink;
   /** True once warm-up is over. Components record nothing before that. */
   measuring: () => boolean;
@@ -244,23 +247,26 @@ function eligibleEdges(env: ComponentEnv, nodeId: string, ctx: RequestCtx): SdsE
 }
 
 /**
- * Traverse an edge, invoke the target, and come back.
+ * One attempt: cross the wire, invoke the target, cross back.
  *
  * BOTH DIRECTIONS COST NETWORK TIME.
  *
  * A request/response pair crosses the wire twice, so edge latency is applied
  * twice. This is why edge latency is documented as one-way: entering a round-trip
- * figure would double-count it. It matters as soon as a design spans zones -- a
- * five-hop path across 1ms links is 10ms of pure network, which is most of a
- * cache's budget and none of a database's.
+ * figure would double-count it.
  */
-function* callThrough(env: ComponentEnv, edge: SdsEdge, ctx: RequestCtx): Process<Outcome> {
+function* attemptCall(
+  env: ComponentEnv,
+  edge: SdsEdge,
+  ctx: RequestCtx,
+  deadlineAt: number | null
+): Process<Outcome> {
   const netRng = env.rng.stream("network");
   const lossRng = env.rng.stream("failure");
 
   // ---- request leg ----
   const outStart = env.sim.now;
-  const outWait = yield* delay(sample(edge.latency, netRng), ctx.deadlineAt);
+  const outWait = yield* delay(sample(edge.latency, netRng), deadlineAt);
   if (outWait.timedOut) {
     if (ctx.traced) env.trace.hop(ctx.requestId, edge.id, outStart, env.sim.now, false, true);
     return { ok: false, reason: "timeout" };
@@ -273,12 +279,12 @@ function* callThrough(env: ComponentEnv, edge: SdsEdge, ctx: RequestCtx): Proces
 
   const target = env.components.get(edge.to);
   if (!target) return OK; // validated away upstream; nothing to call
-  const outcome = yield* target.handle(ctx);
+  const outcome = yield* target.handle({ ...ctx, deadlineAt });
   if (!outcome.ok) return outcome;
 
   // ---- response leg ----
   const backStart = env.sim.now;
-  const backWait = yield* delay(sample(edge.latency, netRng), ctx.deadlineAt);
+  const backWait = yield* delay(sample(edge.latency, netRng), deadlineAt);
   if (backWait.timedOut) {
     if (ctx.traced) env.trace.hop(ctx.requestId, edge.id, backStart, env.sim.now, false, false);
     return { ok: false, reason: "timeout" };
@@ -290,6 +296,114 @@ function* callThrough(env: ComponentEnv, edge: SdsEdge, ctx: RequestCtx): Proces
   if (droppedBack) return { ok: false, reason: "network" };
 
   return OK;
+}
+
+/**
+ * Make a call to a dependency, applying the caller's failure policies.
+ *
+ * ORDER MATTERS, AND THIS IS THE ORDER REAL CLIENTS USE:
+ *
+ *   1. Circuit breaker. If it is open the call fails immediately, without
+ *      consuming a bulkhead slot or the caller's time. Failing fast is the entire
+ *      point -- it returns the caller's worker instead of parking it on something
+ *      already known to be broken.
+ *   2. Bulkhead. Caps concurrent outstanding calls to this dependency, so a slow
+ *      dependency cannot consume every worker the caller has.
+ *   3. Per-attempt timeout, tightened against the client's end-to-end deadline.
+ *      Whichever is sooner wins; a per-attempt timeout is what makes retrying
+ *      possible, since a hung attempt would otherwise consume the whole budget.
+ *   4. Retry with backoff, gated by the retry budget.
+ *
+ * The breaker sits outside the bulkhead and the bulkhead outside the retry loop,
+ * because a rejection from either is the caller's own protection engaging -- and
+ * retrying past your own protection defeats the mechanism that just fired.
+ */
+function* callThrough(env: ComponentEnv, edge: SdsEdge, ctx: RequestCtx): Process<Outcome> {
+  const site = env.callSites.get(edge.id);
+  // No policy state means no policies: take the plain path.
+  if (!site) return yield* attemptCall(env, edge, ctx, ctx.deadlineAt);
+
+  const measuring = env.measuring();
+  site.enter(measuring);
+  site.noteCall();
+
+  let outcome: Outcome = { ok: false, reason: "error" };
+
+  try {
+    const maxAttempts = site.maxAttempts;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // ---- 1. circuit breaker ----
+      const admission = site.admit(measuring);
+      if (!admission.allowed) {
+        outcome = { ok: false, reason: "circuit-open" };
+        return outcome;
+      }
+
+      // ---- 2. bulkhead ----
+      let heldBulkhead = false;
+      if (site.bulkhead) {
+        const slot = yield* acquire(site.bulkhead, ctx.deadlineAt);
+        if (!slot.granted) {
+          site.noteBulkheadRejection(measuring);
+          site.observe(false, admission.probe, measuring);
+          outcome = {
+            ok: false,
+            reason: slot.reason === "timeout" ? "timeout" : "bulkhead-full",
+          };
+          return outcome;
+        }
+        heldBulkhead = true;
+      }
+
+      // ---- 3. per-attempt deadline ----
+      const attemptTimeout = site.attemptTimeoutMs;
+      const attemptDeadline =
+        attemptTimeout === null
+          ? ctx.deadlineAt
+          : ctx.deadlineAt === null
+            ? env.sim.now + attemptTimeout
+            : Math.min(ctx.deadlineAt, env.sim.now + attemptTimeout);
+
+      site.noteAttempt(measuring, attempt > 1);
+      let attemptOutcome: Outcome;
+      try {
+        attemptOutcome = yield* attemptCall(env, edge, ctx, attemptDeadline);
+      } finally {
+        if (heldBulkhead) site.bulkhead!.release();
+      }
+
+      site.observe(attemptOutcome.ok, admission.probe, measuring);
+      if (attemptOutcome.ok) {
+        outcome = OK;
+        return outcome;
+      }
+      outcome = attemptOutcome;
+
+      // ---- 4. retry decision ----
+      if (attempt >= maxAttempts) return outcome;
+      if (!site.isRetryable(attemptOutcome.reason)) return outcome;
+      if (!site.allowRetry(measuring)) return outcome;
+
+      // The client's own deadline still applies: there is no point sleeping past it.
+      if (ctx.deadlineAt !== null && env.sim.now >= ctx.deadlineAt) {
+        outcome = { ok: false, reason: "timeout" };
+        return outcome;
+      }
+
+      site.noteRetry();
+      const backoff = site.backoffMs(attempt + 1, env.rng.stream("failure"));
+      if (backoff > 0) {
+        const waited = yield* delay(backoff, ctx.deadlineAt);
+        if (waited.timedOut) {
+          outcome = { ok: false, reason: "timeout" };
+          return outcome;
+        }
+      }
+    }
+    return outcome;
+  } finally {
+    site.exit(outcome.ok, measuring);
+  }
 }
 
 /**
@@ -407,6 +521,17 @@ export class ServerComponent extends StationComponent {
         return { ok: false, reason: "timeout" };
       }
 
+      // Failure injected AFTER the work is done, not before: a server that fails
+      // still consumed the capacity to discover that. Failing for free would make
+      // an unhealthy dependency look cheap, which is the opposite of the truth and
+      // would hide exactly the load a retry storm adds.
+      if (cfg.failureProbability > 0 && env.rng.stream("failure").chance(cfg.failureProbability)) {
+        if (ctx.traced) {
+          env.trace.visit(ctx.requestId, this.node.id, enqueuedAt, serviceStart, env.sim.now, "error");
+        }
+        return { ok: false, reason: "error" };
+      }
+
       // A non-blocking runtime hands the slot back before waiting on I/O. A
       // thread-per-request server cannot, which is what makes it vulnerable to a
       // slow dependency.
@@ -435,10 +560,32 @@ export class ServerComponent extends StationComponent {
 // load balancer
 // ---------------------------------------------------------------------------
 
+/** Passive health state for one backend. */
+interface BackendHealth {
+  successes: number;
+  failures: number;
+  ejectedUntil: number;
+  ejections: number;
+  ejectedMs: number;
+  lastEjectStart: number;
+  /**
+   * Failure rate at the moment of the most recent ejection.
+   *
+   * Reported instead of the live rate, because observations are cleared on ejection
+   * so a backend that was just ejected for failing 90% of the time would otherwise
+   * display 0%. Showing the number that triggered the decision is what makes the
+   * decision reviewable.
+   */
+  rateAtEjection: number;
+}
+
 export class LoadBalancerComponent extends StationComponent {
   private rrIndex = 0;
   private dispatched = new Map<string, number>();
   private dispatchTotal = 0;
+  private health = new Map<string, BackendHealth>();
+  private ejectionsWithheld = 0;
+  private healthStart = 0;
 
   constructor(node: SdsNode, env: ComponentEnv) {
     const cfg = node.loadbalancer!;
@@ -461,6 +608,103 @@ export class LoadBalancerComponent extends StationComponent {
     super.resetStats();
     this.dispatched = new Map();
     this.dispatchTotal = 0;
+    this.ejectionsWithheld = 0;
+    this.healthStart = this.env.sim.now;
+    // Health observations are NOT cleared: which backends are currently ejected is
+    // part of the steady state the warm-up was spent reaching.
+    for (const h of this.health.values()) {
+      h.successes = 0;
+      h.failures = 0;
+      h.ejections = 0;
+      h.ejectedMs = 0;
+      h.lastEjectStart = h.ejectedUntil > this.env.sim.now ? this.env.sim.now : 0;
+    }
+  }
+
+  private healthOf(nodeId: string): BackendHealth {
+    let h = this.health.get(nodeId);
+    if (!h) {
+      h = {
+        successes: 0,
+        failures: 0,
+        ejectedUntil: 0,
+        ejections: 0,
+        ejectedMs: 0,
+        lastEjectStart: 0,
+        rateAtEjection: 0,
+      };
+      this.health.set(nodeId, h);
+    }
+    return h;
+  }
+
+  /**
+   * Fold a lapsed ejection into the total ejected time.
+   *
+   * Ejection expiry is passive -- nothing fires when it happens -- so the elapsed
+   * time is banked the next time anyone looks. Without this the reported ejected
+   * fraction only ever reflects an ejection still in force at the moment the clock
+   * stopped, which is close to useless.
+   */
+  private settleEjection(h: BackendHealth): void {
+    if (h.lastEjectStart > 0 && h.ejectedUntil <= this.env.sim.now) {
+      h.ejectedMs += Math.max(0, h.ejectedUntil - h.lastEjectStart);
+      h.lastEjectStart = 0;
+    }
+  }
+
+  /**
+   * Backends currently eligible to receive traffic.
+   *
+   * If every backend has been ejected, traffic goes to all of them anyway. That is
+   * not a fallback for tidiness -- it is the guard that stops health checking from
+   * causing the outage it exists to prevent. Under a shared failure every backend
+   * looks unhealthy at once, and routing to none of them converts a partial outage
+   * into a total one.
+   */
+  private eligible(edges: SdsEdge[]): SdsEdge[] {
+    const hc = this.node.loadbalancer!.healthCheck;
+    if (!hc.enabled) return edges;
+    const now = this.env.sim.now;
+    const live = edges.filter((e) => {
+      const h = this.healthOf(e.to);
+      this.settleEjection(h);
+      return h.ejectedUntil <= now;
+    });
+    return live.length > 0 ? live : edges;
+  }
+
+  /** Fold an outcome into a backend's health, ejecting it if it is now an outlier. */
+  private observeBackend(nodeId: string, ok: boolean): void {
+    const hc = this.node.loadbalancer!.healthCheck;
+    if (!hc.enabled) return;
+    const h = this.healthOf(nodeId);
+    if (ok) h.successes++;
+    else h.failures++;
+
+    const total = h.successes + h.failures;
+    if (total < hc.minimumRequests) return;
+    const rate = h.failures / total;
+    const now = this.env.sim.now;
+    if (rate < hc.failureThreshold || h.ejectedUntil > now) return;
+
+    // Respect the cap on how much capacity may be removed at once.
+    const backends = this.env.outgoing.get(this.node.id) ?? [];
+    const currentlyEjected = backends.filter((e) => this.healthOf(e.to).ejectedUntil > now).length;
+    const maxEjected = Math.floor(backends.length * hc.maxEjectedFraction);
+    if (currentlyEjected + 1 > maxEjected) {
+      this.ejectionsWithheld++;
+      return;
+    }
+
+    h.ejectedUntil = now + hc.ejectionMs;
+    h.lastEjectStart = now;
+    h.ejections++;
+    h.rateAtEjection = rate;
+    // Observations reset on ejection so the backend is judged afresh when it
+    // returns, rather than being re-ejected instantly on its old record.
+    h.successes = 0;
+    h.failures = 0;
   }
 
   /**
@@ -541,16 +785,17 @@ export class LoadBalancerComponent extends StationComponent {
       const served = yield* delay(own, ctx.deadlineAt);
       if (served.timedOut) return { ok: false, reason: "timeout" };
 
-      const eligible = eligibleEdges(env, this.node.id, ctx);
-      if (eligible.length === 0) return OK;
+      const routable = eligibleEdges(env, this.node.id, ctx);
+      if (routable.length === 0) return OK;
 
-      const edge = this.select(eligible);
+      const edge = this.select(this.eligible(routable));
       if (env.measuring()) {
         this.dispatched.set(edge.to, (this.dispatched.get(edge.to) ?? 0) + 1);
         this.dispatchTotal++;
       }
 
       const outcome = yield* callThrough(env, edge, ctx);
+      this.observeBackend(edge.to, outcome.ok);
       if (ctx.traced) {
         env.trace.visit(
           ctx.requestId,
@@ -570,13 +815,26 @@ export class LoadBalancerComponent extends StationComponent {
 
   override result(observedSec: number): NodeResult {
     const base = super.result(observedSec);
+    const now = this.env.sim.now;
+    const span = Math.max(1, now - this.healthStart);
     const backends = (this.env.outgoing.get(this.node.id) ?? []).map((e) => {
       const count = this.dispatched.get(e.to) ?? 0;
+      const h = this.health.get(e.to);
+      if (h) this.settleEjection(h);
+      const total = (h?.successes ?? 0) + (h?.failures ?? 0);
+      // Plus any ejection still in force at the moment the clock stopped.
+      const openNow = h && h.ejectedUntil > now ? now - Math.max(this.healthStart, h.lastEjectStart) : 0;
       return {
         nodeId: e.to,
         label: this.env.components.get(e.to)?.node.label ?? e.to,
         dispatched: count,
         sharePct: this.dispatchTotal > 0 ? (count / this.dispatchTotal) * 100 : 0,
+        // Prefer the rate that caused the last ejection; fall back to the live rate
+        // for a backend that has never been ejected.
+        failureRate:
+          h && h.ejections > 0 ? h.rateAtEjection : total > 0 ? h!.failures / total : 0,
+        ejectedFraction: h ? Math.min(1, (h.ejectedMs + openNow) / span) : 0,
+        ejections: h?.ejections ?? 0,
       };
     });
     const even = backends.length > 0 ? 100 / backends.length : 0;
@@ -588,6 +846,8 @@ export class LoadBalancerComponent extends StationComponent {
       algorithm: this.node.loadbalancer!.algorithm,
       dispatched: this.dispatchTotal,
       perBackend: backends,
+      healthCheckEnabled: this.node.loadbalancer!.healthCheck.enabled,
+      ejectionsWithheld: this.ejectionsWithheld,
       worstImbalancePct,
     };
     return { ...base, loadbalancer: lb };
@@ -900,6 +1160,12 @@ export class DatabaseComponent extends StationComponent {
           );
         }
         if (served.timedOut) return { ok: false, reason: "timeout" };
+        if (
+          cfg.failureProbability > 0 &&
+          env.rng.stream("failure").chance(cfg.failureProbability)
+        ) {
+          return { ok: false, reason: "error" };
+        }
         return OK;
       } finally {
         this.execution.release();

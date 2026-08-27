@@ -22,7 +22,17 @@ export interface SeriesData {
   points: { t: number; value: number }[];
 }
 
-export type ErrorReason = "shed" | "timeout" | "network" | "queue-full";
+export type ErrorReason =
+  | "shed"
+  | "timeout"
+  | "network"
+  | "queue-full"
+  /** The dependency returned an error of its own. */
+  | "error"
+  /** The caller's circuit breaker refused to attempt the call. */
+  | "circuit-open"
+  /** The caller's bulkhead was full, so the call was never attempted. */
+  | "bulkhead-full";
 
 export interface ErrorBreakdown {
   total: number;
@@ -30,6 +40,12 @@ export interface ErrorBreakdown {
   timeout: number;
   network: number;
   queueFull: number;
+  /** Failures originating in a station rather than in queueing. */
+  error: number;
+  /** Failed fast by a circuit breaker. */
+  circuitOpen: number;
+  /** Rejected by a bulkhead. */
+  bulkheadFull: number;
   ratePct: number;
 }
 
@@ -90,7 +106,21 @@ export interface QueueMetrics {
 export interface LoadBalancerMetrics {
   algorithm: string;
   dispatched: number;
-  perBackend: Array<{ nodeId: string; label: string; dispatched: number; sharePct: number }>;
+  perBackend: Array<{
+    nodeId: string;
+    label: string;
+    dispatched: number;
+    sharePct: number;
+    /** Observed failure rate used by health checking, [0,1]. */
+    failureRate: number;
+    /** Fraction of the window this backend spent ejected. */
+    ejectedFraction: number;
+    ejections: number;
+  }>;
+  /** True when outlier detection is on. */
+  healthCheckEnabled: boolean;
+  /** Ejections refused because too many backends were already out. */
+  ejectionsWithheld: number;
   /**
    * Largest deviation of any backend's share from an even split, in percentage
    * points. The headline number for whether the algorithm is doing its job.
@@ -186,6 +216,14 @@ export interface StabilityReport {
    * badly while every percentile stays green.
    */
   asyncBacklogWarning: string | null;
+  /**
+   * Set when retries are materially amplifying load.
+   *
+   * Its own field because the symptom is easy to misread: the dependency looks
+   * overloaded, so the instinct is to add capacity, when the load is being
+   * manufactured by the callers' own retry policies.
+   */
+  retryStormWarning: string | null;
 }
 
 /** One traversal of an edge by one request. Drives the packet animation. */
@@ -208,7 +246,7 @@ export interface TraceVisit {
   /** Null when the request was shed or abandoned before entering service. */
   tServiceStart: number | null;
   tExit: number;
-  outcome: "served" | "shed" | "timeout" | "hit" | "miss";
+  outcome: "served" | "shed" | "timeout" | "hit" | "miss" | "error";
 }
 
 export interface Trace {
@@ -217,6 +255,41 @@ export interface Trace {
   /** 1 in `sampleEvery` requests were traced. */
   sampleEvery: number;
   truncated: boolean;
+}
+
+/**
+ * Retry and failure-policy behaviour for one caller-to-dependency edge.
+ *
+ * Reported per edge because that is where the policies live, and because the
+ * headline figure -- amplification -- is meaningless aggregated: one edge retrying
+ * three times is a very different system from three edges retrying once.
+ */
+export interface EdgeResult {
+  edgeId: string;
+  from: string;
+  to: string;
+  fromLabel: string;
+  toLabel: string;
+  calls: number;
+  attempts: number;
+  retries: number;
+  /** attempts / calls. The number this phase exists to surface. */
+  amplification: number;
+  successes: number;
+  failures: number;
+  budgetRejections: number;
+  circuitRejections: number;
+  bulkheadRejections: number;
+  breakerTrips: number;
+  breakerOpenFraction: number;
+  breakerState: "closed" | "open" | "half-open";
+  avgConcurrency: number;
+  maxConcurrency: number;
+  /** Bulkhead slots in use, time-weighted. Null when no bulkhead. */
+  bulkheadUtilization: number | null;
+  bulkheadMaxInUse: number | null;
+  /** True when any policy is configured on this edge. */
+  hasPolicy: boolean;
 }
 
 export interface RunResult {
@@ -233,7 +306,17 @@ export interface RunResult {
   /** Time-average requests in the system. Little's Law's `L`. */
   avgInSystem: number;
   nodes: NodeResult[];
+  edges: EdgeResult[];
   classes: ClassResult[];
+  /**
+   * System-wide retry amplification: total attempts issued over total calls
+   * requested, across every edge.
+   *
+   * Above 1 the system is doing more work than the workload asks for. Because each
+   * tier multiplies, three layers each retrying three times is 27x, and that
+   * compounding is what turns a slow dependency into an outage.
+   */
+  retryAmplification: number;
   invariants: InvariantReport[];
   stability: StabilityReport;
   /**

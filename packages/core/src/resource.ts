@@ -85,6 +85,18 @@ export class Resource implements WaitStation {
    */
   private queue: (Waiter | null)[] = [];
   private head = 0;
+  /**
+   * Live waiters, excluding tombstones.
+   *
+   * Abandoned waiters are tombstoned in place rather than spliced out, because
+   * splicing from the middle is O(n) and abandonment is common once timeouts exist.
+   * But a tombstone is NOT a waiter, so the length of the backing array
+   * overstates the queue. Tracking the live count separately matters more than it
+   * looks: `queueLength` feeds Lq, the queue-length time series, and the
+   * instability verdict, so counting tombstones would inflate all three exactly in
+   * the runs where timeouts are firing.
+   */
+  private liveInQueue = 0;
 
   // Time-weighted accumulators.
   private lastTouch = 0;
@@ -113,7 +125,7 @@ export class Resource implements WaitStation {
   }
 
   get queueLength(): number {
-    return this.queue.length - this.head;
+    return this.liveInQueue;
   }
 
   get inServiceCount(): number {
@@ -194,6 +206,7 @@ export class Resource implements WaitStation {
       resume,
     };
     this.queue.push(waiter);
+    this.liveInQueue++;
     const len = this.queueLength;
     if (len > this.maxQueueLength) this.maxQueueLength = len;
     return waiter;
@@ -204,11 +217,11 @@ export class Resource implements WaitStation {
     this.touch();
     handle.settled = true;
     this.abandonedCount++;
-    // Tombstone in place; compacted lazily by `dequeue`. Splicing out of the
-    // middle would be O(n) and abandonment is common once timeouts exist.
+    // Tombstone in place; compacted lazily by `dequeue`.
     for (let i = this.head; i < this.queue.length; i++) {
       if (this.queue[i] === handle) {
         this.queue[i] = null;
+        this.liveInQueue--;
         break;
       }
     }
@@ -244,7 +257,10 @@ export class Resource implements WaitStation {
     if (this.discipline === "lifo") {
       while (this.queue.length > this.head) {
         const w = this.queue.pop();
-        if (w) return w;
+        if (w) {
+          this.liveInQueue--;
+          return w;
+        }
       }
       return null;
     }
@@ -252,6 +268,7 @@ export class Resource implements WaitStation {
       const w = this.queue[this.head];
       this.queue[this.head] = null;
       this.head++;
+      if (w) this.liveInQueue--;
       // Compact once the dead prefix dominates, so memory does not grow without
       // bound during a long run.
       if (this.head > 4096 && this.head * 2 > this.queue.length) {

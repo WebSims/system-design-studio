@@ -13,6 +13,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCallback, useMemo } from "react";
+import { EdgeSchema } from "@sds/schema";
 import { protocolFreeEdgeId } from "../ids";
 import { nodeTypes } from "./nodes";
 import { PacketLayer } from "./PacketLayer";
@@ -80,16 +81,16 @@ function Canvas() {
         if (d.edges.some((e) => e.from === conn.source && e.to === conn.target)) return;
         const target = d.nodes.find((n) => n.id === conn.target);
         if (!target || target.kind === "client") return;
-        d.edges.push({
-          id: protocolFreeEdgeId(d.edges.map((e) => e.id)),
-          from: conn.source!,
-          to: conn.target!,
-          latency: { kind: "deterministic", value: 0.25 },
-          lossProbability: 0,
-          classes: [],
-          probability: 1,
-          weight: 1,
-        });
+        // Parsed so every policy field picks up its default rather than being
+        // hand-listed here and drifting from the schema.
+        d.edges.push(
+          EdgeSchema.parse({
+            id: protocolFreeEdgeId(d.edges.map((e) => e.id)),
+            from: conn.source,
+            to: conn.target,
+            latency: { kind: "deterministic", value: 0.25 },
+          })
+        );
       });
     },
     [edit]

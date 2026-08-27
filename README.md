@@ -3,14 +3,14 @@
 A discrete-event simulator for finding bottlenecks and scaling limits in system
 designs, validated against closed-form queueing theory.
 
-## Status: Phase 2
+## Status: Phase 3
 
 Validated engine, component library, and studio. `legacy/` holds the previous
 animation-driven build, kept as a visual reference.
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 191 tests (~40s)
+pnpm verify     # typecheck + 240 tests (~50s)
 pnpm dev        # studio at localhost:5173
 ```
 
@@ -29,6 +29,23 @@ Plus **request classes** (traffic mix, per-class routing, cost multipliers), so
 and fan-out is either fork-join (`max`) or sequential (`sum`) — explicitly, not
 by assumption.
 
+## Failure policies
+
+Per-edge, because that is what they are: the caller's client configuration for one
+particular dependency.
+
+| Policy | The failure it addresses |
+|---|---|
+| **per-attempt timeout** | a hung attempt consuming the whole retry budget |
+| **retry + backoff + jitter** | transient failures; jitter stops synchronised retry waves |
+| **retry budget** | retries multiplying load on a struggling dependency |
+| **circuit breaker** | the *caller* spending its workers waiting on something already broken |
+| **bulkhead** | one slow dependency consuming every worker the caller has |
+| **health checks / outlier ejection** | a broken backend keeping its full share of traffic |
+
+Retry amplification (`attempts / calls`) is reported per edge and system-wide.
+Each tier multiplies, so three layers retrying three times is 27×.
+
 Every default comes from a **cited benchmark library**: each constant carries a
 plausible range, a source, and an as-of date, all rendered in the inspector.
 They are order-of-magnitude starting points, not measurements of your system,
@@ -41,7 +58,7 @@ Four ways, cheapest first.
 ### 1. The automated gate
 
 ```bash
-pnpm verify                  # typecheck + all 191 tests
+pnpm verify                  # typecheck + all 240 tests
 pnpm test                    # tests only
 pnpm vitest run -t "M/M/c"   # one group
 ```
@@ -113,6 +130,10 @@ architecture, where the model advanced only on animation frames, seventeen
 | **examples → cached read path**, then run | database at 74% is the bottleneck; cache absorbs 73% of reads; per-class rows show reads p99 73ms against writes 229ms |
 | On that run, read the postgres row | *"capped at 1600/s by execution parallelism, not by the pool"* — the pool is at 41% while execution is at 74% |
 | Switch a service to **non-blocking** | its utilization collapses, because the slot no longer covers the dependency call |
+| **examples → retry storm**, before running | predicts the storm: database offered **625/s against 533/s capacity**, amplification 1.39× — retries alone push it over |
+| Run it | both stations at 100%, p99 **1.98s**, 122k retries for 225k calls (1.54×) |
+| **examples → retry storm, contained** | same topology, same capacity: api at 12%, p99 **139ms**, amplification 1.09×, 50k retries budget-capped |
+| **examples → one broken backend**, run | the outlier is ejected 98× (98% of the window) and takes 0.7% of traffic instead of 33% |
 
 The refusals are the point of the exercise: a tool that declines to answer is more
 useful than one that guesses. So is the async example — every percentile green
@@ -197,6 +218,27 @@ Phase 2 components, each against a theorem or a known result:
   the sum. The preview reports `max(E)` as a *lower bound*, verified in both
   directions.
 
+Phase 3 failure policies, against exact formulas where they exist:
+
+- **Retry amplification is exact.** Attempts follow a truncated geometric
+  distribution, so `E[attempts] = (1-p^n)/(1-p)` and `success = 1-p^n`. Checked at
+  four (p, n) pairs against the simulation, and the closed form is itself checked
+  against the series it summarises.
+- **Retry budget** — caps amplification near `1 + ratio` at 10%, 25% and 50%,
+  against an unbudgeted 2.4× on the same design.
+- **Circuit breaker** — trips on sustained failure, fails fast, cycles rather than
+  latching, never trips on a healthy dependency, and is never retried past.
+- **Bulkhead** — occupancy bounded by construction; bounds the caller's utilization
+  to <35% where an unprotected caller sits above 90%.
+- **Health checking** — a broken backend drops from a 33% share to under 3%, and
+  the ejection cap holds when every backend looks unhealthy at once.
+- **Little's Law survives retry amplification.** Retries change the attempt count,
+  not the request count, so the identity must still hold exactly — and it would
+  break immediately if a retried request were double-counted or a bulkhead slot
+  leaked.
+- **A too-short timeout makes things worse**, not safer: the dependency does 1.5×
+  the work and delivers fewer successes.
+
 Run lengths are derived from the `1/(1-rho)^2` relaxation scaling rather than tuned
 until green. Convergence was measured directly (5.4% → 0.07% error as a run grew
 64x) to confirm residual disagreement at `rho=0.9` is variance, not bias.
@@ -216,6 +258,15 @@ wrong numbers:
   express boundary occupancy, so it failed on correct runs. A false alarm damages
   trust as much as a missed one; the check now lives on the component that owns
   the data.
+- `Resource.queueLength` counted abandoned tombstones. Harmless until Phase 3
+  introduced timeouts at scale, at which point it silently inflated `Lq`, the
+  queue-length series, and the stability verdict — in exactly the runs where
+  timeouts were firing.
+- The preview named the *caller* as the bottleneck and reported its capacity as
+  0/s. A blocking caller inherits an infinite service time from a saturated
+  dependency, and infinity beats every finite ρ, so the tool pointed at the victim
+  and hid the thing to fix. Caught by reading the rendered UI, not by an
+  assertion — which is the argument for checking the real interface.
 
 ## Design rules the tool holds itself to
 
@@ -234,17 +285,32 @@ a pass/fail verdict sits inside its own error bar.
 **Approximations are labelled.** M/M/c and M/G/1 results are exact. Allen-Cunneen
 for M/G/c is not, and says so.
 
+**Non-convergence is a finding, not an error.** Retries make the graph circular:
+load raises failures, failures raise retries. The preview solves that by iterating
+to a fixed point, and when the loop has positive gain there is no fixed point to
+find. The tool reports that divergence rather than capping the numbers and
+presenting a steady state that does not exist — because the divergence *is* the
+retry storm.
+
+**Fixes are shown as trades.** The contained retry-storm example has a *higher*
+error rate and slightly *lower* throughput than the broken one, because
+suppressing retries means fewer recoveries. It buys that by keeping both stations
+off 100% and p99 at 140ms instead of 2s. Which trade is right is a judgement; the
+tool quantifies both sides rather than declaring the fix free.
+
 ## Scope
 
-Cycles are rejected rather than truncated. The legacy engine tolerated them with an
+Cycles in the *topology* are still rejected. A retry is a repeated call on the same
+edge, not a loop in the graph, so retries needed no cycles — which is why the
+restriction survived Phase 3 unchanged. The legacy engine tolerated cycles with an
 `ancestors` set and a hard depth cap of 8, quietly simulating a different topology
-from the one drawn. A cycle means a retry or a feedback path, and neither exists
-until Phase 3.
+from the one drawn.
 
-Health checks and outlier ejection are also deferred to Phase 3: without server
-failures there is nothing for a health check to detect, so implementing one now
-would be decoration.
+Failure probability is load-independent and constant. Real failures correlate with
+overload and arrive in bursts; modelling that needs time-varying scenarios, which
+is Phase 5.
 
-Next: failure policies (timeout, retry with backoff, circuit breaker, bulkhead),
-then the analyzer (knee finding, sensitivity, critical-path attribution, config
-search).
+Next: the analyzer — knee finding, sensitivity ranking, critical-path attribution
+and config search. All of it depends on the headless engine being fast enough to
+run hundreds of simulations per answer, which `pnpm sim --sweep` already
+demonstrates.

@@ -7,6 +7,7 @@ import {
   type SdsEdge,
   type SdsNode,
 } from "@sds/schema";
+import { CallSite } from "./callsite";
 import {
   buildComponent,
   callDependencies,
@@ -22,6 +23,7 @@ import { Sim, type Process } from "./sim";
 import { TimeSeries } from "./timeseries";
 import type {
   ClassResult,
+  EdgeResult,
   ErrorBreakdown,
   ErrorReason,
   InvariantReport,
@@ -44,6 +46,9 @@ const LITTLE_TOLERANCE = 0.05;
  * measured slope from noise alone.
  */
 const INSTABILITY_SLOPE_THRESHOLD = 0.05;
+
+/** Amplification above this is called out as a retry storm. */
+const RETRY_AMPLIFICATION_THRESHOLD = 1.25;
 
 /**
  * Time-weighted accumulator for a counting quantity (e.g. requests in system).
@@ -108,6 +113,9 @@ class ClassRecorder {
   timeout = 0;
   network = 0;
   queueFull = 0;
+  error = 0;
+  circuitOpen = 0;
+  bulkheadFull = 0;
 
   reset(): void {
     this.latency.reset();
@@ -117,6 +125,9 @@ class ClassRecorder {
     this.timeout = 0;
     this.network = 0;
     this.queueFull = 0;
+    this.error = 0;
+    this.circuitOpen = 0;
+    this.bulkheadFull = 0;
   }
 
   record(latencyMs: number, reason: ErrorReason | null): void {
@@ -126,10 +137,29 @@ class ClassRecorder {
       return;
     }
     this.failed++;
-    if (reason === "shed") this.shed++;
-    else if (reason === "timeout") this.timeout++;
-    else if (reason === "network") this.network++;
-    else this.queueFull++;
+    switch (reason) {
+      case "shed":
+        this.shed++;
+        break;
+      case "timeout":
+        this.timeout++;
+        break;
+      case "network":
+        this.network++;
+        break;
+      case "queue-full":
+        this.queueFull++;
+        break;
+      case "error":
+        this.error++;
+        break;
+      case "circuit-open":
+        this.circuitOpen++;
+        break;
+      case "bulkhead-full":
+        this.bulkheadFull++;
+        break;
+    }
   }
 
   errors(): ErrorBreakdown {
@@ -140,6 +170,9 @@ class ClassRecorder {
       timeout: this.timeout,
       network: this.network,
       queueFull: this.queueFull,
+      error: this.error,
+      circuitOpen: this.circuitOpen,
+      bulkheadFull: this.bulkheadFull,
       ratePct: total > 0 ? (this.failed / total) * 100 : 0,
     };
   }
@@ -259,6 +292,19 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     outgoing.set(e.from, list);
   }
 
+  /**
+   * One CallSite per edge, holding the caller's circuit breaker, bulkhead and
+   * retry budget. Created only where a policy is configured, so an edge with no
+   * policy takes a path with no extra bookkeeping at all.
+   */
+  const callSites = new Map<string, CallSite>();
+  for (const e of design.edges) {
+    const p = e.policy;
+    const hasPolicy =
+      p.retry !== null || p.timeoutMs !== null || p.circuitBreaker.enabled || p.bulkhead.enabled;
+    if (hasPolicy) callSites.set(e.id, new CallSite(e, sim));
+  }
+
   const components = new Map<string, Component>();
   const env: ComponentEnv = {
     sim,
@@ -266,6 +312,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     design,
     components,
     outgoing,
+    callSites,
     trace,
     measuring: measuringFn,
   };
@@ -380,6 +427,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       rec.reset();
       inSystem.reset();
       for (const component of components.values()) component.resetStats();
+      for (const site of callSites.values()) site.resetStats();
       throughputSeries.reset();
       latencyP99Series.reset();
     });
@@ -413,10 +461,47 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     return clientResult(node);
   });
 
-  const stability = checkStability(nodeResults, observedSec);
+  const labelOf = (id: string) => design.nodes.find((n) => n.id === id)?.label ?? id;
+  const edgeResults: EdgeResult[] = design.edges.map((e) => {
+    const site = callSites.get(e.id);
+    const m = site?.metrics();
+    return {
+      edgeId: e.id,
+      from: e.from,
+      to: e.to,
+      fromLabel: labelOf(e.from),
+      toLabel: labelOf(e.to),
+      calls: m?.calls ?? 0,
+      attempts: m?.attempts ?? 0,
+      retries: m?.retries ?? 0,
+      amplification: m?.amplification ?? 1,
+      successes: m?.successes ?? 0,
+      failures: m?.failures ?? 0,
+      budgetRejections: m?.budgetRejections ?? 0,
+      circuitRejections: m?.circuitRejections ?? 0,
+      bulkheadRejections: m?.bulkheadRejections ?? 0,
+      breakerTrips: m?.breakerTrips ?? 0,
+      breakerOpenFraction: m?.breakerOpenFraction ?? 0,
+      breakerState: m?.breakerState ?? "closed",
+      avgConcurrency: m?.avgConcurrency ?? 0,
+      maxConcurrency: m?.maxConcurrency ?? 0,
+      bulkheadUtilization: m?.bulkheadUtilization ?? null,
+      bulkheadMaxInUse: m?.bulkheadMaxInUse ?? null,
+      hasPolicy: site !== undefined,
+    };
+  });
+
+  const totalCalls = edgeResults.reduce((s2, e) => s2 + e.calls, 0);
+  const totalAttempts = edgeResults.reduce((s2, e) => s2 + e.attempts, 0);
+  const retryAmplification = totalCalls > 0 ? totalAttempts / totalCalls : 1;
+
+  const stability = checkStability(nodeResults, edgeResults, observedSec);
   const componentInvariants: InvariantReport[] = [];
   for (const component of components.values()) {
     componentInvariants.push(...component.invariants());
+  }
+  for (const site of callSites.values()) {
+    componentInvariants.push(...site.invariants());
   }
   const invariants = [
     ...checkFlowConservation(rec, inSystem),
@@ -464,7 +549,9 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     errors,
     avgInSystem: inSystem.timeAverage(),
     nodes: nodeResults,
+    edges: edgeResults,
     classes: classResults,
+    retryAmplification,
     invariants,
     stability,
     confidence,
@@ -550,7 +637,11 @@ function evaluateSlo(
  * immediately. That combination -- healthy latency, unbounded backlog -- is
  * invisible in the headline numbers, so it gets its own warning.
  */
-function checkStability(nodes: NodeResult[], observedSec: number): StabilityReport {
+function checkStability(
+  nodes: NodeResult[],
+  edges: EdgeResult[],
+  observedSec: number
+): StabilityReport {
   let worstSlope = 0;
   let worstNodeId: string | null = null;
   let asyncBacklogWarning: string | null = null;
@@ -581,6 +672,30 @@ function checkStability(nodes: NodeResult[], observedSec: number): StabilityRepo
     }
   }
 
+  /**
+   * Retry amplification, reported separately from saturation.
+   *
+   * The symptom is easy to misread: the dependency looks overloaded, so the
+   * instinct is to add capacity -- when in fact the load is being manufactured by
+   * the callers' own retry policies. Above 1.5x on any edge that is worth saying
+   * out loud, because the fix is a retry budget rather than a bigger machine.
+   */
+  let retryStormWarning: string | null = null;
+  const worstEdge = edges.reduce<EdgeResult | null>(
+    (worst, e) => (e.calls > 100 && (!worst || e.amplification > worst.amplification) ? e : worst),
+    null
+  );
+  if (worstEdge && worstEdge.amplification > RETRY_AMPLIFICATION_THRESHOLD) {
+    retryStormWarning =
+      `retries on "${worstEdge.fromLabel}" \u2192 "${worstEdge.toLabel}" are multiplying load by ` +
+      `${worstEdge.amplification.toFixed(2)}x (${worstEdge.attempts.toLocaleString()} attempts for ` +
+      `${worstEdge.calls.toLocaleString()} calls). The dependency is doing more work than the ` +
+      `workload asks for, and adding capacity there treats the symptom` +
+      (worstEdge.budgetRejections === 0
+        ? ". No retry budget is capping this."
+        : `. The budget suppressed ${worstEdge.budgetRejections.toLocaleString()} further retries.`);
+  }
+
   const stable = worstSlope <= INSTABILITY_SLOPE_THRESHOLD;
   const label = nodes.find((n) => n.nodeId === worstNodeId)?.label ?? worstNodeId;
   return {
@@ -588,6 +703,7 @@ function checkStability(nodes: NodeResult[], observedSec: number): StabilityRepo
     worstQueueSlopePerSec: worstSlope,
     worstNodeId: stable ? null : worstNodeId,
     asyncBacklogWarning,
+    retryStormWarning,
     detail: stable
       ? "queue lengths are stationary; steady-state metrics are meaningful"
       : `queue at "${label}" is growing by ${worstSlope.toFixed(2)} requests/s and will not converge. ` +
