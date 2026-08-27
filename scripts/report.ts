@@ -5,6 +5,7 @@
  * reading test source. Three modes:
  *
  *   pnpm sim                    run a design, print the full report
+ *   pnpm sim --analyze          findings, critical path, knee, sensitivity, config search
  *   pnpm sim --validate         cross-check the run against closed-form theory
  *   pnpm sim --sweep            sweep arrival rate and find where the design breaks
  *
@@ -15,6 +16,7 @@
  */
 import { readFileSync } from "node:fs";
 import { previewDesign, solveMMc } from "@sds/analytic";
+import { analyse, criticalPath, findKnee, searchConfig, sensitivity } from "@sds/analyze";
 import { runSimulation, type RunResult } from "@sds/core";
 import { DesignSchema, migrateAndParse, validateDesign, type Design } from "@sds/schema";
 import { EXAMPLES, defaultDesign } from "@sds/models";
@@ -402,6 +404,133 @@ function validate(design: Design): void {
 }
 
 /**
+ * The analyzer: findings, critical path, knee, sensitivity, and a config search.
+ *
+ * Everything here is a question about the space AROUND the design rather than about
+ * one run of it, which is why it needs hundreds of simulations and why that is
+ * affordable at all.
+ */
+function analyze(design: Design): void {
+  const t0 = Date.now();
+  const result = runSimulation(design, { collectTrace: false });
+  const report = analyse(design, result);
+
+  heading("summary");
+  console.log(`  ${report.summary}`);
+
+  heading("findings");
+  if (report.findings.length === 0) {
+    console.log(`  ${GREEN}nothing to report${OFF}`);
+  }
+  for (const f of report.findings) {
+    const colour = f.severity === "critical" ? RED : f.severity === "warning" ? YELLOW : DIM;
+    console.log(`\n  ${colour}${BOLD}[${f.severity}]${OFF} ${BOLD}${f.title}${OFF}`);
+    console.log(`    ${DIM}evidence${OFF}    ${f.evidence}`);
+    console.log(`    ${CYAN}fix${OFF}         ${f.remediation}`);
+  }
+
+  const path = report.criticalPath;
+  if (path) {
+    heading("where the latency goes");
+    console.log(
+      `  ${DIM}end-to-end mean ${ms(path.endToEndMeanMs)}, accounted ${ms(path.accountedMs)} ` +
+        `(residual ${(path.residualFraction * 100).toFixed(1)}%)${OFF}`
+    );
+    console.log(
+      `  ${DIM}${pad("component", 26)}${rpad("share", 8)}${rpad("total", 10)}${rpad("per visit", 11)}${rpad("visits", 8)}  queueing${OFF}`
+    );
+    for (const c of path.contributions.slice(0, 12)) {
+      const bar = "\u2588".repeat(Math.max(0, Math.round(c.share * 20)));
+      console.log(
+        `  ${pad(c.label.slice(0, 25), 26)}${rpad((c.share * 100).toFixed(1) + "%", 8)}` +
+          `${rpad(ms(c.totalMs), 10)}${rpad(ms(c.perVisitMs), 11)}` +
+          `${rpad(c.visitsPerRequest.toFixed(2), 8)}  ${DIM}${(c.queueShare * 100).toFixed(0)}% ${bar}${OFF}`
+      );
+    }
+    if (path.caveat) console.log(`  ${YELLOW}${path.caveat}${OFF}`);
+    console.log(`  ${DIM}p99 attribution withheld: ${path.p99Reason}${OFF}`);
+  }
+
+  heading("where it breaks");
+  const knee = findKnee(design);
+  if (knee.unavailableReason) {
+    console.log(`  ${YELLOW}${knee.unavailableReason}${OFF}`);
+  } else {
+    const dir = knee.headroomFraction >= 0 ? "headroom" : "OVER by";
+    const colour = knee.headroomFraction >= 0.2 ? GREEN : knee.headroomFraction >= 0 ? YELLOW : RED;
+    console.log(
+      `  currently ${knee.currentRatePerSec.toFixed(0)}/s, holds to ` +
+        `${BOLD}${knee.maxRatePerSec.toFixed(0)}/s${OFF} \u2014 ` +
+        `${colour}${dir} ${Math.abs(knee.headroomFraction * 100).toFixed(0)}%${OFF}`
+    );
+    console.log(`  ${DIM}first breach: ${knee.breach ?? "none"} at ${knee.firstFailingRatePerSec?.toFixed(0) ?? "?"}/s${OFF}`);
+    console.log(`  ${DIM}${knee.precisionNote}${OFF}`);
+    if (knee.nonMonotonic) {
+      console.log(
+        `  ${YELLOW}a lower rate also failed, so this boundary is not a boundary (usually shedding).${OFF}`
+      );
+    }
+    console.log(`  ${DIM}${knee.simulations} simulations in ${knee.wallMs}ms${OFF}`);
+  }
+
+  heading("which knob matters");
+  const sens = sensitivity(design);
+  console.log(
+    `  ${DIM}each parameter improved by ${(sens.perturbation * 100).toFixed(0)}%, then re-simulated. ` +
+      `baseline p99 ${ms(sens.baseP99Ms)}${OFF}`
+  );
+  console.log(
+    `  ${DIM}${pad("parameter", 30)}${rpad("change", 16)}${rpad("p99", 10)}${rpad("gain", 10)}${rpad("elasticity", 11)}${OFF}`
+  );
+  for (const r of sens.results.slice(0, 10)) {
+    const colour = r.improvementMs > sens.baseP99Ms * 0.05 ? GREEN : DIM;
+    console.log(
+      `  ${pad(r.label.slice(0, 29), 30)}` +
+        `${rpad(`${fmtNum(r.baseValue)}\u2192${fmtNum(r.improvedValue)}`, 16)}` +
+        `${rpad(ms(r.improvedP99Ms), 10)}` +
+        `${colour}${rpad(r.improvementMs >= 0 ? "-" + ms(r.improvementMs) : "+" + ms(-r.improvementMs), 10)}${OFF}` +
+        `${rpad(r.elasticity === null ? "\u2014" : r.elasticity.toFixed(2), 11)}` +
+        (r.fixesSlo ? `  ${GREEN}fixes SLO${OFF}` : "")
+    );
+  }
+  for (const n of sens.notes) console.log(`  ${DIM}${n}${OFF}`);
+  console.log(`  ${DIM}${sens.simulations} simulations in ${sens.wallMs}ms${OFF}`);
+
+  if (result.sloPassed === false) {
+    heading("smallest change that meets the SLO");
+    const search = searchConfig(design);
+    if (!search.found) {
+      console.log(`  ${YELLOW}${search.reason}${OFF}`);
+    } else if (search.changes.length === 0) {
+      console.log(`  ${GREEN}no changes needed${OFF}`);
+    } else {
+      for (const c of search.changes) {
+        console.log(
+          `  ${pad(c.label.slice(0, 34), 35)}${rpad(fmtNum(c.from), 8)}\u2192 ` +
+            `${GREEN}${fmtNum(c.to)}${OFF} ${DIM}(${c.factor.toFixed(1)}\u00d7)${OFF}`
+        );
+      }
+      console.log(
+        `  ${DIM}p99 ${ms(search.beforeP99Ms)} \u2192 ${ms(search.afterP99Ms)} \u00b7 ` +
+          `${search.simulations} simulations in ${search.wallMs}ms${OFF}`
+      );
+      console.log(
+        `  ${DIM}Minimal in one step: dialling any single change back breaks the SLO again. ` +
+          `\n  No cost model, so this is the smallest SET of changes, not the cheapest.${OFF}`
+      );
+    }
+    for (const n of search.notes) console.log(`  ${DIM}${n}${OFF}`);
+  }
+
+  console.log(`\n${DIM}total ${Date.now() - t0}ms${OFF}`);
+}
+
+function fmtNum(v: number): string {
+  if (Number.isInteger(v)) return v.toLocaleString();
+  return v.toFixed(v < 10 ? 2 : 1);
+}
+
+/**
  * Sweep arrival rate to find where the design breaks.
  *
  * A preview of the Phase 4 analyzer, and the clearest evidence for the headless
@@ -508,10 +637,12 @@ if (issues.length > 0) {
   process.exit(1);
 }
 
-console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 2 verification${OFF}`);
+console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 4 verification${OFF}`);
 
 try {
-  if (flag("sweep")) {
+  if (flag("analyze") || flag("analyse")) {
+    analyze(effective);
+  } else if (flag("sweep")) {
     sweep(effective);
   } else if (flag("validate")) {
     validate(effective);

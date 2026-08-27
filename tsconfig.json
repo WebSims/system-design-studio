@@ -12,6 +12,9 @@
     },
     {
       "path": "./packages/analytic"
+    },
+    {
+      "path": "./packages/analyze"
     }
   ]
 }

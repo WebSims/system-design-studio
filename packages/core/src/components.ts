@@ -65,6 +65,16 @@ export interface ComponentEnv {
   outgoing: Map<string, SdsEdge[]>;
   /** Per-edge failure-policy state, keyed by edge id. */
   callSites: Map<string, CallSite>;
+  /**
+   * Attempts made across each edge, keyed by edge id.
+   *
+   * Counted for EVERY edge, not just ones with a policy, because critical-path
+   * attribution needs the real traversal count per edge. Inferring it from the
+   * destination's visit count double-counts whenever several edges share a target:
+   * three services calling one cache would each be credited with the cache's full
+   * traffic, and the network share would come out three times too large.
+   */
+  edgeTraversals: Map<string, number>;
   trace: TraceSink;
   /** True once warm-up is over. Components record nothing before that. */
   measuring: () => boolean;
@@ -123,6 +133,23 @@ abstract class StationComponent implements Component {
   protected readonly queueSeries: TimeSeries;
   protected readonly utilSeries: TimeSeries;
   protected readonly residency = new LatencyHistogram();
+  /**
+   * Time attributable to THIS station: its own queue wait plus its own service.
+   *
+   * Deliberately excludes time spent waiting on dependencies, even though a
+   * blocking station holds its slot throughout. Residency and self time diverge
+   * exactly where a station blocks on a dependency, and both numbers are needed
+   * for different questions:
+   *
+   *   residency answers "how long is a slot tied up here" -- the capacity question
+   *   self time answers "how much of the end-to-end latency is this station's fault"
+   *
+   * Critical-path attribution needs the second. Using residency instead would
+   * double-count: a caller's residency already contains its dependency's residency,
+   * so the shares would sum to far more than 100% and the deepest station would be
+   * blamed once for every layer above it.
+   */
+  protected readonly selfTime = new LatencyHistogram();
   private lastBusyIntegral = 0;
   private lastSampleT = 0;
 
@@ -160,6 +187,7 @@ abstract class StationComponent implements Component {
     this.queueSeries.reset();
     this.utilSeries.reset();
     this.residency.reset();
+    this.selfTime.reset();
     this.lastBusyIntegral = 0;
     this.lastSampleT = this.env.sim.now;
   }
@@ -177,6 +205,11 @@ abstract class StationComponent implements Component {
 
   protected recordResidency(enteredAt: number): void {
     if (this.env.measuring()) this.residency.record(this.env.sim.now - enteredAt);
+  }
+
+  /** Queue wait plus own service, excluding any dependency call. */
+  protected recordSelfTime(waitMs: number, serviceMs: number): void {
+    if (this.env.measuring()) this.selfTime.record(Math.max(0, waitMs + serviceMs));
   }
 
   /**
@@ -230,6 +263,8 @@ abstract class StationComponent implements Component {
       serviceScv: this.serviceScv(),
       arrivalRatePerSec: observedSec > 0 ? s.arrivals / observedSec : 0,
       residencyMs: summarize(this.residency),
+      selfTimeMs: summarize(this.selfTime),
+      visitsPerRequest: 0,
       queueLengthSeries: series(this.queueSeries),
       utilizationSeries: series(this.utilSeries),
     };
@@ -263,6 +298,9 @@ function* attemptCall(
 ): Process<Outcome> {
   const netRng = env.rng.stream("network");
   const lossRng = env.rng.stream("failure");
+  if (env.measuring()) {
+    env.edgeTraversals.set(edge.id, (env.edgeTraversals.get(edge.id) ?? 0) + 1);
+  }
 
   // ---- request leg ----
   const outStart = env.sim.now;
@@ -514,6 +552,7 @@ export class ServerComponent extends StationComponent {
         sample(cfg.serviceTime, env.rng.stream("service")) * ctx.serviceMultiplier
       );
       const served = yield* delay(own, ctx.deadlineAt);
+      this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);
       if (served.timedOut) {
         if (ctx.traced) {
           env.trace.visit(ctx.requestId, this.node.id, enqueuedAt, serviceStart, env.sim.now, "timeout");
@@ -783,6 +822,7 @@ export class LoadBalancerComponent extends StationComponent {
         sample(cfg.serviceTime, env.rng.stream("service"))
       );
       const served = yield* delay(own, ctx.deadlineAt);
+      this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);
       if (served.timedOut) return { ok: false, reason: "timeout" };
 
       const routable = eligibleEdges(env, this.node.id, ctx);
@@ -978,6 +1018,7 @@ export class CacheComponent extends StationComponent {
         sample(cfg.serviceTime, env.rng.stream("service"))
       );
       const served = yield* delay(lookupMs, ctx.deadlineAt);
+      this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);
       if (served.timedOut) return { ok: false, reason: "timeout" };
 
       if (this.sampler) {
@@ -1149,6 +1190,7 @@ export class DatabaseComponent extends StationComponent {
           sample(cfg.serviceTime, env.rng.stream("service")) * ctx.serviceMultiplier
         );
         const served = yield* delay(queryMs, ctx.deadlineAt);
+        this.recordSelfTime(conn.waitedMs + exec.waitedMs, env.sim.now - serviceStart);
         if (ctx.traced) {
           env.trace.visit(
             ctx.requestId,
@@ -1249,6 +1291,7 @@ export class QueueComponent implements Component {
   private consumed = 0;
   private dropped = 0;
   private readonly backlogAge = new LatencyHistogram();
+  private readonly publishTime = new LatencyHistogram();
   private readonly backlogSeries: TimeSeries;
 
   private backlogIntegral = 0;
@@ -1289,6 +1332,7 @@ export class QueueComponent implements Component {
     this.consumed = 0;
     this.dropped = 0;
     this.backlogAge.reset();
+    this.publishTime.reset();
     this.backlogSeries.reset();
     this.backlogIntegral = 0;
     this.busyIntegral = 0;
@@ -1308,7 +1352,9 @@ export class QueueComponent implements Component {
       MIN_SERVICE_MS,
       sample(cfg.publishTime, env.rng.stream("service"))
     );
+    const publishStart = env.sim.now;
     const published = yield* delay(publishMs, ctx.deadlineAt);
+    if (env.measuring()) this.publishTime.record(env.sim.now - publishStart);
     if (published.timedOut) return { ok: false, reason: "timeout" };
 
     this.touch();
@@ -1455,6 +1501,10 @@ export class QueueComponent implements Component {
       serviceScv: scv(cfg.consumerServiceTime),
       arrivalRatePerSec: observedSec > 0 ? (this.enqueued + this.dropped) / observedSec : 0,
       residencyMs: summarize(this.backlogAge),
+      // Only the synchronous publish is on the request's critical path; consumer
+      // work is not, because nobody waits for it.
+      selfTimeMs: summarize(this.publishTime),
+      visitsPerRequest: 0,
       queueLengthSeries: series(this.backlogSeries),
       utilizationSeries: { name: "utilization", points: [] },
       queue,

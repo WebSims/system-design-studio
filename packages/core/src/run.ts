@@ -305,6 +305,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     if (hasPolicy) callSites.set(e.id, new CallSite(e, sim));
   }
 
+  const edgeTraversals = new Map<string, number>();
   const components = new Map<string, Component>();
   const env: ComponentEnv = {
     sim,
@@ -313,6 +314,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     components,
     outgoing,
     callSites,
+    edgeTraversals,
     trace,
     measuring: measuringFn,
   };
@@ -428,6 +430,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       inSystem.reset();
       for (const component of components.values()) component.resetStats();
       for (const site of callSites.values()) site.resetStats();
+      edgeTraversals.clear();
       throughputSeries.reset();
       latencyP99Series.reset();
     });
@@ -455,10 +458,18 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   sim.run(durationMs);
 
   // ---- assemble ----
+  const rootRequests = rec.overall.succeeded + rec.overall.failed;
   const nodeResults: NodeResult[] = design.nodes.map((node) => {
     const component = components.get(node.id);
-    if (component) return component.result(observedSec);
-    return clientResult(node);
+    if (!component) return clientResult(node);
+    const r = component.result(observedSec);
+    // Visits per request, so a station called on every request is distinguishable
+    // from one called on 5% of them -- which is what turns a per-visit self time
+    // into a share of end-to-end latency.
+    return {
+      ...r,
+      visitsPerRequest: rootRequests > 0 ? r.arrivals / rootRequests : 0,
+    };
   });
 
   const labelOf = (id: string) => design.nodes.find((n) => n.id === id)?.label ?? id;
@@ -471,6 +482,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       to: e.to,
       fromLabel: labelOf(e.from),
       toLabel: labelOf(e.to),
+      traversals: edgeTraversals.get(e.id) ?? 0,
       calls: m?.calls ?? 0,
       attempts: m?.attempts ?? 0,
       retries: m?.retries ?? 0,
@@ -595,6 +607,8 @@ function clientResult(node: SdsNode): NodeResult {
     serviceScv: 0,
     arrivalRatePerSec: node.client?.arrival.ratePerSec ?? 0,
     residencyMs: EMPTY_LATENCY,
+    selfTimeMs: EMPTY_LATENCY,
+    visitsPerRequest: 0,
     queueLengthSeries: { name: "queueLength", points: [] },
     utilizationSeries: { name: "utilization", points: [] },
   };

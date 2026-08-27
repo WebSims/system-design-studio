@@ -1,7 +1,7 @@
 import * as Comlink from "comlink";
 import type { RunOptions, RunResult } from "@sds/core";
 import type { Design } from "@sds/schema";
-import type { SimWorkerApi } from "./worker";
+import type { FullAnalysis, SimWorkerApi } from "./worker";
 
 /**
  * Main-thread handle to the simulation worker.
@@ -24,6 +24,12 @@ function ensure(): Comlink.Remote<SimWorkerApi> {
 export async function runInWorker(design: Design, opts?: RunOptions): Promise<RunResult> {
   return ensure().run(design, opts);
 }
+
+export async function analyzeInWorker(design: Design): Promise<FullAnalysis> {
+  return ensure().analyze(design);
+}
+
+export type { FullAnalysis };
 
 /** Tear down the worker, e.g. on hot reload. */
 export function disposeWorker(): void {

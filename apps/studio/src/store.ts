@@ -11,7 +11,7 @@ import {
   type SdsNode,
 } from "@sds/schema";
 import { defaultDesign } from "@sds/models";
-import { runInWorker } from "./engine/client";
+import { analyzeInWorker, runInWorker, type FullAnalysis } from "./engine/client";
 
 const LS_KEY = "sds.design.v1";
 
@@ -34,6 +34,10 @@ interface StudioState {
   error: string | null;
   /** True when the design changed after the displayed run, so it is now stale. */
   runStale: boolean;
+  /** Hundreds of simulations, so it runs on demand rather than on every edit. */
+  analysis: FullAnalysis | null;
+  analysing: boolean;
+  analysisStale: boolean;
   selection: Selection;
 
   select: (s: Selection) => void;
@@ -41,6 +45,7 @@ interface StudioState {
   moveNode: (id: string, x: number, y: number) => void;
   loadDesign: (design: Design) => void;
   execute: () => Promise<void>;
+  analyze: () => Promise<void>;
   importDesign: (json: string) => void;
   exportDesign: () => string;
 }
@@ -106,6 +111,9 @@ export const useStudio = create<StudioState>((set, get) => ({
   running: false,
   error: null,
   runStale: false,
+  analysis: null,
+  analysing: false,
+  analysisStale: false,
   selection: null,
 
   select: (selection) => set({ selection }),
@@ -120,6 +128,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         // Any edit invalidates the displayed run. Saying so is better than
         // silently showing measurements of a system that no longer exists.
         runStale: state.run !== null,
+        analysisStale: state.analysis !== null,
       };
     }),
 
@@ -143,7 +152,16 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   loadDesign: (d) => {
     persist(d);
-    set({ design: d, ...recompute(d), run: null, runStale: false, error: null, selection: null });
+    set({
+      design: d,
+      ...recompute(d),
+      run: null,
+      runStale: false,
+      analysis: null,
+      analysisStale: false,
+      error: null,
+      selection: null,
+    });
   },
 
   execute: async () => {
@@ -161,10 +179,34 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
   },
 
+  analyze: async () => {
+    const { design } = get();
+    set({ analysing: true, error: null });
+    try {
+      const analysis = await analyzeInWorker(design);
+      set({ analysis, analysing: false, analysisStale: false });
+    } catch (e) {
+      set({
+        analysing: false,
+        analysis: null,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
   importDesign: (json) => {
     const d = migrateAndParse(JSON.parse(json));
     persist(d);
-    set({ design: d, ...recompute(d), run: null, runStale: false, error: null, selection: null });
+    set({
+      design: d,
+      ...recompute(d),
+      run: null,
+      runStale: false,
+      analysis: null,
+      analysisStale: false,
+      error: null,
+      selection: null,
+    });
   },
 
   exportDesign: () => JSON.stringify(DesignSchema.parse(get().design), null, 2),

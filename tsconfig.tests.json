@@ -20,6 +20,9 @@
       ],
       "@sds/models": [
         "./packages/models/src/index.ts"
+      ],
+      "@sds/analyze": [
+        "./packages/analyze/src/index.ts"
       ]
     }
   },

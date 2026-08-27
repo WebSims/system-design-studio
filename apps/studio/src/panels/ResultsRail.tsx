@@ -2,6 +2,7 @@ import type { NodeResult, RunResult } from "@sds/core";
 import type { DesignPreview } from "@sds/analytic";
 import { useStudio } from "../store";
 import { usePlayback } from "../playback";
+import { AnalyzerPanel } from "./AnalyzerPanel";
 import { Chart } from "./Chart";
 
 const ms = (v: number | null | undefined): string =>
@@ -646,6 +647,8 @@ export function ResultsRail() {
           </p>
         )
       )}
+
+      <AnalyzerPanel />
     </aside>
   );
 }

@@ -161,6 +161,18 @@ export interface NodeResult {
    * pool.
    */
   residencyMs: LatencySummary;
+  /**
+   * Latency attributable to THIS station: its own queue wait plus its own service,
+   * excluding dependency calls.
+   *
+   * The number critical-path attribution needs. `residencyMs` cannot be used for
+   * that: a blocking caller's residency already contains its dependency's, so
+   * shares would sum well past 100% and the deepest station would be blamed once
+   * per layer above it.
+   */
+  selfTimeMs: LatencySummary;
+  /** Visits to this station per client request. Above 1 means it is called repeatedly. */
+  visitsPerRequest: number;
   queueLengthSeries: SeriesData;
   utilizationSeries: SeriesData;
   cache?: CacheMetrics;
@@ -270,6 +282,15 @@ export interface EdgeResult {
   to: string;
   fromLabel: string;
   toLabel: string;
+  /**
+   * Attempts that actually crossed this edge, counted directly.
+   *
+   * Distinct from `attempts`, which only exists for edges carrying a policy. This is
+   * counted for every edge because latency attribution needs it: inferring
+   * traversals from the destination's visit count double-counts whenever several
+   * edges share a target.
+   */
+  traversals: number;
   calls: number;
   attempts: number;
   retries: number;

@@ -3,14 +3,14 @@
 A discrete-event simulator for finding bottlenecks and scaling limits in system
 designs, validated against closed-form queueing theory.
 
-## Status: Phase 3
+## Status: Phase 4
 
 Validated engine, component library, and studio. `legacy/` holds the previous
 animation-driven build, kept as a visual reference.
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 240 tests (~50s)
+pnpm verify     # typecheck + 278 tests (~70s)
 pnpm dev        # studio at localhost:5173
 ```
 
@@ -28,6 +28,50 @@ Plus **request classes** (traffic mix, per-class routing, cost multipliers), so
 "reads go through the cache, writes go straight to the database" is expressible,
 and fan-out is either fork-join (`max`) or sequential (`sum`) — explicitly, not
 by assumption.
+
+## The analyzer
+
+```bash
+pnpm sim --analyze --example retry-storm
+```
+
+Four questions, answered by simulation rather than by rule of thumb:
+
+| Question | How | Cost |
+|---|---|---|
+| **Where does it break?** | binary search on offered load, bracketed by the closed form | ~10 runs |
+| **Where does the latency go?** | per-station self time × visits per request | free (one run) |
+| **Which knob matters?** | perturb each parameter, re-simulate with an identical arrival sequence | 2 runs per knob |
+| **What is the smallest fix?** | greedy on measured effect, then a shrink pass | ~10 runs |
+
+Plus a findings engine. Two rules, both enforced by tests: every finding cites the
+numbers that produced it, and every remediation names specific values.
+
+On the retry-storm example that produces:
+
+```
+where it breaks
+  currently 450/s, holds to 345/s — OVER by 23%
+  first breach: latency at 348/s
+  knee located to about ±1% (bracket ±1.0%, probe p99 noise ±16.1%)
+
+which knob matters
+  parameter                          change       p99      gain elasticity
+  flaky database query parallelism     8→10   268.0ms    -1.71s      -3.46
+  flaky database query time           15→12   296.0ms    -1.68s       4.25
+  api concurrency                     64→77   912.0ms    -1.06s      -2.65
+  flaky database pool size            20→24     1.98s    -0.0ms       0.00
+
+smallest change that meets the SLO
+  flaky database query parallelism      8→ 11 (1.4×)
+  p99 1.98s → 153.0ms · 8 simulations in 3356ms
+```
+
+Note the pool size: **zero gain**. Phase 2's insight — that a pool above execution
+parallelism buys nothing — reappears here as a measurement rather than a claim.
+
+The whole analysis is ~25 simulations in about 8 seconds, in a worker, off the main
+thread. That is the entire return on making the engine headless.
 
 ## Failure policies
 
@@ -58,7 +102,7 @@ Four ways, cheapest first.
 ### 1. The automated gate
 
 ```bash
-pnpm verify                  # typecheck + all 240 tests
+pnpm verify                  # typecheck + all 278 tests
 pnpm test                    # tests only
 pnpm vitest run -t "M/M/c"   # one group
 ```
@@ -134,6 +178,8 @@ architecture, where the model advanced only on animation frames, seventeen
 | Run it | both stations at 100%, p99 **1.98s**, 122k retries for 225k calls (1.54×) |
 | **examples → retry storm, contained** | same topology, same capacity: api at 12%, p99 **139ms**, amplification 1.09×, 50k retries budget-capped |
 | **examples → one broken backend**, run | the outlier is ejected 98× (98% of the window) and takes 0.7% of traffic instead of 33% |
+| **analyse design** on the retry storm | ~25 simulations in 8s: holds to 345/s (23% over), api is 84% of latency and all of it queueing, parallelism 8→11 fixes it, pool size does nothing |
+| Read the first finding | *"over capacity, with the queue held down by abandonment"* — the closed form and the run disagree, and the analyzer explains why |
 
 The refusals are the point of the exercise: a tool that declines to answer is more
 useful than one that guesses. So is the async example — every percentile green
@@ -239,6 +285,23 @@ Phase 3 failure policies, against exact formulas where they exist:
 - **A too-short timeout makes things worse**, not safer: the dependency does 1.5×
   the work and delivers fewer successes.
 
+Phase 4 analyzer, against exact answers where they exist:
+
+- **The knee has a closed form.** For a single M/M/c station the sojourn p99 is
+  known exactly, so the load at which it crosses an SLO target can be found by
+  inverting that formula. The search reproduces it within 12% at three
+  (c, service, target) combinations — and reports its own precision, since it is
+  limited by probe noise rather than by its bracket.
+- **Latency attribution is exact for the mean.** Contributions sum to the
+  end-to-end mean within 2%, and per-station shares match the analytic per-station
+  response times within 8%. p99 attribution is *withheld*: the p99 of a sum is not
+  the sum of p99s.
+- **Config search results are verified and minimal.** The proposed design is
+  re-run at full length to confirm it passes, and every change is checked to be
+  necessary — dialling any single one back must break the SLO again.
+- **Sensitivity is measured with common random numbers**, so a difference is
+  attributable to the parameter and not to a different workload.
+
 Run lengths are derived from the `1/(1-rho)^2` relaxation scaling rather than tuned
 until green. Convergence was measured directly (5.4% → 0.07% error as a run grew
 64x) to confirm residual disagreement at `rho=0.9` is variance, not bias.
@@ -267,6 +330,13 @@ wrong numbers:
   dependency, and infinity beats every finite ρ, so the tool pointed at the victim
   and hid the thing to fix. Caught by reading the rendered UI, not by an
   assertion — which is the argument for checking the real interface.
+- Latency attribution double-counted network time by 26%, because three edges
+  pointing at one cache were each credited with the cache's *full* traffic.
+  Traversals are now counted per edge instead of inferred. Found by the residual
+  check the decomposition reports on itself — the reason to publish a residual
+  rather than a tidy pie chart.
+- Two findings violated the project's own rule that evidence must cite numbers.
+  A test asserting that rule across every shipped example caught them.
 
 ## Design rules the tool holds itself to
 
@@ -298,6 +368,20 @@ suppressing retries means fewer recoveries. It buys that by keeping both station
 off 100% and p99 at 140ms instead of 2s. Which trade is right is a judgement; the
 tool quantifies both sides rather than declaring the fix free.
 
+**Disagreement between methods is reported, not hidden.** On the retry-storm
+example the closed form predicts no steady state while the simulation reports
+stability — and both are right. The client's 2s deadline turns an unbounded queue
+into a bounded one by abandoning 11% of requests. The analyzer says exactly that,
+rather than emitting "predicted unstable" next to a stable verdict and leaving the
+reader to reconcile it.
+
+**The analyzer states what it does not search.** Config search covers capacity
+only. Service times are excluded because "make the code twice as fast" is not a
+configuration change, and retry settings because they trade error rate against
+load rather than strictly improving — a search optimising p99 alone would happily
+switch off protections. And with no cost model, it reports the smallest *set* of
+changes, never the cheapest.
+
 ## Scope
 
 Cycles in the *topology* are still rejected. A retry is a repeated call on the same
@@ -310,7 +394,11 @@ Failure probability is load-independent and constant. Real failures correlate wi
 overload and arrive in bursts; modelling that needs time-varying scenarios, which
 is Phase 5.
 
-Next: the analyzer — knee finding, sensitivity ranking, critical-path attribution
-and config search. All of it depends on the headless engine being fast enough to
-run hundreds of simulations per answer, which `pnpm sim --sweep` already
-demonstrates.
+The stability verdict needs a long enough window to distinguish "still filling
+towards a plateau" from "growing without bound". The retry-storm example reports
+unstable at 120 simulated seconds and stable at 600, and both are correct
+readings of their windows.
+
+Next: replication-based confidence intervals (measured rather than modelled),
+time-varying scenarios (ramp, spike, soak) so failures can correlate with overload
+instead of being constant, and run comparison.

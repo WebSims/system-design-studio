@@ -21,6 +21,7 @@
     "@sds/schema": "workspace:*",
     "@sds/core": "workspace:*",
     "@sds/analytic": "workspace:*",
-    "@sds/models": "workspace:*"
+    "@sds/models": "workspace:*",
+    "@sds/analyze": "workspace:*"
   }
 }

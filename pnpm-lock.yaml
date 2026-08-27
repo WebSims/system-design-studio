@@ -11,6 +11,9 @@ importers:
       '@sds/analytic':
         specifier: workspace:*
         version: link:packages/analytic
+      '@sds/analyze':
+        specifier: workspace:*
+        version: link:packages/analyze
       '@sds/core':
         specifier: workspace:*
         version: link:packages/core
@@ -38,6 +41,9 @@ importers:
       '@sds/analytic':
         specifier: workspace:*
         version: link:../../packages/analytic
+      '@sds/analyze':
+        specifier: workspace:*
+        version: link:../../packages/analyze
       '@sds/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -87,6 +93,18 @@ importers:
       '@sds/models':
         specifier: workspace:*
         version: link:../models
+      '@sds/schema':
+        specifier: workspace:*
+        version: link:../schema
+
+  packages/analyze:
+    dependencies:
+      '@sds/analytic':
+        specifier: workspace:*
+        version: link:../analytic
+      '@sds/core':
+        specifier: workspace:*
+        version: link:../core
       '@sds/schema':
         specifier: workspace:*
         version: link:../schema
