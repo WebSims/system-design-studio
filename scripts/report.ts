@@ -889,11 +889,34 @@ const design = loadDesign();
 
 const durationOverride = value("duration");
 const seedOverride = value("seed");
+
+/**
+ * Scale warm-up with a `--duration` override, preserving the design's warm-up fraction.
+ *
+ * Overriding the duration alone is a trap: `--duration 60` against an example that
+ * declares 900s with a 150s warm-up leaves warm-up longer than the whole run, and the
+ * design is rejected as unrunnable — which reads as a problem with the example rather
+ * than with the flag. Worse, the engine itself would have accepted it, clamping warm-up
+ * to 90% of the run and quietly measuring a 6-second window.
+ *
+ * `--duration` means "run a shorter run", not "keep the long warm-up", so the fraction
+ * is what carries over. `--sweep` already did this for the same reason.
+ */
+const scaledScenario = (() => {
+  if (!durationOverride) return {};
+  const durationSec = Number(durationOverride);
+  const fraction = design.scenario.warmupSec / design.scenario.durationSec;
+  // At least one second, and never more than half the run, so a measurement window
+  // always survives even for a degenerate source design.
+  const warmupSec = Math.max(1, Math.min(Math.round(durationSec * fraction), Math.floor(durationSec / 2)));
+  return { durationSec, warmupSec };
+})();
+
 const effective = DesignSchema.parse({
   ...design,
   scenario: {
     ...design.scenario,
-    ...(durationOverride ? { durationSec: Number(durationOverride) } : {}),
+    ...scaledScenario,
     ...(seedOverride ? { seed: Number(seedOverride) } : {}),
   },
 });

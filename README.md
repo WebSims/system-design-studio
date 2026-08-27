@@ -607,6 +607,12 @@ wrong numbers:
   server correctly does. For an event loop that is wrong, and at fan-out scale
   catastrophically so: a station doing 0.26 core-seconds of work per second read as
   **74% utilized** and the bottleneck was attributed to the wrong component.
+- `--duration` overrode the run length but not the warm-up, so asking any shipped example
+  for a short run was rejected as unrunnable — warm-up outlasted the whole run. The
+  engine would have accepted it, clamping warm-up to 90% and quietly measuring a
+  six-second window. Two code paths held different opinions about the same config, and
+  the more permissive one was the one that produced numbers. The flag now scales warm-up
+  by the design's own fraction, as `--sweep` already did.
 - `nodeTypes` was missing `gateway`. React Flow silently falls back to a default node
   rather than failing, so the component shipped invisible and unselectable in a first
   pass. The map is now typed exhaustively over `NodeKind`.
