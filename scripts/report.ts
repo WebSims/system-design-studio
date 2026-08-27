@@ -16,13 +16,8 @@
 import { readFileSync } from "node:fs";
 import { previewDesign, solveMMc } from "@sds/analytic";
 import { runSimulation, type RunResult } from "@sds/core";
-import {
-  DesignSchema,
-  defaultDesign,
-  migrateAndParse,
-  validateDesign,
-  type Design,
-} from "@sds/schema";
+import { DesignSchema, migrateAndParse, validateDesign, type Design } from "@sds/schema";
+import { EXAMPLES, defaultDesign } from "@sds/models";
 
 const args = process.argv.slice(2);
 const flag = (name: string): boolean => args.includes(`--${name}`);
@@ -47,8 +42,19 @@ const rpad = (s: string, n: number): string => s.padStart(n);
 
 function loadDesign(): Design {
   const file = value("file");
-  if (!file) return defaultDesign();
-  return migrateAndParse(JSON.parse(readFileSync(file, "utf8")));
+  if (file) return migrateAndParse(JSON.parse(readFileSync(file, "utf8")));
+
+  const example = value("example");
+  if (example) {
+    const found = EXAMPLES.find((e) => e.id === example);
+    if (!found) {
+      console.log(`${RED}unknown example "${example}"${OFF}. available:`);
+      for (const e of EXAMPLES) console.log(`  ${pad(e.id, 20)} ${DIM}${e.blurb}${OFF}`);
+      process.exit(1);
+    }
+    return found.build();
+  }
+  return defaultDesign();
 }
 
 function heading(text: string): void {
@@ -78,6 +84,13 @@ function report(design: Design, result: RunResult): void {
     );
   }
 
+  if (result.stability.asyncBacklogWarning) {
+    // Called out separately because it is invisible in every percentile: the
+    // request path is genuinely healthy while the work silently piles up.
+    heading("VERDICT: async backlog growing");
+    console.log(`  ${RED}${result.stability.asyncBacklogWarning}${OFF}`);
+  }
+
   heading("throughput");
   console.log(`  offered      ${rpad(result.offeredRatePerSec.toFixed(1), 10)} req/s`);
   console.log(`  completed    ${rpad(result.throughputPerSec.toFixed(1), 10)} req/s`);
@@ -104,19 +117,85 @@ function report(design: Design, result: RunResult): void {
   console.log(`  p99          ±${pctOf(c.approxTailRelativeError)}   ${DIM}tails are noisier${OFF}`);
   console.log(`  ${DIM}${c.samples.toLocaleString()} samples at ${pctOf(c.drivingUtilization)} utilization${OFF}`);
 
+  if (result.classes.length > 1) {
+    heading("request classes");
+    console.log(
+      `  ${DIM}${pad("class", 14)}${rpad("share", 8)}${rpad("rate", 9)}${rpad("p50", 9)}${rpad("p99", 10)}${rpad("errors", 9)}${OFF}`
+    );
+    for (const c of result.classes) {
+      console.log(
+        `  ${pad(c.label.slice(0, 13), 14)}${rpad(pctOf(c.share), 8)}` +
+          `${rpad(c.throughputPerSec.toFixed(0) + "/s", 9)}${rpad(ms(c.latency.p50), 9)}` +
+          `${rpad(ms(c.latency.p99), 10)}${rpad(c.errors.ratePct.toFixed(2) + "%", 9)}`
+      );
+    }
+    console.log(
+      `  ${DIM}A blended percentile hides both a fast path and a slow one, which is why` +
+        `\n  per-class figures exist.${OFF}`
+    );
+  }
+
   heading("stations");
   console.log(
-    `  ${DIM}${pad("station", 16)}${rpad("c", 4)}${rpad("util", 8)}${rpad("Lq", 8)}${rpad("maxQ", 7)}${rpad("wait", 9)}${rpad("shed", 8)}${OFF}`
+    `  ${DIM}${pad("station", 16)}${pad("kind", 14)}${rpad("c", 4)}${rpad("util", 8)}${rpad("Lq", 8)}${rpad("wait", 9)}${rpad("shed", 8)}${OFF}`
   );
-  for (const n of result.nodes.filter((x) => x.kind === "server")) {
+  for (const n of result.nodes.filter((x) => x.kind !== "client")) {
     const util = n.utilization;
     const utilColor = util >= 0.85 ? RED : util >= 0.7 ? YELLOW : GREEN;
     console.log(
-      `  ${pad(n.label.slice(0, 15), 16)}${rpad(String(n.capacity), 4)}` +
+      `  ${pad(n.label.slice(0, 15), 16)}${DIM}${pad(n.kind, 14)}${OFF}${rpad(String(n.capacity), 4)}` +
         `${utilColor}${rpad(pctOf(util), 8)}${OFF}` +
-        `${rpad(n.avgQueueLength.toFixed(2), 8)}${rpad(String(n.maxQueueLength), 7)}` +
+        `${rpad(n.avgQueueLength.toFixed(2), 8)}` +
         `${rpad(ms(n.avgWaitMs), 9)}${rpad(n.shed.toLocaleString(), 8)}`
     );
+
+    if (n.loadbalancer) {
+      const lb = n.loadbalancer;
+      console.log(
+        `    ${DIM}${lb.algorithm}: ` +
+          lb.perBackend.map((b) => `${b.label} ${b.sharePct.toFixed(1)}%`).join(" \u00b7 ") +
+          `${OFF}`
+      );
+    }
+    if (n.cache) {
+      const c = n.cache;
+      console.log(
+        `    ${DIM}hit ratio ${CYAN}${pctOf(c.hitRatio)}${OFF}${DIM} ` +
+          `(${c.hits.toLocaleString()} hits, ${c.misses.toLocaleString()} misses) \u00b7 ` +
+          `${c.evictions.toLocaleString()} evictions, ${c.expirations.toLocaleString()} expirations \u00b7 ` +
+          `${c.residentKeys.toLocaleString()} keys resident${OFF}`
+      );
+    }
+    if (n.database) {
+      const db = n.database;
+      const binding = db.poolSize < db.parallelism ? "pool" : "execution";
+      console.log(
+        `    ${DIM}pool ${db.poolSize} at ${pctOf(db.poolUtilization)} \u00b7 ` +
+          `execution ${db.parallelism} at ${pctOf(db.executionUtilization)} \u00b7 ` +
+          `waits: pool ${ms(db.avgPoolWaitMs)}, execution ${ms(db.avgExecutionWaitMs)}${OFF}`
+      );
+      console.log(
+        `    ${DIM}ceiling ${db.maxThroughputPerSec.toFixed(0)}/s \u2014 set by ${binding}. ` +
+          `Raising the pool past parallelism moves the wait, it does not remove it.${OFF}`
+      );
+    }
+    if (n.queue) {
+      const q = n.queue;
+      const growing = q.backlogGrowthPerSec > 0.05;
+      console.log(
+        `    ${DIM}backlog avg ${q.avgBacklog.toFixed(0)}, max ${q.maxBacklog.toLocaleString()} \u00b7 ` +
+          `age p50 ${ms(q.backlogAge.p50)} / p99 ${ms(q.backlogAge.p99)} \u00b7 ` +
+          `${q.consumers} consumers draining ${q.drainCapacityPerSec.toFixed(0)}/s${OFF}`
+      );
+      if (growing) {
+        console.log(
+          `    ${RED}backlog growing ${q.backlogGrowthPerSec.toFixed(1)}/s \u2014 consumers are losing${OFF}`
+        );
+      }
+      if (q.dropped > 0) {
+        console.log(`    ${YELLOW}${q.dropped.toLocaleString()} messages dropped (queue full)${OFF}`);
+      }
+    }
   }
 
   heading("invariants (checked on every run)");
@@ -359,7 +438,7 @@ if (issues.length > 0) {
   process.exit(1);
 }
 
-console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 1 verification${OFF}`);
+console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 2 verification${OFF}`);
 
 try {
   if (flag("sweep")) {

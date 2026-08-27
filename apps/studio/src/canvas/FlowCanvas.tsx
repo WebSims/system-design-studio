@@ -14,12 +14,11 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useCallback, useMemo } from "react";
 import { protocolFreeEdgeId } from "../ids";
-import { ClientNode, StationNode } from "./nodes";
+import { nodeTypes } from "./nodes";
 import { PacketLayer } from "./PacketLayer";
 import { PipeEdge } from "./PipeEdge";
 import { useStudio } from "../store";
 
-const nodeTypes = { client: ClientNode, server: StationNode };
 const edgeTypes = { pipe: PipeEdge };
 
 function Canvas() {
@@ -85,8 +84,11 @@ function Canvas() {
           id: protocolFreeEdgeId(d.edges.map((e) => e.id)),
           from: conn.source!,
           to: conn.target!,
-          latency: { kind: "deterministic", value: 1 },
+          latency: { kind: "deterministic", value: 0.25 },
           lossProbability: 0,
+          classes: [],
+          probability: 1,
+          weight: 1,
         });
       });
     },

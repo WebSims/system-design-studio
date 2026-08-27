@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DesignSchema, defaultDesign, type Design } from "@sds/schema";
+import { DesignSchema, type Design } from "@sds/schema";
+import { defaultDesign } from "@sds/models";
 import { runSimulation } from "@sds/core";
 import { previewDesign } from "../src/preview";
 import { durationForRho, meanOf, relError, runReplications, SEEDS } from "./harness";
@@ -52,6 +53,7 @@ function chain(
         admissionPolicy: "block",
         queueDiscipline: "fifo",
         replicas: 1,
+        blocksOnDependencies: false,
       },
     });
     edges.push({
@@ -64,7 +66,7 @@ function chain(
     prev = id;
   });
   return DesignSchema.parse({
-    version: 1,
+    version: 2,
     name: "chain",
     nodes,
     edges,
@@ -191,7 +193,7 @@ describe("preview flags its own approximations", () => {
     // Allen-Cunneen is an approximation for M/G/c and is labelled as one. A number
     // whose accuracy is unknown to its reader is worse than no number.
     const design = DesignSchema.parse({
-      version: 1,
+      version: 2,
       name: "lognormal service",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 100 } } },
@@ -217,7 +219,7 @@ describe("preview flags its own approximations", () => {
 
   it("uses exact Pollaczek-Khinchine for a single-server non-exponential station", () => {
     const design = DesignSchema.parse({
-      version: 1,
+      version: 2,
       name: "deterministic service",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 25 } } },
@@ -247,7 +249,7 @@ describe("preview flags its own approximations", () => {
 
   it("uses M/M/c/K for a shedding station and predicts the rejection rate", () => {
     const design = DesignSchema.parse({
-      version: 1,
+      version: 2,
       name: "shedding",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 150 } } },

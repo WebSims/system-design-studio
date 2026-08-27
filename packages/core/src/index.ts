@@ -5,6 +5,8 @@ export * from "./sim";
 export * from "./resource";
 export * from "./histogram";
 export * from "./timeseries";
+export * from "./zipf";
 export * from "./confidence";
 export * from "./result";
+export * from "./components";
 export * from "./run";

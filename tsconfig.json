@@ -1,8 +1,17 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/schema" },
-    { "path": "./packages/core" },
-    { "path": "./packages/analytic" }
+    {
+      "path": "./packages/schema"
+    },
+    {
+      "path": "./packages/models"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/analytic"
+    }
   ]
 }

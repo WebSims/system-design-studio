@@ -20,6 +20,9 @@
   --crit: #ed2923;
   --sky: #4ab4e6;
   --purple: #7b51a1;
+  --teal: #2aa8a8;
+  --pink: #ec6ca0;
+  --green: #6cb33e;
 
   --rail-left: 340px;
   --rail-right: 300px;
@@ -650,11 +653,202 @@ body {
   color: var(--sky);
 }
 
-.node.client {
-  border-color: #24485c;
+/* Per-kind accent: a left rule and a tinted label, driven by --accent-node. */
+.node {
+  border-left: 3px solid var(--accent-node, var(--line-2));
 }
-.node.client .node-label {
-  color: var(--sky);
+.node .node-label {
+  color: var(--accent-node, var(--fg));
+}
+.node-kind {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  flex: none;
+}
+.node.async-alert {
+  /* A growing async backlog is invisible in every percentile, so the node itself
+     has to say so. */
+  border-color: var(--crit);
+  box-shadow: 0 0 0 1px var(--crit), 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------- palette ---------- */
+
+.menu-anchor {
+  position: relative;
+}
+
+.palette {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 320px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  padding: 6px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+}
+.palette-title {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  padding: 6px 8px 8px;
+}
+.palette-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.palette-item:hover {
+  background: var(--bg-3);
+}
+.palette-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex: none;
+  background: var(--line-2);
+}
+.palette-dot.kind-client { background: var(--sky); }
+.palette-dot.kind-loadbalancer { background: var(--teal); }
+.palette-dot.kind-server { background: var(--accent); }
+.palette-dot.kind-cache { background: var(--pink); }
+.palette-dot.kind-database { background: var(--purple); }
+.palette-dot.kind-queue { background: var(--green); }
+
+.palette-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.palette-label {
+  font-size: 12.5px;
+}
+.palette-blurb {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--fg-3);
+}
+
+/* ---------- classes, citations, chips ---------- */
+
+.class-row,
+.class-editor {
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 9px;
+  margin-bottom: 6px;
+}
+.class-head,
+.class-editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.class-detail {
+  font-size: 10.5px;
+  color: var(--fg-3);
+  margin-top: 3px;
+}
+.class-editor-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+.class-editor-row .field {
+  margin-bottom: 0;
+}
+
+.citation {
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--fg-3);
+  background: var(--bg-3);
+  border-left: 2px solid var(--line-2);
+  border-radius: 0 5px 5px 0;
+  padding: 7px 9px;
+  margin: 8px 0;
+}
+.citation b {
+  color: var(--fg-2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 9.5px;
+  margin-right: 4px;
+}
+.citation-warn {
+  color: var(--warn);
+  opacity: 0.85;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.chip {
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  color: var(--fg-3);
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.chip.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.station-kind {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-left: 5px;
+}
+.station-detail.dim {
+  opacity: 0.75;
+}
+.station-detail b {
+  color: var(--fg-2);
+}
+.station-head .bad {
+  color: var(--crit);
+}
+.station-head .warn {
+  color: var(--warn);
+}
+
+.model-caveat {
+  margin-top: 4px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--warn);
+  opacity: 0.9;
 }
 
 /* ---------- charts ---------- */

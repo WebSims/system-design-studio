@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DesignSchema, defaultDesign, type Design } from "@sds/schema";
+import { DesignSchema, type Design } from "@sds/schema";
+import { defaultDesign } from "@sds/models";
 import { requiredSamples } from "../src/confidence";
 import { runSimulation } from "../src/run";
 
@@ -16,7 +17,7 @@ function station(overrides: {
   lossProbability?: number;
 }): Design {
   return DesignSchema.parse({
-    version: 1,
+    version: 2,
     name: "t",
     nodes: [
       {
@@ -227,11 +228,21 @@ describe("timeouts and loss", () => {
     expect(r.errors.timeout).toBeGreaterThan(0);
   });
 
-  it("edge loss shows up as network errors at roughly the configured rate", () => {
-    const r = runSimulation(station({ lambda: 30, serviceMeanMs: 20, c: 4, lossProbability: 0.1, durationSec: 400, warmupSec: 40 }));
+  it("edge loss applies in both directions, because a response crosses the wire too", () => {
+    /**
+     * A request/response pair traverses each edge twice, so a 10% per-traversal
+     * drop rate loses 1 - 0.9^2 = 19% of requests, not 10%.
+     *
+     * Phase 1 only modelled the request leg. Counting both is physically right and
+     * it matters as soon as a design spans zones: a five-hop path across 1ms links
+     * is 10ms of pure network, which is most of a cache's latency budget.
+     */
+    const p = 0.1;
+    const expected = 1 - (1 - p) ** 2;
+    const r = runSimulation(station({ lambda: 30, serviceMeanMs: 20, c: 4, lossProbability: p, durationSec: 400, warmupSec: 40 }));
     const observed = r.errors.network / (r.errors.network + r.endToEnd.count);
-    expect(observed).toBeGreaterThan(0.08);
-    expect(observed).toBeLessThan(0.12);
+    expect(observed).toBeGreaterThan(expected - 0.02);
+    expect(observed).toBeLessThan(expected + 0.02);
   });
 });
 
@@ -310,16 +321,16 @@ describe("the engine states its own precision", () => {
 });
 
 describe("Phase 1 scope is enforced rather than guessed at", () => {
-  it("refuses to invent a routing policy for a fan-out", () => {
+  it("rejects a cycle instead of silently truncating it", () => {
     /**
-     * The legacy engine sent every request to ALL downstream dependencies of a
-     * node, unconditionally (engine.jsx:190-192), silently inventing a workload
-     * the user never described. Refusing is more useful: a fan-out is an
-     * unanswered question until per-class routing exists in Phase 2.
+     * The legacy engine tolerated cycles by carrying an `ancestors` set and a hard
+     * depth cap of 8 (engine.jsx:186,193), which quietly simulated a different
+     * topology from the one drawn. A cycle means a retry or a feedback path and
+     * neither exists until Phase 3, so the honest response is to say so.
      */
     const design = DesignSchema.parse({
-      version: 1,
-      name: "fanout",
+      version: 2,
+      name: "cycle",
       nodes: [
         { id: "c", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 10 } } },
         { id: "a", kind: "server", label: "a", x: 1, y: 0, server: { concurrency: 1, serviceTime: { kind: "exponential", mean: 10 } } },
@@ -327,17 +338,18 @@ describe("Phase 1 scope is enforced rather than guessed at", () => {
       ],
       edges: [
         { id: "e1", from: "c", to: "a" },
-        { id: "e2", from: "c", to: "b" },
+        { id: "e2", from: "a", to: "b" },
+        { id: "e3", from: "b", to: "a" },
       ],
       scenario: {},
       slo: {},
     });
-    expect(() => runSimulation(design)).toThrow(/Phase 1 models linear chains only/);
+    expect(() => runSimulation(design)).toThrow(/loops/);
   });
 
   it("rejects a design with structural errors instead of running it", () => {
     const design = DesignSchema.parse({
-      version: 1,
+      version: 2,
       name: "broken",
       nodes: [{ id: "c", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 10 } } }],
       edges: [{ id: "e1", from: "c", to: "nonexistent" }],

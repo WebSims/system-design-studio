@@ -1,7 +1,6 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import type { NodePreview } from "@sds/analytic";
 import { describe } from "@sds/core";
-import type { SdsNode } from "@sds/schema";
+import type { NodeKind, SdsNode } from "@sds/schema";
 import { useStudio } from "../store";
 import { usePlayback } from "../playback";
 
@@ -9,73 +8,163 @@ import { usePlayback } from "../playback";
  * NODE HEIGHT IS FIXED, ON PURPOSE.
  *
  * React Flow measures node dimensions to lay out edges and handles. A node whose
- * height changes as its occupancy list grows would trigger re-measurement many
- * times a second during playback. The occupancy display therefore lives inside a
- * fixed box and overflows rather than pushing the node taller.
+ * height changed as its occupancy display grew would trigger re-measurement many
+ * times a second during playback, so every kind renders into the same box.
  */
-export const NODE_WIDTH = 208;
-export const NODE_HEIGHT = 104;
+export const NODE_WIDTH = 216;
+export const NODE_HEIGHT = 112;
+
+const KIND_ACCENT: Record<NodeKind, string> = {
+  client: "var(--sky)",
+  loadbalancer: "var(--teal)",
+  server: "var(--accent)",
+  cache: "var(--pink)",
+  database: "var(--purple)",
+  queue: "var(--green)",
+};
+
+const KIND_LABEL: Record<NodeKind, string> = {
+  client: "client",
+  loadbalancer: "balancer",
+  server: "service",
+  cache: "cache",
+  database: "database",
+  queue: "queue",
+};
 
 function utilTone(rho: number): string {
-  // Thresholds are the ones the analyzer will use in Phase 4: queueing delay
-  // grows as 1/(1-rho), so 0.85 is already deep into the knee, not a comfortable
-  // margin.
+  // Queueing delay grows as 1/(1-rho), so 0.85 is already deep into the knee
+  // rather than a comfortable margin.
   if (rho >= 1) return "crit";
   if (rho >= 0.85) return "bad";
   if (rho >= 0.7) return "warn";
   return "ok";
 }
 
-export function StationNode({ id, selected }: NodeProps) {
+/** One line summarising what this component's own work costs. */
+function summaryOf(node: SdsNode): string {
+  switch (node.kind) {
+    case "client": {
+      const c = node.client!;
+      return `${c.arrival.kind} \u00b7 ${c.arrival.ratePerSec.toLocaleString()} req/s`;
+    }
+    case "loadbalancer":
+      return `${node.loadbalancer!.algorithm} \u00b7 ${describe(node.loadbalancer!.serviceTime)}`;
+    case "server": {
+      const s = node.server!;
+      const reps = s.replicas > 1 ? `${s.replicas}\u00d7` : "";
+      return `${reps}${s.concurrency} slots \u00b7 ${describe(s.serviceTime)}`;
+    }
+    case "cache": {
+      const c = node.cache!;
+      const keys = c.keyspace.kind === "zipf" ? `${(c.keyspace.keys / 1000).toFixed(0)}k keys` : "fixed ratio";
+      return `${(c.capacity / 1000).toFixed(0)}k cap \u00b7 ${keys}`;
+    }
+    case "database": {
+      const d = node.database!;
+      return `pool ${d.poolSize} / exec ${d.parallelism} \u00b7 ${describe(d.serviceTime)}`;
+    }
+    case "queue": {
+      const q = node.queue!;
+      return `${q.consumers} consumers \u00b7 ${describe(q.consumerServiceTime)}`;
+    }
+  }
+}
+
+/**
+ * Second line: whichever measured figure is most diagnostic for this kind.
+ *
+ * A cache's hit ratio, a database's execution vs pool split, a queue's backlog.
+ * Utilization alone is the wrong headline for a queue -- its consumers can be
+ * comfortably busy while the backlog grows without bound.
+ */
+function detailOf(kind: NodeKind, measured: ReturnType<typeof useMeasured>): string | null {
+  if (!measured) return null;
+  switch (kind) {
+    case "cache":
+      return measured.cache
+        ? `${(measured.cache.hitRatio * 100).toFixed(0)}% hit ratio`
+        : null;
+    case "database":
+      return measured.database
+        ? `pool ${(measured.database.poolUtilization * 100).toFixed(0)}% \u00b7 exec ${(
+            measured.database.executionUtilization * 100
+          ).toFixed(0)}%`
+        : null;
+    case "queue":
+      return measured.queue
+        ? `backlog ${Math.round(measured.queue.avgBacklog).toLocaleString()}` +
+            (measured.queue.backlogGrowthPerSec > 0.05
+              ? ` \u00b7 growing ${measured.queue.backlogGrowthPerSec.toFixed(0)}/s`
+              : "")
+        : null;
+    case "loadbalancer":
+      return measured.loadbalancer
+        ? `\u00b1${measured.loadbalancer.worstImbalancePct.toFixed(1)}pp spread`
+        : null;
+    default:
+      return `${measured.completed.toLocaleString()} served`;
+  }
+}
+
+function useMeasured(id: string) {
+  const measured = useStudio((s) => s.run?.nodes.find((n) => n.nodeId === id));
+  const stale = useStudio((s) => s.runStale);
+  return stale ? undefined : measured;
+}
+
+export function StudioNode({ id, selected }: NodeProps) {
   const node = useStudio((s) => s.design.nodes.find((n) => n.id === id));
   const preview = useStudio((s) => s.preview.nodes.find((n) => n.nodeId === id));
-  const measured = useStudio((s) => s.run?.nodes.find((n) => n.nodeId === id));
-  const runStale = useStudio((s) => s.runStale);
+  const measured = useMeasured(id);
   // Narrow selector: this node re-renders only when ITS OWN occupancy changes.
   const occ = usePlayback((s) => s.occupancy[id]);
 
-  if (!node || node.kind !== "server") return null;
-  const cfg = node.server!;
-  const capacity = cfg.concurrency * cfg.replicas;
+  if (!node) return null;
+  const isClient = node.kind === "client";
 
-  // Prefer measured over predicted, but never silently: the label says which.
-  const useMeasured = measured && !runStale;
-  const rho = useMeasured ? measured.utilization : (preview?.rho ?? 0);
-  const displayRho = preview && preview.rho > 1 && !useMeasured ? preview.rho : rho;
+  const rho = measured ? measured.utilization : (preview?.rho ?? 0);
+  // Show rho above 1 rather than clamping: how far past capacity matters.
+  const displayRho = !measured && preview && preview.rho > 1 ? preview.rho : rho;
   const tone = utilTone(displayRho);
+  const detail = detailOf(node.kind, measured);
+  const backlogGrowing = (measured?.queue?.backlogGrowthPerSec ?? 0) > 0.05;
 
   return (
     <div
-      className={`node station ${selected ? "selected" : ""} tone-${tone}`}
-      style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
+      className={`node kind-${node.kind} ${selected ? "selected" : ""} tone-${tone} ${
+        backlogGrowing ? "async-alert" : ""
+      }`}
+      style={{ width: NODE_WIDTH, height: NODE_HEIGHT, "--accent-node": KIND_ACCENT[node.kind] } as React.CSSProperties}
     >
-      <Handle type="target" position={Position.Left} />
+      {!isClient && <Handle type="target" position={Position.Left} />}
+
       <div className="node-head">
         <span className="node-label">{node.label}</span>
-        <span className="node-cap tnum">c={capacity}</span>
+        <span className="node-kind">{KIND_LABEL[node.kind]}</span>
       </div>
 
-      <div className="node-service">{describe(cfg.serviceTime)}</div>
+      <div className="node-service">{summaryOf(node)}</div>
 
-      <div className="util-row">
-        <div className="util-bar">
-          <div
-            className="util-fill"
-            style={{ width: `${Math.min(100, displayRho * 100)}%` }}
-          />
-          {/* Marker at rho = 1: the boundary past which no steady state exists. */}
-          <div className="util-mark" style={{ left: "100%" }} />
+      {!isClient && (
+        <div className="util-row">
+          <div className="util-bar">
+            <div className="util-fill" style={{ width: `${Math.min(100, displayRho * 100)}%` }} />
+            <div className="util-mark" style={{ left: "100%" }} />
+          </div>
+          <span className="util-value tnum">{(displayRho * 100).toFixed(0)}%</span>
         </div>
-        <span className="util-value tnum">{(displayRho * 100).toFixed(0)}%</span>
-      </div>
+      )}
 
       <div className="node-foot">
         {occ ? (
           <span className="occ tnum">
-            {occ.inService} in service · {occ.queued} queued
+            {occ.inService} in service &middot; {occ.queued} queued
           </span>
+        ) : detail ? (
+          <span className="occ tnum">{detail}</span>
         ) : (
-          <span className="node-src">{useMeasured ? "measured" : "estimated"}</span>
+          <span className="node-src">{measured ? "measured" : "estimated"}</span>
         )}
       </div>
 
@@ -84,41 +173,12 @@ export function StationNode({ id, selected }: NodeProps) {
   );
 }
 
-export function ClientNode({ id, selected }: NodeProps) {
-  const node = useStudio((s) => s.design.nodes.find((n) => n.id === id)) as SdsNode | undefined;
-  const throughput = useStudio((s) => s.run?.throughputPerSec);
-  const runStale = useStudio((s) => s.runStale);
-
-  if (!node || node.kind !== "client") return null;
-  const rate = node.client!.arrival.ratePerSec;
-
-  return (
-    <div
-      className={`node client ${selected ? "selected" : ""}`}
-      style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
-    >
-      <div className="node-head">
-        <span className="node-label">{node.label}</span>
-        <span className="node-cap">{node.client!.arrival.kind}</span>
-      </div>
-      <div className="node-service">
-        offering <b className="tnum">{rate.toLocaleString()}</b> req/s
-      </div>
-      <div className="node-foot">
-        {throughput !== undefined && !runStale ? (
-          <span className="occ tnum">{throughput.toFixed(1)} req/s completing</span>
-        ) : (
-          <span className="node-src">
-            {node.client!.timeoutMs === null ? "no timeout" : `timeout ${node.client!.timeoutMs}ms`}
-          </span>
-        )}
-      </div>
-      <Handle type="source" position={Position.Right} />
-    </div>
-  );
-}
-
-/** Shared by the inspector to describe what model the preview applied. */
-export function modelBadge(preview: NodePreview | undefined): string {
-  return preview ? preview.model : "—";
-}
+/** Every kind renders through the same component; React Flow needs a map. */
+export const nodeTypes = {
+  client: StudioNode,
+  loadbalancer: StudioNode,
+  server: StudioNode,
+  cache: StudioNode,
+  database: StudioNode,
+  queue: StudioNode,
+};

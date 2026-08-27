@@ -5,12 +5,27 @@
     "composite": false,
     "declaration": false,
     "declarationMap": false,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "paths": {
-      "@sds/schema": ["./packages/schema/src/index.ts"],
-      "@sds/core": ["./packages/core/src/index.ts"],
-      "@sds/analytic": ["./packages/analytic/src/index.ts"]
+      "@sds/schema": [
+        "./packages/schema/src/index.ts"
+      ],
+      "@sds/core": [
+        "./packages/core/src/index.ts"
+      ],
+      "@sds/analytic": [
+        "./packages/analytic/src/index.ts"
+      ],
+      "@sds/models": [
+        "./packages/models/src/index.ts"
+      ]
     }
   },
-  "include": ["packages/*/tests/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"]
+  "include": [
+    "packages/*/tests/**/*.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
+  ]
 }

@@ -20,6 +20,7 @@
     "vite-node": "^2.1.9",
     "@sds/schema": "workspace:*",
     "@sds/core": "workspace:*",
-    "@sds/analytic": "workspace:*"
+    "@sds/analytic": "workspace:*",
+    "@sds/models": "workspace:*"
   }
 }

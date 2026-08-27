@@ -4,13 +4,13 @@ import { previewDesign, type DesignPreview } from "@sds/analytic";
 import type { RunResult } from "@sds/core";
 import {
   DesignSchema,
-  defaultDesign,
   migrateAndParse,
   validateDesign,
   type Design,
   type DesignIssue,
   type SdsNode,
 } from "@sds/schema";
+import { defaultDesign } from "@sds/models";
 import { runInWorker } from "./engine/client";
 
 const LS_KEY = "sds.design.v1";
@@ -39,7 +39,7 @@ interface StudioState {
   select: (s: Selection) => void;
   edit: (fn: (d: Design) => void) => void;
   moveNode: (id: string, x: number, y: number) => void;
-  resetDesign: () => void;
+  loadDesign: (design: Design) => void;
   execute: () => Promise<void>;
   importDesign: (json: string) => void;
   exportDesign: () => string;
@@ -59,11 +59,13 @@ function recompute(design: Design): { preview: DesignPreview; issues: DesignIssu
       offeredRatePerSec: 0,
       throughputPerSec: 0,
       nodes: [],
-      clients: [],
+      classes: [],
       endToEndMeanMs: null,
       endToEndP99Ms: null,
+      meanIsLowerBound: false,
       p99Reason: "design is incomplete",
       approximate: false,
+      asyncBacklogWarning: null,
       notes: [],
     };
   }
@@ -134,8 +136,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       return { design: next };
     }),
 
-  resetDesign: () => {
-    const d = defaultDesign();
+  loadDesign: (d) => {
     persist(d);
     set({ design: d, ...recompute(d), run: null, runStale: false, error: null, selection: null });
   },

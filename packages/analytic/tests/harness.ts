@@ -43,7 +43,7 @@ export interface StationSpec {
  */
 export function singleStation(opts: StationSpec): Design {
   return DesignSchema.parse({
-    version: 1,
+    version: 2,
     name: "validation",
     nodes: [
       {
@@ -127,6 +127,11 @@ export function tandem(opts: TandemSpec): Design {
         admissionPolicy: "block",
         queueDiscipline: "fifo",
         replicas: 1,
+        // Non-blocking, so each station occupies its slot only for its own work.
+        // That makes the chain a genuine Jackson network and keeps Burke's theorem
+        // exactly applicable. The blocking case is a different model entirely --
+        // simultaneous resource possession -- and is tested separately.
+        blocksOnDependencies: false,
       },
     });
     edges.push({
@@ -140,7 +145,7 @@ export function tandem(opts: TandemSpec): Design {
   });
 
   return DesignSchema.parse({
-    version: 1,
+    version: 2,
     name: "tandem",
     nodes,
     edges,

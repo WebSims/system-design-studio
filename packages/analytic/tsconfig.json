@@ -4,6 +4,18 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts"],
-  "references": [{ "path": "../schema" }, { "path": "../core" }]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../schema"
+    },
+    {
+      "path": "../models"
+    },
+    {
+      "path": "../core"
+    }
+  ]
 }

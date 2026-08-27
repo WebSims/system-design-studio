@@ -1,7 +1,9 @@
 import {
   DESIGN_SCHEMA_VERSION,
   DesignSchema,
+  classesOf,
   type Design,
+  type NodeKind,
   type SdsNode,
 } from "./design";
 
@@ -17,10 +19,56 @@ export interface DesignIssue {
   edgeId?: string;
 }
 
-function requiredConfigMissing(n: SdsNode): boolean {
-  if (n.kind === "client") return !n.client;
-  if (n.kind === "server") return !n.server;
-  return false;
+/** Which config object each kind requires. */
+const CONFIG_KEY: Record<NodeKind, keyof SdsNode> = {
+  client: "client",
+  server: "server",
+  loadbalancer: "loadbalancer",
+  cache: "cache",
+  database: "database",
+  queue: "queue",
+};
+
+/**
+ * Detect a directed cycle.
+ *
+ * Cycles are rejected rather than truncated. The legacy engine tolerated them by
+ * carrying an `ancestors` set and a hard depth cap of 8 (engine.jsx:186,193),
+ * which silently produced a different topology from the one drawn. A cycle in a
+ * request graph means a retry or a feedback path, and neither exists until Phase 3
+ * -- so the honest response is to say so, not to quietly cut the graph.
+ */
+function findCycle(design: Design): string[] | null {
+  const adjacency = new Map<string, string[]>();
+  for (const e of design.edges) {
+    const list = adjacency.get(e.from) ?? [];
+    list.push(e.to);
+    adjacency.set(e.from, list);
+  }
+
+  const state = new Map<string, 0 | 1 | 2>(); // unvisited / in progress / done
+  const stack: string[] = [];
+
+  const visit = (id: string): string[] | null => {
+    const s = state.get(id) ?? 0;
+    if (s === 1) return [...stack.slice(stack.indexOf(id)), id];
+    if (s === 2) return null;
+    state.set(id, 1);
+    stack.push(id);
+    for (const next of adjacency.get(id) ?? []) {
+      const cycle = visit(next);
+      if (cycle) return cycle;
+    }
+    stack.pop();
+    state.set(id, 2);
+    return null;
+  };
+
+  for (const n of design.nodes) {
+    const cycle = visit(n.id);
+    if (cycle) return cycle;
+  }
+  return null;
 }
 
 /**
@@ -42,7 +90,7 @@ export function validateDesign(design: Design): DesignIssue[] {
   }
 
   for (const n of design.nodes) {
-    if (requiredConfigMissing(n)) {
+    if (!n[CONFIG_KEY[n.kind]]) {
       issues.push({
         severity: "error",
         code: "missing-config",
@@ -52,13 +100,16 @@ export function validateDesign(design: Design): DesignIssue[] {
     }
   }
 
+  // ---- edges ----
   const seenEdge = new Set<string>();
+  const classIds = new Set(classesOf(design).map((c) => c.id));
+
   for (const e of design.edges) {
     if (!byId.has(e.from)) {
       issues.push({
         severity: "error",
         code: "dangling-edge",
-        message: "edge starts at a node that does not exist",
+        message: "connection starts at a node that does not exist",
         edgeId: e.id,
       });
     }
@@ -66,7 +117,7 @@ export function validateDesign(design: Design): DesignIssue[] {
       issues.push({
         severity: "error",
         code: "dangling-edge",
-        message: "edge ends at a node that does not exist",
+        message: "connection ends at a node that does not exist",
         edgeId: e.id,
       });
     }
@@ -80,6 +131,7 @@ export function validateDesign(design: Design): DesignIssue[] {
       });
     }
     seenEdge.add(key);
+
     if (byId.get(e.to)?.kind === "client") {
       issues.push({
         severity: "error",
@@ -88,30 +140,127 @@ export function validateDesign(design: Design): DesignIssue[] {
         edgeId: e.id,
       });
     }
+
+    for (const c of e.classes) {
+      if (!classIds.has(c)) {
+        issues.push({
+          severity: "error",
+          code: "unknown-class",
+          message: `connection restricts to request class "${c}", which is not defined`,
+          edgeId: e.id,
+        });
+      }
+    }
   }
 
-  const outDegree = new Map<string, number>();
-  for (const e of design.edges) {
-    outDegree.set(e.from, (outDegree.get(e.from) ?? 0) + 1);
+  // ---- per-kind topology rules ----
+  const outgoing = new Map<string, number>();
+  for (const e of design.edges) outgoing.set(e.from, (outgoing.get(e.from) ?? 0) + 1);
+
+  for (const n of design.nodes) {
+    const out = outgoing.get(n.id) ?? 0;
+    switch (n.kind) {
+      case "client":
+        if (out === 0) {
+          issues.push({
+            severity: "warning",
+            code: "client-unwired",
+            message: `client "${n.label}" is not connected to anything`,
+            nodeId: n.id,
+          });
+        } else if (out > 1) {
+          issues.push({
+            severity: "warning",
+            code: "client-fanout",
+            message: `client "${n.label}" has ${out} connections; every request will traverse all of them`,
+            nodeId: n.id,
+          });
+        }
+        break;
+
+      case "loadbalancer":
+        if (out === 0) {
+          issues.push({
+            severity: "error",
+            code: "lb-no-backends",
+            message: `load balancer "${n.label}" has no backends to route to`,
+            nodeId: n.id,
+          });
+        }
+        break;
+
+      case "cache":
+        // A cache with no origin cannot read through, so a miss has nowhere to go.
+        // Only valid when the hit ratio is exactly 1, which no real cache achieves.
+        if (out === 0) {
+          const ks = n.cache?.keyspace;
+          const alwaysHits = ks?.kind === "fixed" && ks.hitRatio >= 1;
+          if (!alwaysHits) {
+            issues.push({
+              severity: "error",
+              code: "cache-no-origin",
+              message: `cache "${n.label}" has no origin to read through to, so a miss has nowhere to go`,
+              nodeId: n.id,
+            });
+          }
+        } else if (out > 1) {
+          issues.push({
+            severity: "error",
+            code: "cache-multi-origin",
+            message: `cache "${n.label}" has ${out} origins; a read-through cache has exactly one`,
+            nodeId: n.id,
+          });
+        }
+        break;
+
+      case "database":
+        if (out > 0) {
+          issues.push({
+            severity: "warning",
+            code: "database-outbound",
+            message: `database "${n.label}" calls downstream services, which is unusual`,
+            nodeId: n.id,
+          });
+        }
+        break;
+
+      default:
+        break;
+    }
   }
 
-  const clients = design.nodes.filter((n) => n.kind === "client");
-  if (clients.length === 0) {
+  // ---- classes ----
+  if (design.classes.length > 0) {
+    const seen = new Set<string>();
+    for (const c of design.classes) {
+      if (seen.has(c.id)) {
+        issues.push({
+          severity: "error",
+          code: "duplicate-class",
+          message: `two request classes share the id "${c.id}"`,
+        });
+      }
+      seen.add(c.id);
+    }
+  }
+
+  if (design.nodes.filter((n) => n.kind === "client").length === 0) {
     issues.push({
       severity: "warning",
       code: "no-client",
       message: "no client node, so no work will be generated",
     });
   }
-  for (const c of clients) {
-    if (!outDegree.get(c.id)) {
-      issues.push({
-        severity: "warning",
-        code: "client-unwired",
-        message: `client "${c.label}" is not connected to anything`,
-        nodeId: c.id,
-      });
-    }
+
+  // ---- cycles ----
+  const cycle = findCycle(design);
+  if (cycle) {
+    const labels = cycle.map((id) => byId.get(id)?.label ?? id).join(" \u2192 ");
+    issues.push({
+      severity: "error",
+      code: "cycle",
+      message: `request path loops: ${labels}. Loops require retry semantics, which arrive in Phase 3.`,
+    });
   }
 
   if (design.scenario.warmupSec >= design.scenario.durationSec) {
@@ -128,6 +277,10 @@ export function validateDesign(design: Design): DesignIssue[] {
 export function isRunnable(design: Design): boolean {
   return !validateDesign(design).some((i) => i.severity === "error");
 }
+
+// ---------------------------------------------------------------------------
+// migrations
+// ---------------------------------------------------------------------------
 
 /**
  * Migration registry.
@@ -153,12 +306,21 @@ const MIGRATIONS: Record<number, Migration> = {
     scenario: {},
     slo: {},
   }),
+
+  // 1 -> 2: request classes and per-kind components arrive. Phase 1 documents
+  // only contained clients and servers, both of which carry over unchanged; the
+  // new fields all have defaults.
+  1: (doc) => ({ ...doc, version: 2, classes: [] }),
 };
 
 /**
- * The legacy taxonomy had 7 node types; Phase 1 models 2. Anything that is not
- * a client becomes a server, which is honest: a "database" with no pool model
- * is just a service station with a different service time.
+ * Map the legacy taxonomy onto the Phase 2 component set.
+ *
+ * Phase 1 flattened every non-client node to a plain server because that was all
+ * the engine had. With real components available, the legacy types now map to
+ * their actual counterparts, so an imported design means what it looked like it
+ * meant. Service times are starting points drawn from the benchmark library's
+ * ranges, not measurements of the user's system, and the inspector says so.
  */
 function migrateLegacyNode(raw: Record<string, unknown>, i: number): unknown {
   const type = typeof raw.type === "string" ? raw.type : "server";
@@ -166,43 +328,86 @@ function migrateLegacyNode(raw: Record<string, unknown>, i: number): unknown {
   const label = typeof raw.label === "string" ? raw.label : type;
   const x = typeof raw.x === "number" ? raw.x : 0;
   const y = typeof raw.y === "number" ? raw.y : 0;
+  const base = { id, label, x, y };
+  const imported = { source: "imported from a legacy design; not measured" };
 
-  if (type === "client") {
-    return {
-      id,
-      kind: "client",
-      label,
-      x,
-      y,
-      client: { arrival: { kind: "poisson", ratePerSec: 10 } },
-    };
+  switch (type) {
+    case "client":
+      return {
+        ...base,
+        kind: "client",
+        client: { arrival: { kind: "poisson", ratePerSec: 50 } },
+      };
+    case "loadbalancer":
+      return {
+        ...base,
+        kind: "loadbalancer",
+        loadbalancer: {
+          algorithm: "round-robin",
+          serviceTime: { kind: "deterministic", value: 0.5 },
+          concurrency: 1024,
+          citation: imported,
+        },
+      };
+    case "cache":
+    case "cdn":
+      return {
+        ...base,
+        kind: "cache",
+        cache: {
+          capacity: 10_000,
+          keyspace: { kind: "zipf", keys: 100_000, skew: 0.9 },
+          serviceTime: { kind: "exponential", mean: type === "cdn" ? 6 : 0.3 },
+          concurrency: 512,
+          ttlMs: null,
+          citation: imported,
+        },
+      };
+    case "database":
+      return {
+        ...base,
+        kind: "database",
+        database: {
+          poolSize: 20,
+          parallelism: 8,
+          serviceTime: { kind: "lognormal", mean: 5, p99: 40 },
+          citation: imported,
+        },
+      };
+    case "queue":
+      return {
+        ...base,
+        kind: "queue",
+        queue: {
+          maxDepth: null,
+          consumers: 4,
+          consumerServiceTime: { kind: "exponential", mean: 50 },
+          publishTime: { kind: "deterministic", value: 1 },
+          citation: imported,
+        },
+      };
+    case "store":
+      // An object store is a high-latency, very high-concurrency service.
+      return {
+        ...base,
+        kind: "server",
+        server: {
+          concurrency: 256,
+          serviceTime: { kind: "lognormal", mean: 24, p99: 180 },
+          citation: imported,
+        },
+      };
+    default:
+      return {
+        ...base,
+        kind: "server",
+        server: {
+          concurrency: 8,
+          serviceTime: { kind: "lognormal", mean: 20, p99: 120 },
+          citation: imported,
+        },
+      };
   }
-  // Legacy per-type processing means, carried over ONLY as a starting point.
-  // These were invented constants in the old engine; they are marked for
-  // replacement by the cited benchmark library in Phase 2.
-  const legacyMeanMs: Record<string, number> = {
-    loadbalancer: 4,
-    server: 34,
-    database: 22,
-    cache: 6,
-    store: 24,
-    queue: 8,
-    cdn: 6,
-  };
-  return {
-    id,
-    kind: "server",
-    label,
-    x,
-    y,
-    server: {
-      concurrency: 8,
-      serviceTime: {
-        kind: "exponential",
-        mean: legacyMeanMs[type] ?? 20,
-      },
-    },
-  };
 }
 
 function migrateLegacyEdge(raw: Record<string, unknown>, i: number): unknown {

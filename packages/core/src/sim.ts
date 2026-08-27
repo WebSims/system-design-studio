@@ -28,7 +28,20 @@ export interface AcquireResult {
  */
 export type Wait =
   | { kind: "delay"; ms: number; deadlineAt?: number | null }
-  | { kind: "acquire"; station: WaitStation; deadlineAt?: number | null };
+  | { kind: "acquire"; station: WaitStation; deadlineAt?: number | null }
+  /**
+   * Suspend until something else resumes us.
+   *
+   * Needed by anything asynchronous: a queue consumer parked waiting for a
+   * message, and a fork-join parent waiting for its children. Both are cases
+   * where the wait has no duration and no queue -- it ends when another process
+   * says so.
+   */
+  | {
+      kind: "suspend";
+      register: (resume: () => void) => void;
+      deadlineAt?: number | null;
+    };
 
 /**
  * The subset of a Resource the kernel needs. Kept as an interface so the kernel
@@ -60,6 +73,15 @@ export function* acquire(
   deadlineAt?: number | null
 ): Process<AcquireResult> {
   const r = (yield { kind: "acquire", station, deadlineAt }) as AcquireResult;
+  return r;
+}
+
+/** Park until `register`'s callback is invoked, or until the deadline. */
+export function* suspend(
+  register: (resume: () => void) => void,
+  deadlineAt?: number | null
+): Process<DelayResult> {
+  const r = (yield { kind: "suspend", register, deadlineAt }) as DelayResult;
   return r;
 }
 
@@ -136,6 +158,30 @@ export class Sim {
   }
 
   private handle<T>(proc: Process<T>, wait: Wait, onDone?: (value: T) => void): void {
+    if (wait.kind === "suspend") {
+      let settled = false;
+      let deadlineEvent: ScheduledEvent | null = null;
+
+      const resume = () => {
+        if (settled) return;
+        settled = true;
+        if (deadlineEvent) this.cancel(deadlineEvent);
+        this.step(proc, { timedOut: false } satisfies DelayResult, onDone);
+      };
+
+      wait.register(resume);
+      if (settled) return;
+
+      if (wait.deadlineAt !== null && wait.deadlineAt !== undefined) {
+        deadlineEvent = this.at(wait.deadlineAt, () => {
+          if (settled) return;
+          settled = true;
+          this.step(proc, { timedOut: true } satisfies DelayResult, onDone);
+        });
+      }
+      return;
+    }
+
     if (wait.kind === "delay") {
       // Race the delay against the deadline. Whichever fires first cancels the
       // other, so a process can never be resumed twice.
@@ -191,4 +237,45 @@ export class Sim {
       });
     }
   }
+
+  /**
+   * Run `procs` concurrently and resume the caller once all have finished.
+   *
+   * This is fork-join, and it is what makes a server's parallel dependency calls
+   * cost `max(children)` rather than `sum(children)`. The distinction is large and
+   * architectural, which is why `ServerConfig.fanout` is explicit rather than
+   * assumed.
+   *
+   * The `remaining > 0` guard matters: a child that completes without ever
+   * yielding finishes synchronously inside `spawn`, so all children may already be
+   * done before we would suspend. Suspending then would park the parent forever.
+   */
+  joinAll<T>(procs: Process<T>[]): Process<T[]> {
+    const sim = this;
+    return (function* (): Process<T[]> {
+      if (procs.length === 0) return [];
+      const results: T[] = [];
+      let remaining = procs.length;
+      let resumeParent: (() => void) | null = null;
+
+      for (const p of procs) {
+        sim.spawn(p, (value) => {
+          results.push(value);
+          remaining--;
+          if (remaining === 0 && resumeParent) resumeParent();
+        });
+      }
+
+      if (remaining > 0) {
+        yield {
+          kind: "suspend",
+          register: (resume) => {
+            resumeParent = resume;
+          },
+        };
+      }
+      return results;
+    })();
+  }
 }
+

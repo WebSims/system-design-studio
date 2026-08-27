@@ -3,16 +3,36 @@
 A discrete-event simulator for finding bottlenecks and scaling limits in system
 designs, validated against closed-form queueing theory.
 
-## Status: Phase 1
+## Status: Phase 2
 
-The engine and a single-station studio are complete and validated. `legacy/`
-holds the previous animation-driven build, kept as a visual reference.
+Validated engine, component library, and studio. `legacy/` holds the previous
+animation-driven build, kept as a visual reference.
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 159 tests (~35s)
+pnpm verify     # typecheck + 191 tests (~40s)
 pnpm dev        # studio at localhost:5173
 ```
+
+## Components
+
+| Component | Modelled as | The thing it exists to show |
+|---|---|---|
+| **service** | M/M/c, optionally holding its slot across dependency calls | thread-pool exhaustion from a slow dependency |
+| **load balancer** | round-robin / random / least-connections / power-of-two-choices | two random probes beat one by an exponential margin |
+| **cache** | real Zipf key population, real LRU map, real TTL, read-through | the hit ratio is an *output*, so "how much cache do I need" is answerable |
+| **database** | connection pool *outside*, execution parallelism *inside* | raising the pool past parallelism buys nothing |
+| **queue** | asynchronous: publish returns immediately | the backlog grows without bound while every percentile stays green |
+
+Plus **request classes** (traffic mix, per-class routing, cost multipliers), so
+"reads go through the cache, writes go straight to the database" is expressible,
+and fan-out is either fork-join (`max`) or sequential (`sum`) — explicitly, not
+by assumption.
+
+Every default comes from a **cited benchmark library**: each constant carries a
+plausible range, a source, and an as-of date, all rendered in the inspector.
+They are order-of-magnitude starting points, not measurements of your system,
+and the UI says so.
 
 ## Testing it
 
@@ -21,7 +41,7 @@ Four ways, cheapest first.
 ### 1. The automated gate
 
 ```bash
-pnpm verify                  # typecheck + all 159 tests
+pnpm verify                  # typecheck + all 191 tests
 pnpm test                    # tests only
 pnpm vitest run -t "M/M/c"   # one group
 ```
@@ -44,6 +64,8 @@ scale as `1/(1-rho)^2`, so raise `--duration`.
 
 ```bash
 pnpm sim                             # the default design
+pnpm sim --example cached-read-path  # balancer, replicas, cache, pooled database
+pnpm sim --example async-write-path  # a queue whose backlog grows invisibly
 pnpm sim --duration 300 --seed 5     # override scenario
 pnpm sim --file my-design.json       # a design exported from the studio
 ```
@@ -87,10 +109,15 @@ architecture, where the model advanced only on animation frames, seventeen
 | Click the client, set rate to **260** | Estimate immediately withholds every number: *"does not scale — api server is offered 260/s against a capacity of 100/s (ρ = 2.60)"* |
 | Run it | Names the growing queue (~160 req/s) and warns the latency figures are a function of run length |
 | Set the server's service time to **lognormal**, mean 40, p99 200 | Inspector badges it `M/G/c (approx)`; the estimate's p99 is withheld with a reason |
-| Drag a second connection out of the client | Run refuses: *"Phase 1 models linear chains only"* — it will not invent a routing policy |
+| **examples → async write path**, then run | *"meets SLO, p99 31.8ms"* next to *"async backlog growing — invisible in every percentile"*, backlog age p50 **207 seconds** |
+| **examples → cached read path**, then run | database at 74% is the bottleneck; cache absorbs 73% of reads; per-class rows show reads p99 73ms against writes 229ms |
+| On that run, read the postgres row | *"capped at 1600/s by execution parallelism, not by the pool"* — the pool is at 41% while execution is at 74% |
+| Switch a service to **non-blocking** | its utilization collapses, because the slot no longer covers the dependency call |
 
-The last two are the point of the exercise. A tool that declines to answer is
-more useful than one that guesses.
+The refusals are the point of the exercise: a tool that declines to answer is more
+useful than one that guesses. So is the async example — every percentile green
+while the work silently piles up is a failure mode a synchronous queue model
+cannot express at all.
 
 ## Why this exists in this shape
 
@@ -146,19 +173,49 @@ output; a snapshot would only prove the engine still does what it did yesterday.
 - **Determinism** and common random numbers across configuration changes
 - **The tool's own precision claims**, against observed seed-to-seed spread
 
+Phase 2 components, each against a theorem or a known result:
+
+- **Pooling beats partitioning** — one queue over c servers beats c queues, by the
+  Erlang-C margin. Least-connections lands near the pooled floor but cannot reach
+  it, because assignment is irrevocable: a freed backend takes a new arrival, not
+  one already queued elsewhere.
+- **Power of two choices** — p2c beats random by >15% on p99 and comes within 5%
+  of least-connections. The mean barely moves, which is exactly why the closed
+  form cannot see it and the simulation must.
+- **Cache hit ratio** — uniform keys give exactly `capacity/keys`; skewed keys sit
+  just below the Zipf top-`C` mass (the perfect-cache bound), because LRU wastes
+  some capacity. Only misses reach the origin, verified by counting arrivals.
+- **Database ceiling** — throughput is `parallelism / E[S]` across pool sizes 4 to
+  500. Raising the pool moves waiting from pool to execution and changes total
+  latency by <8%.
+- **Queue** — consumer backlog wait matches Erlang-C; an overloaded queue grows
+  >20 msg/s while p99 stays under 50ms and the error rate under 1%.
+- **Blocking vs non-blocking** — a blocking caller's utilization tracks its
+  dependency's latency (matching `λ·(own+dep)/c`); a non-blocking one stays under
+  5%. Same dependency, same load, only the concurrency model differs.
+- **Fork-join** — parallel lands between `max(E)` and `sum(E)`; sequential matches
+  the sum. The preview reports `max(E)` as a *lower bound*, verified in both
+  directions.
+
 Run lengths are derived from the `1/(1-rho)^2` relaxation scaling rather than tuned
 until green. Convergence was measured directly (5.4% → 0.07% error as a run grew
 64x) to confirm residual disagreement at `rho=0.9` is variance, not bias.
 
 ## What the invariants caught
 
-Two bugs that inspection would not have found, and that produce plausible-looking
+Four bugs that inspection would not have found, each producing plausible-looking
 wrong numbers:
 
 - Station bookkeeping ignored occupancy at the warm-up boundary.
 - Cohort-based measurement understated throughput by 25% under overload — 37/s
   against a true capacity of 50/s — because with a long backlog most requests
   completing in the window entered before it. Measurement is now flow-based.
+- The analytic preview derived throughput from edge loss alone, ignoring load
+  shedding, and so reported 150/s for a station whose capacity was 100/s.
+- A station invariant was *reconstructed* from the result type, which cannot
+  express boundary occupancy, so it failed on correct runs. A false alarm damages
+  trust as much as a missed one; the check now lives on the component that owns
+  the data.
 
 ## Design rules the tool holds itself to
 
@@ -177,13 +234,17 @@ a pass/fail verdict sits inside its own error bar.
 **Approximations are labelled.** M/M/c and M/G/1 results are exact. Allen-Cunneen
 for M/G/c is not, and says so.
 
-## Phase 1 scope, deliberately narrow
+## Scope
 
-Two node kinds and linear chains only. A fan-out throws rather than guessing a
-routing policy — the legacy engine sent every request to *all* downstream
-dependencies, silently inventing a workload the user never described. Refusing is
-more useful: a fan-out is an unanswered question until per-class routing arrives.
+Cycles are rejected rather than truncated. The legacy engine tolerated them with an
+`ancestors` set and a hard depth cap of 8, quietly simulating a different topology
+from the one drawn. A cycle means a retry or a feedback path, and neither exists
+until Phase 3.
 
-Next: component library (load balancer, cache, connection pool, queue) with cited
-benchmark constants, then failure policies (timeout, retry, circuit breaker), then
-the analyzer (knee finding, sensitivity, config search).
+Health checks and outlier ejection are also deferred to Phase 3: without server
+failures there is nothing for a health check to detect, so implementing one now
+would be decoration.
+
+Next: failure policies (timeout, retry with backoff, circuit breaker, bulkhead),
+then the analyzer (knee finding, sensitivity, critical-path attribution, config
+search).

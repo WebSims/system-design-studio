@@ -1,19 +1,28 @@
 import {
-  type Design,
-  type Distribution,
-  type SdsEdge,
-  type SdsNode,
+  classesOf,
   isRunnable,
   validateDesign,
+  type Design,
+  type RequestClass,
+  type SdsEdge,
+  type SdsNode,
 } from "@sds/schema";
-import { mean as distMean, sample, scv } from "./distribution";
-import { LatencyHistogram } from "./histogram";
-import { Resource } from "./resource";
-import { RngBundle } from "./rng";
-import { Sim, acquire, delay, type Process } from "./sim";
-import { TimeSeries } from "./timeseries";
+import {
+  buildComponent,
+  callDependencies,
+  type Component,
+  type ComponentEnv,
+  type RequestCtx,
+  type TraceSink,
+} from "./components";
 import { assessConfidence } from "./confidence";
+import { LatencyHistogram } from "./histogram";
+import { RngBundle } from "./rng";
+import { Sim, type Process } from "./sim";
+import { TimeSeries } from "./timeseries";
 import type {
+  ClassResult,
+  ErrorBreakdown,
   ErrorReason,
   InvariantReport,
   LatencySummary,
@@ -35,21 +44,6 @@ const LITTLE_TOLERANCE = 0.05;
  * measured slope from noise alone.
  */
 const INSTABILITY_SLOPE_THRESHOLD = 0.05;
-
-interface Station {
-  node: SdsNode;
-  resource: Resource;
-  serviceTime: Distribution;
-  queueSeries: TimeSeries;
-  utilSeries: TimeSeries;
-  lastBusyIntegral: number;
-  lastSampleT: number;
-}
-
-interface PathStep {
-  edge: SdsEdge;
-  station: Station;
-}
 
 /**
  * Time-weighted accumulator for a counting quantity (e.g. requests in system).
@@ -106,84 +100,83 @@ class Integrator {
   }
 }
 
-class Recorder {
-  readonly successLatency = new LatencyHistogram();
-  /** All departures, success or failure. Used only for the Little's Law check. */
-  readonly allDepartureLatency = new LatencyHistogram();
-  /** Rolling window, reset each sample period, for the p99-over-time series. */
-  windowLatency = new LatencyHistogram();
-
-  created = 0;
+class ClassRecorder {
+  readonly latency = new LatencyHistogram();
   succeeded = 0;
   failed = 0;
-  errShed = 0;
-  errTimeout = 0;
-  errNetwork = 0;
-  windowCompletions = 0;
+  shed = 0;
+  timeout = 0;
+  network = 0;
+  queueFull = 0;
 
   reset(): void {
-    this.successLatency.reset();
-    this.allDepartureLatency.reset();
-    this.windowLatency.reset();
-    this.created = 0;
+    this.latency.reset();
     this.succeeded = 0;
     this.failed = 0;
-    this.errShed = 0;
-    this.errTimeout = 0;
-    this.errNetwork = 0;
+    this.shed = 0;
+    this.timeout = 0;
+    this.network = 0;
+    this.queueFull = 0;
+  }
+
+  record(latencyMs: number, reason: ErrorReason | null): void {
+    if (reason === null) {
+      this.succeeded++;
+      this.latency.record(latencyMs);
+      return;
+    }
+    this.failed++;
+    if (reason === "shed") this.shed++;
+    else if (reason === "timeout") this.timeout++;
+    else if (reason === "network") this.network++;
+    else this.queueFull++;
+  }
+
+  errors(): ErrorBreakdown {
+    const total = this.succeeded + this.failed;
+    return {
+      total: this.failed,
+      shed: this.shed,
+      timeout: this.timeout,
+      network: this.network,
+      queueFull: this.queueFull,
+      ratePct: total > 0 ? (this.failed / total) * 100 : 0,
+    };
+  }
+}
+
+class Recorder {
+  readonly overall = new ClassRecorder();
+  /** All departures, success or failure. Used only for the Little's Law check. */
+  readonly allDepartureLatency = new LatencyHistogram();
+  readonly byClass = new Map<string, ClassRecorder>();
+  /** Rolling window, reset each sample period, for the p99-over-time series. */
+  windowLatency = new LatencyHistogram();
+  created = 0;
+  windowCompletions = 0;
+
+  constructor(classes: RequestClass[]) {
+    for (const c of classes) this.byClass.set(c.id, new ClassRecorder());
+  }
+
+  reset(): void {
+    this.overall.reset();
+    this.allDepartureLatency.reset();
+    for (const r of this.byClass.values()) r.reset();
+    this.windowLatency.reset();
+    this.created = 0;
     this.windowCompletions = 0;
   }
 }
 
-/**
- * Resolve the linear chain of stations reachable from a client.
- *
- * Phase 1 deliberately refuses to guess at branching. The legacy engine sent
- * every request to *all* downstream dependencies of a node unconditionally
- * (engine.jsx:190-192), which silently invented a workload the user never
- * described. Refusing is more useful than inventing: per-class routing is a
- * Phase 2 schema feature, and until it exists a fan-out is an unanswered
- * question, not a default.
- */
-function buildPath(design: Design, client: SdsNode, stations: Map<string, Station>): PathStep[] {
-  const path: PathStep[] = [];
-  const visited = new Set<string>([client.id]);
-  let current = client.id;
-
-  for (;;) {
-    const outgoing = design.edges.filter((e) => e.from === current);
-    if (outgoing.length === 0) return path;
-    if (outgoing.length > 1) {
-      throw new Error(
-        `node "${current}" has ${outgoing.length} outgoing connections. ` +
-          `Phase 1 models linear chains only; request-class routing arrives in Phase 2.`
-      );
-    }
-    const edge = outgoing[0]!;
-    if (visited.has(edge.to)) {
-      throw new Error(
-        `cycle detected at "${edge.to}". Loops require retry semantics, which arrive in Phase 3.`
-      );
-    }
-    visited.add(edge.to);
-    const station = stations.get(edge.to);
-    if (!station) {
-      throw new Error(`edge "${edge.id}" targets "${edge.to}", which is not a service station`);
-    }
-    path.push({ edge, station });
-    current = edge.to;
-  }
-}
-
 function summarize(h: LatencyHistogram): LatencySummary {
-  const p = h.percentiles();
   return {
     count: h.count,
     mean: h.mean,
     min: h.min,
     max: h.max,
     relativeError: h.relativeError,
-    ...p,
+    ...h.percentiles(),
   };
 }
 
@@ -229,77 +222,100 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   const sim = new Sim();
   const rng = new RngBundle(seed);
   const arrivalRng = rng.stream("arrival");
-  const serviceRng = rng.stream("service");
-  const networkRng = rng.stream("network");
-  const lossRng = rng.stream("failure");
+  const classRng = rng.stream("routing");
 
-  const rec = new Recorder();
+  const classes = classesOf(design);
+  const totalWeight = classes.reduce((s, c) => s + c.weight, 0);
+  const rec = new Recorder(classes);
   const inSystem = new Integrator(sim);
 
-  // ---- stations ----
-  const stations = new Map<string, Station>();
+  // ---- trace collection ----
+  const hops: TraceHop[] = [];
+  const visits: TraceVisit[] = [];
+  const traceCapacity = collectTrace ? design.scenario.traceLimit : 0;
+  const trace: TraceSink = {
+    canTrace: () => hops.length + visits.length < traceCapacity,
+    hop: (requestId, edgeId, tStart, tEnd, delivered, forward) => {
+      if (hops.length + visits.length < traceCapacity) {
+        hops.push({ requestId, edgeId, tStart, tEnd, delivered, forward });
+      }
+    },
+    visit: (requestId, nodeId, tEnqueue, tServiceStart, tExit, outcome) => {
+      if (hops.length + visits.length < traceCapacity) {
+        visits.push({ requestId, nodeId, tEnqueue, tServiceStart, tExit, outcome });
+      }
+    },
+  };
+
+  // ---- measurement window ----
+  let measuring = warmupMs <= 0;
+  const measuringFn = () => measuring;
+
+  // ---- components ----
+  const outgoing = new Map<string, SdsEdge[]>();
+  for (const e of design.edges) {
+    const list = outgoing.get(e.from) ?? [];
+    list.push(e);
+    outgoing.set(e.from, list);
+  }
+
+  const components = new Map<string, Component>();
+  const env: ComponentEnv = {
+    sim,
+    rng,
+    design,
+    components,
+    outgoing,
+    trace,
+    measuring: measuringFn,
+  };
   for (const node of design.nodes) {
-    if (node.kind !== "server" || !node.server) continue;
-    const cfg = node.server;
-    stations.set(node.id, {
-      node,
-      resource: new Resource(sim, {
-        id: node.id,
-        capacity: cfg.concurrency * cfg.replicas,
-        queueCapacity: cfg.queueCapacity,
-        discipline: cfg.queueDiscipline,
-        admissionPolicy: cfg.admissionPolicy,
-      }),
-      serviceTime: cfg.serviceTime,
-      queueSeries: new TimeSeries(`${node.id}.queueLength`),
-      utilSeries: new TimeSeries(`${node.id}.utilization`),
-      lastBusyIntegral: 0,
-      lastSampleT: 0,
-    });
+    const component = buildComponent(node, env);
+    if (component) components.set(node.id, component);
   }
 
   const clients = design.nodes.filter((n) => n.kind === "client" && n.client);
-  const paths = new Map<string, PathStep[]>();
-  for (const c of clients) {
-    paths.set(c.id, buildPath(design, c, stations));
-  }
-
   const offeredRatePerSec = clients.reduce(
     (sum, c) => sum + (c.client?.arrival.ratePerSec ?? 0),
     0
   );
 
   // ---- trace sampling ----
-  const maxPathLen = Math.max(1, ...[...paths.values()].map((p) => p.length));
   const expectedRequests = Math.max(1, offeredRatePerSec * observedSec);
-  const maxSampledRequests = Math.max(
-    1,
-    Math.floor(design.scenario.traceLimit / (maxPathLen * 2))
-  );
+  const estimatedEventsPerRequest = Math.max(2, design.edges.length * 3);
+  const maxSampledRequests = Math.max(1, Math.floor(traceCapacity / estimatedEventsPerRequest));
   const sampleEvery = Math.max(1, Math.ceil(expectedRequests / maxSampledRequests));
-  const hops: TraceHop[] = [];
-  const visits: TraceVisit[] = [];
-  let traceTruncated = false;
 
-  const traceCapacity = design.scenario.traceLimit;
-  const canTrace = () => collectTrace && hops.length + visits.length < traceCapacity;
-
-  // ---- measurement window ----
-  let measuring = warmupMs <= 0;
   const throughputSeries = new TimeSeries("throughput");
   const latencyP99Series = new TimeSeries("latencyP99");
-
-  const measurementStart = () => (measuring ? warmupMs : 0);
 
   // ---- request lifecycle ----
   let nextRequestId = 0;
 
-  function* requestProcess(client: SdsNode, path: PathStep[]): Process<void> {
+  function pickClass(): RequestClass {
+    if (classes.length === 1) return classes[0]!;
+    let u = classRng.next() * totalWeight;
+    for (const c of classes) {
+      u -= c.weight;
+      if (u <= 0) return c;
+    }
+    return classes[classes.length - 1]!;
+  }
+
+  function* requestProcess(client: SdsNode): Process<void> {
     const requestId = nextRequestId++;
     const entryT = sim.now;
-    const traced = measuring && canTrace() && requestId % sampleEvery === 0;
+    const cls = pickClass();
+    const traced = measuring && collectTrace && trace.canTrace() && requestId % sampleEvery === 0;
     const timeoutMs = client.client?.timeoutMs ?? null;
-    const deadlineAt = timeoutMs === null ? null : entryT + timeoutMs;
+
+    const ctx: RequestCtx = {
+      requestId,
+      classId: cls.id,
+      serviceMultiplier: cls.serviceMultiplier,
+      deadlineAt: timeoutMs === null ? null : entryT + timeoutMs,
+      traced,
+    };
 
     // Population is tracked unconditionally: it is a physical quantity, and
     // Little's Law compares it against a departure rate that is also measured
@@ -314,121 +330,48 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
      * That is defensible in isolation but produces a badly wrong throughput under
      * overload: with a long FIFO backlog, most requests completing during the
      * window entered before it, so they were excluded and measured throughput
-     * came out at 37/s against a true capacity of 50/s. A capacity tool that
-     * understates capacity by 25% in exactly the overloaded regime you consult it
-     * about is worse than useless.
+     * came out at 37/s against a true capacity of 50/s.
      *
      * Counting departures within the window instead matches both what a
      * monitoring system reports and the form of Little's Law used here: L over
      * everyone present, lambda over everyone departing, W over the same
      * departures. All three are then consistent by construction.
      */
-    const finish = (reason: ErrorReason | null) => {
-      inSystem.add(-1);
-      if (!measuring) return;
+    const outcome = yield* callDependencies(env, client.id, ctx, "sequential");
+
+    inSystem.add(-1);
+    if (measuring) {
       const sojourn = sim.now - entryT;
+      const reason = outcome.ok ? null : (outcome.reason ?? "timeout");
       rec.allDepartureLatency.record(sojourn);
+      rec.overall.record(sojourn, reason);
+      rec.byClass.get(cls.id)?.record(sojourn, reason);
       if (reason === null) {
-        rec.succeeded++;
-        rec.successLatency.record(sojourn);
         rec.windowLatency.record(sojourn);
         rec.windowCompletions++;
-      } else {
-        rec.failed++;
-        if (reason === "shed") rec.errShed++;
-        else if (reason === "timeout") rec.errTimeout++;
-        else rec.errNetwork++;
-      }
-    };
-
-    for (const step of path) {
-      // ---- network hop ----
-      const hopStart = sim.now;
-      const latencyMs = sample(step.edge.latency, networkRng);
-      const netWait = yield* delay(latencyMs, deadlineAt);
-      if (netWait.timedOut) {
-        if (traced) hops.push({ requestId, edgeId: step.edge.id, tStart: hopStart, tEnd: sim.now, delivered: false });
-        finish("timeout");
-        return;
-      }
-      // Loss is modelled as an immediate failure. Without transport-level retry
-      // and retransmission (Phase 3) a dropped message has no honest recovery
-      // path, so it is reported rather than quietly stalled.
-      const dropped = lossRng.chance(step.edge.lossProbability);
-      if (traced) {
-        hops.push({
-          requestId,
-          edgeId: step.edge.id,
-          tStart: hopStart,
-          tEnd: sim.now,
-          delivered: !dropped,
-        });
-      }
-      if (dropped) {
-        finish("network");
-        return;
-      }
-
-      // ---- station ----
-      const station = step.station;
-      const enqueueT = sim.now;
-      const slot = yield* acquire(station.resource, deadlineAt);
-      if (!slot.granted) {
-        const outcome = slot.reason === "shed" ? "shed" : "timeout";
-        if (traced) {
-          visits.push({
-            requestId,
-            nodeId: station.node.id,
-            tEnqueue: enqueueT,
-            tServiceStart: null,
-            tExit: sim.now,
-            outcome,
-          });
-        }
-        finish(slot.reason ?? "timeout");
-        return;
-      }
-
-      const serviceStart = sim.now;
-      const serviceMs = sample(station.serviceTime, serviceRng);
-      const served = yield* delay(serviceMs, deadlineAt);
-      station.resource.release();
-
-      if (traced) {
-        visits.push({
-          requestId,
-          nodeId: station.node.id,
-          tEnqueue: enqueueT,
-          tServiceStart: serviceStart,
-          tExit: sim.now,
-          outcome: served.timedOut ? "timeout" : "served",
-        });
-      }
-      if (served.timedOut) {
-        finish("timeout");
-        return;
       }
     }
-
-    finish(null);
   }
 
   function* clientProcess(client: SdsNode): Process<void> {
     const arrival = client.client!.arrival;
-    const path = paths.get(client.id)!;
     const meanGapMs = 1000 / arrival.ratePerSec;
     for (;;) {
       const gap =
         arrival.kind === "poisson"
           ? -Math.log(arrivalRng.nextNonZero()) * meanGapMs
           : meanGapMs;
-      yield* delay(gap);
+      yield { kind: "delay", ms: gap };
       if (sim.now > durationMs) return;
-      sim.spawn(requestProcess(client, path));
+      sim.spawn(requestProcess(client));
     }
   }
 
   for (const c of clients) sim.spawn(clientProcess(c));
+  // Long-running component processes (queue consumers).
+  for (const component of components.values()) {
+    for (const p of component.processes?.() ?? []) sim.spawn(p);
+  }
 
   // ---- warm-up boundary ----
   if (warmupMs > 0) {
@@ -436,13 +379,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       measuring = true;
       rec.reset();
       inSystem.reset();
-      for (const st of stations.values()) {
-        st.resource.resetStats();
-        st.queueSeries.reset();
-        st.utilSeries.reset();
-        st.lastBusyIntegral = 0;
-        st.lastSampleT = warmupMs;
-      }
+      for (const component of components.values()) component.resetStats();
       throughputSeries.reset();
       latencyP99Series.reset();
     });
@@ -452,20 +389,13 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   const samplePeriodMs = Math.max(100, durationMs / 600);
   const sampleTick = () => {
     if (measuring) {
-      const tSec = (sim.now - measurementStart()) / 1000;
-      for (const st of stations.values()) {
-        st.queueSeries.push(tSec, st.resource.queueLength);
-        const s = st.resource.stats();
-        const busyIntegral = s.utilization * s.observedMs * st.resource.capacity;
-        const dt = sim.now - st.lastSampleT;
-        const windowUtil =
-          dt > 0 ? (busyIntegral - st.lastBusyIntegral) / (dt * st.resource.capacity) : 0;
-        st.utilSeries.push(tSec, Math.max(0, Math.min(1, windowUtil)));
-        st.lastBusyIntegral = busyIntegral;
-        st.lastSampleT = sim.now;
-      }
+      const tSec = (sim.now - (warmupMs > 0 ? warmupMs : 0)) / 1000;
+      for (const component of components.values()) component.sample(tSec);
       throughputSeries.push(tSec, (rec.windowCompletions * 1000) / samplePeriodMs);
-      latencyP99Series.push(tSec, rec.windowLatency.count > 0 ? rec.windowLatency.quantile(0.99) : 0);
+      latencyP99Series.push(
+        tSec,
+        rec.windowLatency.count > 0 ? rec.windowLatency.quantile(0.99) : 0
+      );
       rec.windowCompletions = 0;
       rec.windowLatency = new LatencyHistogram();
     }
@@ -477,84 +407,50 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   sim.run(durationMs);
 
   // ---- assemble ----
-  const nodeResults: NodeResult[] = [];
-  for (const node of design.nodes) {
-    if (node.kind === "client") {
-      nodeResults.push({
-        nodeId: node.id,
-        label: node.label,
-        kind: "client",
-        utilization: 0,
-        capacity: 0,
-        avgQueueLength: 0,
-        maxQueueLength: 0,
-        avgInStation: 0,
-        arrivals: 0,
-        admitted: 0,
-        shed: 0,
-        abandoned: 0,
-        completed: 0,
-        avgWaitMs: 0,
-        serviceMeanMs: 0,
-        serviceScv: 0,
-        arrivalRatePerSec: node.client?.arrival.ratePerSec ?? 0,
-        queueLengthSeries: { name: "queueLength", points: [] },
-        utilizationSeries: { name: "utilization", points: [] },
-      });
-      continue;
-    }
-    const st = stations.get(node.id)!;
-    const s = st.resource.stats();
-    nodeResults.push({
-      nodeId: node.id,
-      label: node.label,
-      kind: "server",
-      utilization: s.utilization,
-      capacity: st.resource.capacity,
-      avgQueueLength: s.avgQueueLength,
-      maxQueueLength: s.maxQueueLength,
-      avgInStation: s.avgInStation,
-      arrivals: s.arrivals,
-      admitted: s.admitted,
-      shed: s.shed,
-      abandoned: s.abandoned,
-      completed: s.completed,
-      avgWaitMs: s.admitted > 0 ? s.totalWaitMs / s.admitted : 0,
-      serviceMeanMs: distMean(st.serviceTime),
-      serviceScv: scv(st.serviceTime),
-      arrivalRatePerSec: observedSec > 0 ? s.arrivals / observedSec : 0,
-      queueLengthSeries: series(st.queueSeries),
-      utilizationSeries: series(st.utilSeries),
-    });
-  }
+  const nodeResults: NodeResult[] = design.nodes.map((node) => {
+    const component = components.get(node.id);
+    if (component) return component.result(observedSec);
+    return clientResult(node);
+  });
 
-  const stability = checkStability(stations, observedSec);
+  const stability = checkStability(nodeResults, observedSec);
+  const componentInvariants: InvariantReport[] = [];
+  for (const component of components.values()) {
+    componentInvariants.push(...component.invariants());
+  }
   const invariants = [
-    ...checkFlowConservation(rec, inSystem, stations),
+    ...checkFlowConservation(rec, inSystem),
+    ...componentInvariants,
     checkLittlesLaw(rec, inSystem, observedSec, stability.stable),
   ];
 
   const maxUtilization = nodeResults.reduce(
-    (m, n) => (n.kind === "server" ? Math.max(m, n.utilization) : m),
+    (m, n) => (n.kind === "client" ? m : Math.max(m, n.utilization)),
     0
   );
-  const confidence = assessConfidence(rec.succeeded + rec.failed, maxUtilization, observedSec);
+  const departures = rec.overall.succeeded + rec.overall.failed;
+  const confidence = assessConfidence(departures, maxUtilization, observedSec);
 
-  const endToEnd = summarize(rec.successLatency);
-  const totalDepartures = rec.succeeded + rec.failed;
-  const errors = {
-    total: rec.failed,
-    shed: rec.errShed,
-    timeout: rec.errTimeout,
-    network: rec.errNetwork,
-    ratePct: totalDepartures > 0 ? (rec.failed / totalDepartures) * 100 : 0,
-  };
+  const endToEnd = summarize(rec.overall.latency);
+  const errors = rec.overall.errors();
 
-  const trace: Trace = {
+  const classResults: ClassResult[] = classes.map((c) => {
+    const r = rec.byClass.get(c.id)!;
+    return {
+      classId: c.id,
+      label: c.label,
+      share: totalWeight > 0 ? c.weight / totalWeight : 0,
+      throughputPerSec: observedSec > 0 ? r.succeeded / observedSec : 0,
+      latency: summarize(r.latency),
+      errors: r.errors(),
+    };
+  });
+
+  const traceResult: Trace = {
     hops,
     visits,
     sampleEvery,
-    truncated: traceTruncated || (collectTrace && hops.length + visits.length >= traceCapacity),
+    truncated: collectTrace && hops.length + visits.length >= traceCapacity,
   };
 
   const sloPassed = evaluateSlo(design, endToEnd, errors.ratePct, stability.stable);
@@ -562,20 +458,58 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   return {
     design,
     observedSec,
-    throughputPerSec: observedSec > 0 ? rec.succeeded / observedSec : 0,
+    throughputPerSec: observedSec > 0 ? rec.overall.succeeded / observedSec : 0,
     offeredRatePerSec,
     endToEnd,
     errors,
     avgInSystem: inSystem.timeAverage(),
     nodes: nodeResults,
+    classes: classResults,
     invariants,
     stability,
     confidence,
     sloPassed,
-    trace,
+    trace: traceResult,
     throughputSeries: series(throughputSeries),
     latencyP99Series: series(latencyP99Series),
     wallMs: Date.now() - wallStart,
+  };
+}
+
+const EMPTY_LATENCY: LatencySummary = {
+  count: 0,
+  mean: 0,
+  min: 0,
+  max: 0,
+  relativeError: 0,
+  p50: 0,
+  p90: 0,
+  p99: 0,
+  p999: 0,
+};
+
+function clientResult(node: SdsNode): NodeResult {
+  return {
+    nodeId: node.id,
+    label: node.label,
+    kind: "client",
+    capacity: 0,
+    utilization: 0,
+    avgQueueLength: 0,
+    maxQueueLength: 0,
+    avgInStation: 0,
+    arrivals: 0,
+    admitted: 0,
+    shed: 0,
+    abandoned: 0,
+    completed: 0,
+    avgWaitMs: 0,
+    serviceMeanMs: 0,
+    serviceScv: 0,
+    arrivalRatePerSec: node.client?.arrival.ratePerSec ?? 0,
+    residencyMs: EMPTY_LATENCY,
+    queueLengthSeries: { name: "queueLength", points: [] },
+    utilizationSeries: { name: "utilization", points: [] },
   };
 }
 
@@ -608,83 +542,121 @@ function evaluateSlo(
  * because the trend is an observation of the simulation while the ratio is an
  * assumption about it -- and the trend still works once Phase 3 adds retries,
  * which inflate effective arrivals in ways the ratio does not see.
+ *
+ * A GROWING QUEUE BACKLOG IS CALLED OUT SEPARATELY.
+ *
+ * An async queue whose consumers cannot keep up is a genuine outage in progress,
+ * and yet every request percentile stays green because publishing returned
+ * immediately. That combination -- healthy latency, unbounded backlog -- is
+ * invisible in the headline numbers, so it gets its own warning.
  */
-function checkStability(stations: Map<string, Station>, observedSec: number): StabilityReport {
+function checkStability(nodes: NodeResult[], observedSec: number): StabilityReport {
   let worstSlope = 0;
   let worstNodeId: string | null = null;
+  let asyncBacklogWarning: string | null = null;
 
-  for (const st of stations.values()) {
+  for (const n of nodes) {
+    if (n.kind === "client") continue;
+
+    if (n.queue) {
+      const growth = n.queue.backlogGrowthPerSec;
+      if (growth > INSTABILITY_SLOPE_THRESHOLD) {
+        asyncBacklogWarning =
+          `queue "${n.label}" is falling behind: backlog growing by ${growth.toFixed(1)} messages/s. ` +
+          `Consumers drain at most ${n.queue.drainCapacityPerSec.toFixed(0)}/s against ` +
+          `${n.arrivalRatePerSec.toFixed(0)}/s arriving. Request latency looks healthy because ` +
+          `publishing returns immediately, but the work is not getting done and the lag grows without bound.`;
+      }
+      // A queue's backlog is not a synchronous bottleneck: it does not make
+      // requests slower, so it must not be reported as one.
+      continue;
+    }
+
     // Ignore the first fifth of the window: even a stable queue has a trend
     // while it fills from the warm-up boundary.
-    const slope = st.queueSeries.slopePerSec(observedSec * 0.2);
+    const slope = slopeOf(n.queueLengthSeries, observedSec * 0.2);
     if (slope > worstSlope) {
       worstSlope = slope;
-      worstNodeId = st.node.id;
+      worstNodeId = n.nodeId;
     }
   }
 
   const stable = worstSlope <= INSTABILITY_SLOPE_THRESHOLD;
+  const label = nodes.find((n) => n.nodeId === worstNodeId)?.label ?? worstNodeId;
   return {
     stable,
     worstQueueSlopePerSec: worstSlope,
     worstNodeId: stable ? null : worstNodeId,
+    asyncBacklogWarning,
     detail: stable
       ? "queue lengths are stationary; steady-state metrics are meaningful"
-      : `queue at "${worstNodeId}" is growing by ${worstSlope.toFixed(2)} requests/s and will not converge. ` +
+      : `queue at "${label}" is growing by ${worstSlope.toFixed(2)} requests/s and will not converge. ` +
         `Arrivals exceed service capacity: latency figures below are a function of run length, not of the design.`,
   };
 }
 
+function slopeOf(data: SeriesData, fromT: number): number {
+  const pts = data.points.filter((p) => p.t >= fromT);
+  const n = pts.length;
+  if (n < 3) return 0;
+  let sumT = 0;
+  let sumV = 0;
+  for (const p of pts) {
+    sumT += p.t;
+    sumV += p.value;
+  }
+  const meanT = sumT / n;
+  const meanV = sumV / n;
+  let num = 0;
+  let den = 0;
+  for (const p of pts) {
+    const dt = p.t - meanT;
+    num += dt * (p.value - meanV);
+    den += dt * dt;
+  }
+  return den === 0 ? 0 : num / den;
+}
+
 /**
- * Conservation of requests.
+ * System-level conservation of requests.
  *
- * Cheap to check and it catches the class of bug that is otherwise invisible: a
- * leaked capacity slot, a double release, a request resumed twice. Each produces
- * plausible-looking output that is quietly wrong.
- *
- * Every identity here carries the boundary occupancy explicitly. Measurement
- * starts at the warm-up boundary with requests already queued and in service, so
- * the naive forms (`created == departed`, `arrivals == admitted + shed`) are
- * simply false through no fault of the engine. Getting these identities right is
- * what makes a failure here mean something.
+ * Per-station bookkeeping lives on the components, which own the boundary
+ * occupancy the exact identity needs. This checks the whole-system balance and
+ * that per-class attribution sums to the headline totals.
  */
-function checkFlowConservation(
-  rec: Recorder,
-  inSystem: Integrator,
-  stations: Map<string, Station>
-): InvariantReport[] {
+function checkFlowConservation(rec: Recorder, inSystem: Integrator): InvariantReport[] {
   const reports: InvariantReport[] = [];
 
-  // created + present-at-start == departed + present-at-end
+  const succeeded = rec.overall.succeeded;
+  const failed = rec.overall.failed;
   const lhs = rec.created + inSystem.startValue;
-  const rhs = rec.succeeded + rec.failed + inSystem.current;
+  const rhs = succeeded + failed + inSystem.current;
   reports.push({
     name: "request conservation",
     passed: lhs === rhs,
     detail:
       lhs === rhs
         ? `${rec.created} arrived + ${inSystem.startValue} present at start = ` +
-          `${rec.succeeded} succeeded + ${rec.failed} failed + ${inSystem.current} still in flight`
+          `${succeeded} succeeded + ${failed} failed + ${inSystem.current} still in flight`
         : `in ${lhs} vs out ${rhs}: requests are being lost or duplicated`,
   });
 
-  for (const st of stations.values()) {
-    const s = st.resource.stats();
-    // Queue balance: arrivals + queued-at-start = admitted + shed + abandoned + queued-now
-    const arrivalsLhs = s.arrivals + s.queuedAtStart;
-    const arrivalsRhs = s.admitted + s.shed + s.abandoned + s.currentQueueLength;
-    // Service balance: admitted + in-service-at-start = completed + in-service-now
-    const serviceLhs = s.admitted + s.inServiceAtStart;
-    const serviceRhs = s.completed + s.currentInService;
-    const ok = arrivalsLhs === arrivalsRhs && serviceLhs === serviceRhs;
-    reports.push({
-      name: `station "${st.node.id}" bookkeeping`,
-      passed: ok,
-      detail: ok
-        ? `queue balance ${arrivalsLhs} = ${arrivalsRhs}; service balance ${serviceLhs} = ${serviceRhs}`
-        : `queue balance ${arrivalsLhs} vs ${arrivalsRhs}; service balance ${serviceLhs} vs ${serviceRhs}`,
-    });
+  // Per-class totals must sum to the overall totals, or the class attribution is
+  // wrong even though the headline figures look fine.
+  let classSucceeded = 0;
+  let classFailed = 0;
+  for (const r of rec.byClass.values()) {
+    classSucceeded += r.succeeded;
+    classFailed += r.failed;
   }
+  const classOk = classSucceeded === succeeded && classFailed === failed;
+  reports.push({
+    name: "class attribution",
+    passed: classOk,
+    detail: classOk
+      ? `${classSucceeded} successes and ${classFailed} failures attributed across classes`
+      : `classes account for ${classSucceeded}/${classFailed} against ${succeeded}/${failed} overall`,
+  });
 
   return reports;
 }
@@ -710,7 +682,7 @@ function checkLittlesLaw(
   observedSec: number,
   stable: boolean
 ): InvariantReport {
-  const departures = rec.succeeded + rec.failed;
+  const departures = rec.overall.succeeded + rec.overall.failed;
   if (departures < 100 || observedSec <= 0) {
     return {
       name: "Little's Law (L = \u03bbW)",

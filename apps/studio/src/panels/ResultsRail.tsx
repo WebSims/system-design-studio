@@ -1,4 +1,4 @@
-import type { RunResult } from "@sds/core";
+import type { NodeResult, RunResult } from "@sds/core";
 import type { DesignPreview } from "@sds/analytic";
 import { useStudio } from "../store";
 import { usePlayback } from "../playback";
@@ -8,6 +8,7 @@ const ms = (v: number | null | undefined): string =>
   v == null || !isFinite(v) ? "—" : v >= 1000 ? `${(v / 1000).toFixed(2)}s` : `${v.toFixed(1)}ms`;
 
 const pct = (v: number): string => `${(v * 100).toFixed(0)}%`;
+const num = (v: number): string => Math.round(v).toLocaleString();
 
 function sloVerdictTone(result: RunResult): "bad" | undefined {
   const target = result.design.slo.p99LatencyMs;
@@ -19,8 +20,7 @@ function sloVerdictTone(result: RunResult): "bad" | undefined {
  * spans the boundary.
  *
  * A pass/fail verdict inside the error bar is not a result, it is a coin toss
- * dressed as one. Saying so is the difference between a tool that informs a
- * decision and a tool that launders noise into confidence.
+ * dressed as one.
  */
 function sloBorderline(result: RunResult): boolean {
   const target = result.design.slo.p99LatencyMs;
@@ -28,7 +28,6 @@ function sloBorderline(result: RunResult): boolean {
   const margin = result.endToEnd.p99 * result.confidence.approxTailRelativeError;
   return Math.abs(result.endToEnd.p99 - target) < margin;
 }
-
 
 function Metric({
   label,
@@ -57,9 +56,9 @@ function Metric({
 /**
  * The live closed-form estimate.
  *
- * Shown while editing, before any simulation has run. It is exact for a single
- * M/M/c station and says so; where it cannot be exact it declines to show a number
- * and explains why, rather than presenting an approximation as a result.
+ * Shown while editing, before any simulation has run. Exact for a single M/M/c
+ * station; where it cannot be exact it declines to show a number and explains why,
+ * rather than presenting an approximation as a result.
  */
 function PreviewPanel({ preview }: { preview: DesignPreview }) {
   const bottleneck = preview.nodes.find((n) => n.nodeId === preview.bottleneckNodeId);
@@ -74,8 +73,7 @@ function PreviewPanel({ preview }: { preview: DesignPreview }) {
         /**
          * The most important refusal in the product. When arrivals exceed capacity
          * the queue grows for as long as you run, so latency is a function of run
-         * length rather than of the design. Printing "p99 = 4.2s" there is
-         * meaningless -- run twice as long and it doubles.
+         * length rather than of the design.
          */
         <div className="verdict crit">
           <div className="verdict-title">does not scale</div>
@@ -86,7 +84,7 @@ function PreviewPanel({ preview }: { preview: DesignPreview }) {
                 <b className="tnum">{bottleneck.arrivalRatePerSec.toFixed(0)}/s</b> against a
                 capacity of{" "}
                 <b className="tnum">
-                  {((bottleneck.capacity * 1000) / bottleneck.serviceMeanMs).toFixed(0)}/s
+                  {((bottleneck.capacity * 1000) / bottleneck.effectiveServiceMeanMs).toFixed(0)}/s
                 </b>{" "}
                 (&rho; = <b className="tnum">{bottleneck.rho.toFixed(2)}</b>). Its queue grows
                 without bound, so there is no steady state and no latency figure to report.
@@ -110,13 +108,28 @@ function PreviewPanel({ preview }: { preview: DesignPreview }) {
             }
             title={bottleneck ? `${bottleneck.label} (${bottleneck.model})` : undefined}
           />
-          <Metric label="mean latency" value={ms(preview.endToEndMeanMs)} />
+          <Metric
+            label={preview.meanIsLowerBound ? "mean latency (≥)" : "mean latency"}
+            value={ms(preview.endToEndMeanMs)}
+          />
           {preview.endToEndP99Ms !== null ? (
             <Metric label="p99 latency" value={ms(preview.endToEndP99Ms)} />
           ) : (
             <Metric label="p99 latency" value="—" tone="muted" title={preview.p99Reason ?? ""} />
           )}
           <Metric label="throughput" value={preview.throughputPerSec.toFixed(0)} unit="/s" />
+        </div>
+      )}
+
+      {/*
+        A saturated async queue does not slow requests down, so it cannot be folded
+        into the stability verdict -- but it is a real outage in progress and gets
+        its own callout.
+      */}
+      {preview.asyncBacklogWarning && (
+        <div className="verdict crit">
+          <div className="verdict-title">async backlog will grow without bound</div>
+          <div className="verdict-body">{preview.asyncBacklogWarning}</div>
         </div>
       )}
 
@@ -130,6 +143,113 @@ function PreviewPanel({ preview }: { preview: DesignPreview }) {
           {n}
         </p>
       ))}
+    </>
+  );
+}
+
+/** Component-specific measured detail, chosen per kind. */
+function ComponentDetail({ node }: { node: NodeResult }) {
+  if (node.cache) {
+    const c = node.cache;
+    return (
+      <>
+        <div className="station-detail tnum">
+          hit ratio <b>{pct(c.hitRatio)}</b> · {num(c.hits)} hits / {num(c.misses)} misses ·{" "}
+          {num(c.residentKeys)} keys resident
+        </div>
+        <div className="station-detail tnum dim">
+          {num(c.evictions)} evictions · {num(c.expirations)} expirations
+        </div>
+        <Chart series={c.hitRatioSeries} height={64} color="#ec6ca0" yLabel="hit" />
+      </>
+    );
+  }
+
+  if (node.database) {
+    const d = node.database;
+    const poolBinding = d.poolSize < d.parallelism;
+    return (
+      <>
+        <div className="station-detail tnum">
+          pool {d.poolSize} at <b>{pct(d.poolUtilization)}</b> · execution {d.parallelism} at{" "}
+          <b>{pct(d.executionUtilization)}</b>
+        </div>
+        <div className="station-detail tnum dim">
+          waits: pool {ms(d.avgPoolWaitMs)} · execution {ms(d.avgExecutionWaitMs)} · ceiling{" "}
+          {d.maxThroughputPerSec.toFixed(0)}/s
+        </div>
+        <p className="note">
+          {poolBinding ? (
+            <>
+              The pool ({d.poolSize}) is below execution parallelism ({d.parallelism}), so
+              connections are the constraint. Raising the pool will raise throughput.
+            </>
+          ) : (
+            <>
+              Throughput is capped at <b>{d.maxThroughputPerSec.toFixed(0)}/s</b> by execution
+              parallelism, not by the pool. Raising the pool past {d.parallelism} moves waiting
+              from pool to execution and changes nothing else.
+            </>
+          )}
+        </p>
+      </>
+    );
+  }
+
+  if (node.queue) {
+    const q = node.queue;
+    const growing = q.backlogGrowthPerSec > 0.05;
+    return (
+      <>
+        <div className="station-detail tnum">
+          backlog avg <b>{num(q.avgBacklog)}</b> / max {num(q.maxBacklog)} · age p50{" "}
+          {ms(q.backlogAge.p50)} / p99 {ms(q.backlogAge.p99)}
+        </div>
+        <div className="station-detail tnum dim">
+          {q.consumers} consumers at {pct(q.consumerUtilization)} · drain{" "}
+          {q.drainCapacityPerSec.toFixed(0)}/s · {num(q.enqueued)} in / {num(q.consumed)} out
+          {q.dropped > 0 && ` · ${num(q.dropped)} dropped`}
+        </div>
+        {growing && (
+          <p className="note warn">
+            Backlog growing {q.backlogGrowthPerSec.toFixed(1)}/s. Nothing in the request
+            percentiles reflects this, because publishing returns immediately.
+          </p>
+        )}
+        <Chart series={q.backlogSeries} height={72} color="#6cb33e" yLabel="backlog" />
+      </>
+    );
+  }
+
+  if (node.loadbalancer) {
+    const lb = node.loadbalancer;
+    return (
+      <>
+        <div className="station-detail tnum">
+          {lb.algorithm} · {num(lb.dispatched)} dispatched · worst spread ±
+          {lb.worstImbalancePct.toFixed(1)}pp
+        </div>
+        <div className="station-detail tnum dim">
+          {lb.perBackend.map((b) => `${b.label} ${b.sharePct.toFixed(1)}%`).join(" · ")}
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="station-detail tnum">
+        c={node.capacity} · queue avg {node.avgQueueLength.toFixed(2)} / max {node.maxQueueLength} ·
+        wait {ms(node.avgWaitMs)}
+        {node.shed > 0 && ` · shed ${num(node.shed)}`}
+      </div>
+      {node.residencyMs.count > 0 && node.residencyMs.mean > node.serviceMeanMs * 1.5 && (
+        <div className="station-detail tnum dim">
+          residency {ms(node.residencyMs.mean)} against {ms(node.serviceMeanMs)} of own work — this
+          station holds its slot while waiting on dependencies
+        </div>
+      )}
+      <Chart series={node.queueLengthSeries} height={64} color="#7b51a1" yLabel="queue" />
     </>
   );
 }
@@ -187,6 +307,7 @@ function ResultPanel({ result }: { result: RunResult }) {
   const slo = result.design.slo;
   const errTone = result.errors.ratePct > 1 ? "bad" : result.errors.ratePct > 0 ? "warn" : "ok";
   const failedInvariants = result.invariants.filter((i) => !i.passed);
+  const stations = result.nodes.filter((n) => n.kind !== "client");
 
   return (
     <>
@@ -201,12 +322,14 @@ function ResultPanel({ result }: { result: RunResult }) {
         </div>
       )}
 
+      {result.stability.asyncBacklogWarning && (
+        <div className="verdict crit">
+          <div className="verdict-title">async backlog growing — invisible in every percentile</div>
+          <div className="verdict-body">{result.stability.asyncBacklogWarning}</div>
+        </div>
+      )}
+
       {failedInvariants.length > 0 && (
-        /**
-         * Surfaced prominently, not buried. A simulator that violates conservation
-         * of requests or Little's Law is producing plausible-looking wrong numbers;
-         * the desired failure mode is the tool distrusting itself out loud.
-         */
         <div className="verdict crit">
           <div className="verdict-title">invariant violated — do not trust these numbers</div>
           {failedInvariants.map((i) => (
@@ -261,12 +384,6 @@ function ResultPanel({ result }: { result: RunResult }) {
         up to {(result.endToEnd.relativeError * 100).toFixed(1)}% bucketing error.
       </p>
 
-      {/*
-        The tool stating its own precision, separately for the mean and the tail.
-        Reporting one figure for both overstates confidence in the p99, which is
-        the number the SLO is written against -- caught when the default design's
-        p99 was seen ranging 262-302ms while the tool claimed 1% accuracy.
-      */}
       <div className={`confidence ${result.confidence.sufficient ? "ok" : "warn"}`}>
         <b>{result.confidence.sufficient ? "sample size adequate" : "sample size low"}</b>
         <div>{result.confidence.note}</div>
@@ -280,34 +397,62 @@ function ResultPanel({ result }: { result: RunResult }) {
         </p>
       )}
 
+      {/*
+        Per-class results. A blended percentile hides both a fast path and a slow
+        one, which is precisely what the legacy engine's single number did.
+      */}
+      {result.classes.length > 1 && (
+        <>
+          <div className="section">request classes</div>
+          {result.classes.map((c) => (
+            <div className="class-row" key={c.classId}>
+              <div className="class-head">
+                <span>{c.label}</span>
+                <span className="tnum">{pct(c.share)} of traffic</span>
+              </div>
+              <div className="class-detail tnum">
+                {c.throughputPerSec.toFixed(0)}/s · p50 {ms(c.latency.p50)} · p99{" "}
+                {ms(c.latency.p99)} · {c.errors.ratePct.toFixed(2)}% errors
+              </div>
+            </div>
+          ))}
+          <p className="note">
+            The blended p99 above sits between these. Reporting only the blend hides both
+            the fast path and the slow one.
+          </p>
+        </>
+      )}
+
       {result.errors.total > 0 && (
         <>
           <div className="section">error breakdown</div>
-          <div className="metrics">
-            <Metric label="shed" value={result.errors.shed.toLocaleString()} />
-            <Metric label="timeout" value={result.errors.timeout.toLocaleString()} />
-            <Metric label="network" value={result.errors.network.toLocaleString()} />
+          <div className="metrics four">
+            <Metric label="shed" value={num(result.errors.shed)} />
+            <Metric label="timeout" value={num(result.errors.timeout)} />
+            <Metric label="network" value={num(result.errors.network)} />
+            <Metric label="queue full" value={num(result.errors.queueFull)} />
           </div>
         </>
       )}
 
       <div className="section">stations</div>
-      {result.nodes
-        .filter((n) => n.kind === "server")
-        .map((n) => (
-          <div className="station-row" key={n.nodeId}>
-            <div className="station-head">
-              <span>{n.label}</span>
-              <span className="tnum">{pct(n.utilization)} busy</span>
-            </div>
-            <div className="station-detail tnum">
-              c={n.capacity} · queue avg {n.avgQueueLength.toFixed(2)} / max {n.maxQueueLength} ·
-              wait {ms(n.avgWaitMs)}
-              {n.shed > 0 && ` · shed ${n.shed.toLocaleString()}`}
-            </div>
-            <Chart series={n.queueLengthSeries} height={72} color="#7b51a1" yLabel="queue" />
+      {stations.map((n) => (
+        <div className="station-row" key={n.nodeId}>
+          <div className="station-head">
+            <span>
+              {n.label} <span className="station-kind">{n.kind}</span>
+            </span>
+            <span
+              className={`tnum ${
+                n.utilization >= 0.85 ? "bad" : n.utilization >= 0.7 ? "warn" : ""
+              }`}
+            >
+              {pct(n.utilization)} busy
+            </span>
           </div>
-        ))}
+          <ComponentDetail node={n} />
+        </div>
+      ))}
 
       <div className="section">throughput over time</div>
       <Chart series={result.throughputSeries} color="#2aa8a8" yLabel="req/s" />
