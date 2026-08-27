@@ -21,6 +21,7 @@ const KIND_ACCENT: Record<NodeKind, string> = {
   cache: "var(--pink)",
   database: "var(--purple)",
   queue: "var(--green)",
+  gateway: "var(--yellow)",
 };
 
 const KIND_LABEL: Record<NodeKind, string> = {
@@ -30,6 +31,7 @@ const KIND_LABEL: Record<NodeKind, string> = {
   cache: "cache",
   database: "database",
   queue: "queue",
+  gateway: "gateway",
 };
 
 /** One-line summary of an arrival profile, including the time-varying shapes. */
@@ -61,7 +63,17 @@ function summaryOf(node: SdsNode): string {
   switch (node.kind) {
     case "client": {
       const a = node.client!.arrival;
-      return `${a.kind} \u00b7 ${describeArrival(a)}`;
+      const conns = node.client!.connections;
+      const msgs = `${a.kind} \u00b7 ${describeArrival(a)}`;
+      // Connections lead, because when a client holds them they are the headline
+      // number and the message rate is secondary.
+      return conns ? `${conns.count.toLocaleString()} connections \u00b7 ${msgs}` : msgs;
+    }
+    case "gateway": {
+      const g = node.gateway!;
+      const total = g.connectionCapacity * g.replicas;
+      const reps = g.replicas > 1 ? `${g.replicas}\u00d7` : "";
+      return `${reps}${(g.connectionCapacity / 1000).toFixed(0)}k sockets \u00b7 ${g.pushConcurrency} slots`;
     }
     case "loadbalancer":
       return `${node.loadbalancer!.algorithm} \u00b7 ${describe(node.loadbalancer!.serviceTime)}`;
@@ -117,6 +129,15 @@ function detailOf(kind: NodeKind, measured: ReturnType<typeof useMeasured>): str
       return measured.loadbalancer
         ? `\u00b1${measured.loadbalancer.worstImbalancePct.toFixed(1)}pp spread`
         : null;
+    case "gateway":
+      return measured.connections
+        ? measured.connections.capacity > 1
+          ? `${Math.round(measured.connections.avgHeld).toLocaleString()} held` +
+            (measured.connections.refused > 0
+              ? ` \u00b7 ${measured.connections.refused.toLocaleString()} refused`
+              : "")
+          : `${measured.connections.pushRatePerSec.toFixed(0)} pushes/s`
+        : null;
     default:
       return `${measured.completed.toLocaleString()} served`;
   }
@@ -144,11 +165,14 @@ export function StudioNode({ id, selected }: NodeProps) {
   const tone = utilTone(displayRho);
   const detail = detailOf(node.kind, measured);
   const backlogGrowing = (measured?.queue?.backlogGrowthPerSec ?? 0) > 0.05;
+  // Refusing connections is a hard failure, so it gets the same treatment as a queue
+  // that will never drain.
+  const refusingConnections = (measured?.connections?.refused ?? 0) > 0;
 
   return (
     <div
       className={`node kind-${node.kind} ${selected ? "selected" : ""} tone-${tone} ${
-        backlogGrowing ? "async-alert" : ""
+        backlogGrowing || refusingConnections ? "async-alert" : ""
       }`}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT, "--accent-node": KIND_ACCENT[node.kind] } as React.CSSProperties}
     >
@@ -188,12 +212,20 @@ export function StudioNode({ id, selected }: NodeProps) {
   );
 }
 
-/** Every kind renders through the same component; React Flow needs a map. */
-export const nodeTypes = {
+/**
+ * Every kind renders through the same component; React Flow needs a map.
+ *
+ * Kept exhaustive over `NodeKind` by construction, because a missing entry does not
+ * fail loudly -- React Flow silently falls back to its default node, which renders
+ * nothing useful and breaks selection. That is how the gateway shipped invisible in a
+ * first pass.
+ */
+export const nodeTypes: Record<NodeKind, typeof StudioNode> = {
   client: StudioNode,
   loadbalancer: StudioNode,
   server: StudioNode,
   cache: StudioNode,
   database: StudioNode,
   queue: StudioNode,
+  gateway: StudioNode,
 };

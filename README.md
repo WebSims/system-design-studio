@@ -3,14 +3,14 @@
 A discrete-event simulator for finding bottlenecks and scaling limits in system
 designs, validated against closed-form queueing theory.
 
-## Status: Phase 5
+## Status: Phase 7
 
 Validated engine, component library, and studio. `legacy/` holds the previous
 animation-driven build, kept as a visual reference.
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 314 tests (~80s)
+pnpm verify     # typecheck + 347 tests (~95s)
 pnpm dev        # studio at localhost:5173
 ```
 
@@ -23,11 +23,57 @@ pnpm dev        # studio at localhost:5173
 | **cache** | real Zipf key population, real LRU map, real TTL, read-through | the hit ratio is an *output*, so "how much cache do I need" is answerable |
 | **database** | connection pool *outside*, execution parallelism *inside* | raising the pool past parallelism buys nothing |
 | **queue** | asynchronous: publish returns immediately | the backlog grows without bound while every percentile stays green |
+| **gateway** | sockets held for a session + a small event-loop work pool | how many *users*, not how many requests — and that handshakes starve delivery |
 
 Plus **request classes** (traffic mix, per-class routing, cost multipliers), so
 "reads go through the cache, writes go straight to the database" is expressible,
 and fan-out is either fork-join (`max`) or sequential (`sum`) — explicitly, not
 by assumption.
+
+## Realtime: connections and fan-out
+
+```bash
+pnpm sim --example chat-20k
+pnpm sim --example chat-reconnect-storm
+```
+
+The question this project started from — *"a realtime chat app with 20k concurrent
+users"* — needs a primitive nothing else in the model has: a resource held for an
+entire session rather than a service time.
+
+```
+realtime
+  connections held  20,000
+  largest fan-out   20x one message becomes 20 deliveries
+  total work        23.0 downstream calls per message, across every hop
+
+stations
+  gateways        gateway   8    3.2%
+    connections 20,000 of 40,000 (50%) · peak 20,000 · 781 MB
+    accepts 11.4/s at p99 40.3ms · 910 closed
+  delivery        gateway   8   49.9%
+    pushes 19,976/s · delivery p50 0.4ms / p99 0.4ms
+```
+
+**Holding sockets is cheap; pushing to them is not.** The gateways sit at 3% while
+holding 20,000 connections and 781 MB. The delivery side, doing 20,000 pushes a
+second, is at 50%. 1,000 messages/s costs what 20,000 requests/s would.
+
+Fan-out is a real multiplier, not an equivalent increase in service time: 20
+deliveries occupy 20 slots and queue independently. That makes a fan-out run
+simulate far more work than its message rate suggests, which is the honest price of
+the effect being real.
+
+**Connections obey Little's Law.** A population of N with sessions of length S holds
+N descriptors and generates N/S handshakes per second, forever — the same
+`L = λW` identity the engine checks on requests, applied to a resource whose service
+time is measured in minutes. Validated at three (N, S) pairs.
+
+**Losing a gateway** drops a quarter of the connections at once. Handshakes cost far
+more than messages and share the same work pool, so delivery p99 goes from **0.2ms
+to 2.18s** — for users who never disconnected. That failure is invisible to every
+steady-state measurement, and connection headroom is not the same thing as
+resilience.
 
 ## Measured uncertainty
 
@@ -177,7 +223,7 @@ Four ways, cheapest first.
 ### 1. The automated gate
 
 ```bash
-pnpm verify                  # typecheck + all 314 tests
+pnpm verify                  # typecheck + all 347 tests
 pnpm test                    # tests only
 pnpm vitest run -t "M/M/c"   # one group
 ```
@@ -395,6 +441,21 @@ Phase 5 statistics and scenarios:
   ramp reports a higher limit — the lag, measured directly with duration held fixed
   so the sample window doesn't confound the slope.
 
+Phase 7 connections and fan-out:
+
+- **Little's Law for connections** — accept rate equals population/session at three
+  (N, S) pairs, and held connections equal `accept rate × session length`.
+- **Fan-out is exact** — `N` deliveries per message gives exactly `N` traversals, at
+  factors 1, 5, 20 and 50, and multiplies *delivery* load without touching message
+  throughput.
+- **Capacity refusal** — a population above capacity holds exactly the capacity and
+  refuses the rest.
+- **A gateway does not hold its work slot** across downstream calls; utilization
+  reflects only its own push work.
+- **Reconnect storm** — the configured share drops and all of it returns; delivery
+  p99 degrades >10× for connections that never dropped, and spreading the reconnects
+  measurably reduces the damage.
+
 Run lengths are derived from the `1/(1-rho)^2` relaxation scaling rather than tuned
 until green. Convergence was measured directly (5.4% → 0.07% error as a run grew
 64x) to confirm residual disagreement at `rho=0.9` is variance, not bias.
@@ -437,6 +498,21 @@ wrong numbers:
 - Load-correlated failure counted the request being served as load, putting a floor
   of `1/capacity` under the pressure term — a 4-slot station could never read below
   25% busy. It now excludes the request itself and includes the queue.
+- A forced connection drop released the descriptor while the holder was still parked
+  on its session timer, so the holder later closed a connection that no longer
+  existed — the count was decremented twice and *the reconnect storm never happened*,
+  because nobody was told their connection had gone. Fixed with a revoke handshake;
+  the gateway invariant is what proves it.
+- The queue's bookkeeping invariant read `consumed <= enqueued`, which is false at
+  any non-empty warm-up boundary. It had been wrong since Phase 2 and went unnoticed
+  until a design arrived whose queue was actually busy when measurement began.
+- A gateway held its work slot across downstream calls, as a thread-per-request
+  server correctly does. For an event loop that is wrong, and at fan-out scale
+  catastrophically so: a station doing 0.26 core-seconds of work per second read as
+  **74% utilized** and the bottleneck was attributed to the wrong component.
+- `nodeTypes` was missing `gateway`. React Flow silently falls back to a default node
+  rather than failing, so the component shipped invisible and unselectable in a first
+  pass. The map is now typed exhaustively over `NodeKind`.
 
 ## Design rules the tool holds itself to
 
@@ -515,5 +591,13 @@ gain. It is still a linear interpolation between idle and saturated, and real
 failures arrive in correlated bursts rather than independently — that would need a
 failure process with memory.
 
-Next: restoring the full identicon and occupancy choreography on the trace player
-(Phase 6), then stateful connections for the 20k-user chat case (Phase 7).
+The chat example models the gateways' inbound and delivery sides as separate
+stations, because the graph is acyclic and a delivery path looping back to the
+gateway would be a cycle. In a live deployment the same event loop does both, so
+accept and delivery work contend more than they do here. The connection capacity and
+memory figures still belong to the gateway, which is where the "how many users"
+question lives.
+
+Still outstanding: the identicon and occupancy choreography on the trace player
+(Phase 6, deferred), the LLM layer (Phase 8, awaiting a spec), and resource-unit
+accounting so cost could be layered on later.

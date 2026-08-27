@@ -41,7 +41,7 @@ function station(o: {
   failureAtSaturation?: number | null;
 }): Design {
   return DesignSchema.parse({
-    version: 4,
+    version: 5,
     name: "phase5",
     nodes: [
       {

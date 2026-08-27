@@ -28,6 +28,7 @@ const CONFIG_KEY: Record<NodeKind, keyof SdsNode> = {
   cache: "cache",
   database: "database",
   queue: "queue",
+  gateway: "gateway",
 };
 
 /**
@@ -264,6 +265,92 @@ export function validateDesign(design: Design): DesignIssue[] {
     });
   }
 
+  // ---- connections and gateways ----
+  for (const n of design.nodes) {
+    const pop = n.client?.connections;
+    if (!pop) continue;
+
+    const targets = design.edges
+      .filter((e) => e.from === n.id)
+      .map((e) => byId.get(e.to))
+      .filter((t): t is SdsNode => Boolean(t));
+
+    // A connection has to be held by something that can hold it.
+    const reachesGateway = targets.some(
+      (t) => t.kind === "gateway" || t.kind === "loadbalancer"
+    );
+    if (!reachesGateway) {
+      issues.push({
+        severity: "error",
+        code: "connections-without-gateway",
+        message:
+          `client "${n.label}" holds ${pop.count.toLocaleString()} connections but is not wired to a ` +
+          `gateway (directly or through a load balancer). Only a gateway can hold a connection.`,
+        nodeId: n.id,
+      });
+    }
+
+    if (pop.disruption) {
+      if (pop.disruption.atSec >= design.scenario.durationSec) {
+        issues.push({
+          severity: "warning",
+          code: "disruption-after-end",
+          message: `the disruption on "${n.label}" is scheduled after the run ends, so it never happens.`,
+          nodeId: n.id,
+        });
+      } else if (pop.disruption.atSec < pop.establishOverSec) {
+        issues.push({
+          severity: "warning",
+          code: "disruption-during-establish",
+          message:
+            `the disruption on "${n.label}" fires while the initial connections are still being ` +
+            `established, so the two bursts overlap and the result measures neither cleanly.`,
+          nodeId: n.id,
+        });
+      }
+    }
+  }
+
+  // Total connection demand against total gateway capacity, which is the whole
+  // question behind "N concurrent users".
+  const totalConnections = design.nodes.reduce(
+    (sum, n) => sum + (n.client?.connections?.count ?? 0),
+    0
+  );
+  if (totalConnections > 0) {
+    const capacity = design.nodes.reduce(
+      (sum, n) => sum + (n.gateway ? n.gateway.connectionCapacity * n.gateway.replicas : 0),
+      0
+    );
+    if (capacity > 0 && totalConnections > capacity) {
+      issues.push({
+        severity: "warning",
+        code: "connection-capacity-exceeded",
+        message:
+          `${totalConnections.toLocaleString()} connections are offered against ` +
+          `${capacity.toLocaleString()} of gateway capacity. The excess will be refused, which is a ` +
+          `hard failure rather than a slow response.`,
+      });
+    }
+  }
+
+  for (const e of design.edges) {
+    if (e.fanoutFactor > 1) {
+      const to = byId.get(e.to);
+      if (to?.kind === "database") {
+        issues.push({
+          severity: "warning",
+          code: "fanout-into-database",
+          message:
+            `this connection fans one call into ${e.fanoutFactor} calls against a database. ` +
+            `Fan-out multiplies load by that factor, and a database is rarely the right place to ` +
+            `absorb it.`,
+          edgeId: e.id,
+        });
+      }
+    }
+  }
+
   // ---- time-varying arrival ----
   for (const n of design.nodes) {
     if (!n.client) continue;
@@ -374,6 +461,11 @@ const MIGRATIONS: Record<number, Migration> = {
   // arrival processes are unchanged variants of the widened union, and the new
   // failure field defaults to null, so behaviour is again identical.
   3: (doc) => ({ ...doc, version: 4 }),
+
+  // 4 -> 5: gateways, connection populations and edge fan-out. `connections`
+  // defaults to null and `fanoutFactor` to 1, so a request/response design behaves
+  // exactly as before.
+  4: (doc) => ({ ...doc, version: 5 }),
 };
 
 /**

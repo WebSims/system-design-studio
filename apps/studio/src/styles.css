@@ -23,6 +23,7 @@
   --teal: #2aa8a8;
   --pink: #ec6ca0;
   --green: #6cb33e;
+  --yellow: #f5c518;
 
   --rail-left: 340px;
   --rail-right: 300px;
@@ -732,6 +733,7 @@ body {
 .palette-dot.kind-cache { background: var(--pink); }
 .palette-dot.kind-database { background: var(--purple); }
 .palette-dot.kind-queue { background: var(--green); }
+.palette-dot.kind-gateway { background: var(--yellow); }
 
 .palette-body {
   display: flex;

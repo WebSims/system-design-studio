@@ -253,6 +253,46 @@ function ComponentDetail({ node }: { node: NodeResult }) {
     );
   }
 
+  if (node.connections) {
+    const c = node.connections;
+    const holdsSockets = c.capacity > 1;
+    return (
+      <>
+        {holdsSockets && (
+          <>
+            <div className="station-detail tnum">
+              connections{" "}
+              <b className={c.utilization >= 0.85 ? "bad" : c.utilization >= 0.7 ? "warn" : ""}>
+                {num(c.avgHeld)} / {num(c.capacity)}
+              </b>{" "}
+              ({pct(c.utilization)}) · peak {num(c.peakHeld)} · {c.memoryMb.toFixed(0)} MB
+            </div>
+            <div className="station-detail tnum dim">
+              accepts {c.acceptRatePerSec.toFixed(1)}/s at p99 {ms(c.acceptLatency.p99)} ·{" "}
+              {num(c.closed)} closed
+              {c.droppedByFault > 0 && ` (${num(c.droppedByFault)} by fault)`}
+            </div>
+          </>
+        )}
+        {c.refused > 0 && (
+          <p className="note warn">
+            <b>{num(c.refused)} connections refused.</b> A refused connection is a hard failure,
+            not a slow response: the user gets nothing at all.
+          </p>
+        )}
+        {c.pushes > 0 && (
+          <div className="station-detail tnum">
+            pushes <b>{c.pushRatePerSec.toFixed(0)}/s</b> · delivery p50 {ms(c.pushLatency.p50)} /
+            p99 {ms(c.pushLatency.p99)} · work pool {pct(c.workUtilization)} busy
+          </div>
+        )}
+        {holdsSockets && (
+          <Chart series={c.connectionSeries} height={72} color="#f5c518" yLabel="conns" />
+        )}
+      </>
+    );
+  }
+
   if (node.loadbalancer) {
     const lb = node.loadbalancer;
     return (
@@ -442,6 +482,45 @@ function ResultPanel({ result }: { result: RunResult }) {
             )}
           </div>
         </div>
+      )}
+
+      {/*
+        Realtime headline figures. Connections held answers "how many users", and
+        fan-out explains why the delivery cost bears no relation to the message rate.
+      */}
+      {(result.connectionsHeld > 0 || result.largestFanout > 1) && (
+        <>
+          <div className="section">realtime</div>
+          <div className="metrics">
+            {result.connectionsHeld > 0 && (
+              <Metric
+                label="connections held"
+                value={num(result.connectionsHeld)}
+                tone={result.connectionsRefused > 0 ? "bad" : "ok"}
+              />
+            )}
+            {result.connectionsRefused > 0 && (
+              <Metric label="refused" value={num(result.connectionsRefused)} tone="bad" />
+            )}
+            {result.largestFanout > 1 && (
+              <>
+                <Metric label="largest fan-out" value={`${result.largestFanout}×`} />
+                <Metric
+                  label="calls per message"
+                  value={result.callsPerMessage.toFixed(1)}
+                  title="total downstream traversals per message, across every hop"
+                />
+              </>
+            )}
+          </div>
+          {result.largestFanout > 1 && (
+            <p className="note">
+              One message becomes <b className="tnum">{result.largestFanout}</b> deliveries, so the
+              write path costs {result.largestFanout}× what the message rate suggests. Room size is
+              a product decision that is also a capacity decision, and it rarely appears in one.
+            </p>
+          )}
+        </>
       )}
 
       <div className="metrics">

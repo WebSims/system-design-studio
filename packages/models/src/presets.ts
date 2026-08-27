@@ -46,6 +46,36 @@ const capacity = (id: string) => {
 
 export const PRESETS: ComponentPreset[] = [
   {
+    id: "gateway",
+    label: "realtime gateway",
+    kind: "gateway",
+    blurb:
+      "holds long-lived sockets. Connection capacity constrains how many users; the work pool constrains delivery.",
+    build: (id, x, y) =>
+      node({
+        id,
+        kind: "gateway",
+        label: "gateway",
+        x,
+        y,
+        gateway: {
+          connectionCapacity: 10_000,
+          replicas: 2,
+          acceptTime: { kind: "lognormal", mean: 5, p99: 40 },
+          pushTime: { kind: "deterministic", value: 0.2 },
+          // Single digits, because push work is CPU-bound on an event loop.
+          pushConcurrency: 2,
+          memoryPerConnectionKb: 40,
+          citation: {
+            range: [10, 100],
+            source:
+              "per-connection memory for a WebSocket with modest buffers; varies with buffer sizing and TLS",
+            asOf: "2026-08",
+          },
+        },
+      }),
+  },
+  {
     id: "client",
     label: "client",
     kind: "client",
@@ -961,6 +991,207 @@ export function correlatedCascade(): Design {
   });
 }
 
+/**
+ * 20,000 concurrent chat users.
+ *
+ * The question this whole project started from, and one a request/response model cannot
+ * express at all.
+ *
+ * THE SHAPE OF THE PROBLEM
+ *
+ * 20,000 users hold open sockets. Each sends a message roughly every twenty seconds --
+ * 1,000 messages a second in total, which is nothing. But each message goes to a room
+ * of twenty, so the system does 20,000 DELIVERIES a second. The write path is amplified
+ * twentyfold, and the amplification factor is a product decision (how big are rooms?)
+ * that nobody thinks of as a capacity decision.
+ *
+ * THE ARCHITECTURE
+ *
+ *   users ---> gateways        hold the sockets, accept handshakes, push deliveries
+ *                |
+ *                v
+ *              api             validate, persist
+ *                |
+ *                v
+ *              bus (queue)     decouple send from deliver
+ *                |
+ *                v  x20 fan-out
+ *              delivery        push work, back out through the gateways
+ *
+ * Delivery is modelled as its own station rather than looping back to the gateway,
+ * because the graph is acyclic and a cycle would be rejected. That is a real
+ * simplification: in a live deployment the same event loop does both, so accept work and
+ * delivery work contend, whereas here they contend only within each station. The
+ * `connectionCapacity` and memory figures still belong to the gateway, which is where
+ * the "how many users" question actually lives.
+ *
+ * SIZING
+ *
+ * Four gateway instances at 10,000 sockets each gives 40,000 of capacity for 20,000
+ * users -- deliberate headroom, because losing one instance must not refuse anyone.
+ * The scenario is short: fan-out means a 120-second run simulates about 2.4 million
+ * deliveries, which is the honest cost of modelling the effect rather than assuming it.
+ */
+export function chat20k(): Design {
+  const ROOM_SIZE = 20;
+  const USERS = 20_000;
+  // One message per user every 20 seconds.
+  const MESSAGES_PER_SEC = USERS / 20;
+
+  return DesignSchema.parse({
+    version: DESIGN_SCHEMA_VERSION,
+    name: "chat: 20k concurrent users",
+    classes: [],
+    nodes: [
+      {
+        id: "users",
+        kind: "client",
+        label: "users",
+        x: 40,
+        y: 260,
+        client: {
+          arrival: { kind: "poisson", ratePerSec: MESSAGES_PER_SEC },
+          timeoutMs: 5000,
+          connections: {
+            count: USERS,
+            establishOverSec: 30,
+            // Half-hour sessions: long enough that churn is modest, short enough that
+            // it exists. Sessions that never end would understate accept work.
+            sessionDuration: { kind: "exponential", mean: 1_800_000 },
+            disruption: null,
+          },
+        },
+      },
+      {
+        id: "gw",
+        kind: "gateway",
+        label: "gateways",
+        x: 340,
+        y: 260,
+        gateway: {
+          connectionCapacity: 10_000,
+          replicas: 4,
+          acceptTime: { kind: "lognormal", mean: 5, p99: 40 },
+          pushTime: { kind: "deterministic", value: 0.2 },
+          // Two slots per instance: push work is CPU-bound on an event loop, so this
+          // is single digits however many sockets the instance holds. Getting this
+          // wrong by two orders of magnitude is what makes fan-out look free.
+          pushConcurrency: 2,
+          memoryPerConnectionKb: 40,
+          citation: {
+            range: [10, 100],
+            source:
+              "per-connection memory for a WebSocket with modest buffers; varies with buffer sizing and TLS",
+            asOf: "2026-08",
+          },
+        },
+      },
+      {
+        id: "api",
+        kind: "server",
+        label: "message api",
+        x: 640,
+        y: 260,
+        server: {
+          concurrency: 64,
+          replicas: 3,
+          serviceTime: bench("app-json-endpoint").distribution,
+          blocksOnDependencies: true,
+          citation: bench("app-json-endpoint").citation,
+        },
+      },
+      {
+        id: "bus",
+        kind: "queue",
+        label: "fan-out bus",
+        x: 940,
+        y: 260,
+        queue: {
+          maxDepth: null,
+          // Consumers here are the fan-out workers, sized for the DELIVERY rate rather
+          // than the message rate -- which is the whole trap.
+          consumers: 32,
+          consumerServiceTime: { kind: "deterministic", value: 0.5 },
+          publishTime: bench("queue-publish").distribution,
+          citation: bench("queue-publish").citation,
+        },
+      },
+      {
+        id: "delivery",
+        kind: "gateway",
+        label: "delivery (gateway push)",
+        x: 1260,
+        y: 260,
+        gateway: {
+          // Holds no sockets: this station represents the gateways' push side only.
+          connectionCapacity: 1,
+          replicas: 1,
+          acceptTime: { kind: "deterministic", value: 0 },
+          pushTime: { kind: "deterministic", value: 0.2 },
+          // Four instances at two slots each: the same event loops the accept side uses.
+          pushConcurrency: 8,
+          memoryPerConnectionKb: 0,
+        },
+      },
+    ],
+    edges: [
+      { id: "e-users-gw", from: "users", to: "gw", latency: bench("consumer-internet").distribution, classes: [] },
+      { id: "e-gw-api", from: "gw", to: "api", latency: SAME_RACK, classes: [] },
+      { id: "e-api-bus", from: "api", to: "bus", latency: SAME_RACK, classes: [] },
+      {
+        id: "e-bus-delivery",
+        from: "bus",
+        to: "delivery",
+        latency: SAME_RACK,
+        classes: [],
+        // One message becomes ROOM_SIZE deliveries. The single most important number
+        // in the design, and the one least likely to appear in a capacity estimate.
+        fanoutFactor: ROOM_SIZE,
+      },
+    ],
+    scenario: { durationSec: 120, warmupSec: 40, seed: 1, traceLimit: 2000 },
+    // 800ms rather than 500: two crossings of the consumer internet already cost
+    // several hundred milliseconds at the tail, and an SLO that the last mile breaks on
+    // its own would make every finding about someone else's network.
+    slo: { p99LatencyMs: 800, maxErrorRatePct: 1 },
+  });
+}
+
+/**
+ * The same chat design, losing a gateway.
+ *
+ * A quarter of the connections drop at once and reconnect. Handshake work is far more
+ * expensive than a message, and it competes with delivery for the same slots, so the
+ * people who never disconnected see their messages stall because somebody else's
+ * connection did.
+ *
+ * This is the failure realtime systems actually have. It is invisible to any
+ * steady-state measurement, and it is why capacity headroom on connections is not the
+ * same thing as resilience.
+ */
+export function chatReconnectStorm(): Design {
+  const base = chat20k();
+  return DesignSchema.parse({
+    ...base,
+    name: "chat: losing a gateway",
+    nodes: base.nodes.map((n) =>
+      n.client?.connections
+        ? {
+            ...n,
+            client: {
+              ...n.client,
+              connections: {
+                ...n.client.connections,
+                disruption: { atSec: 70, fraction: 0.25, reconnectOverSec: 0 },
+              },
+            },
+          }
+        : n
+    ),
+    scenario: { ...base.scenario, durationSec: 140, warmupSec: 40 },
+  });
+}
+
 export const EXAMPLES: Array<{ id: string; label: string; blurb: string; build: () => Design }> = [
   {
     id: "single-service",
@@ -1015,5 +1246,17 @@ export const EXAMPLES: Array<{ id: string; label: string; blurb: string; build: 
     label: "load-correlated cascade",
     blurb: "a database that fails more when busy, plus unbudgeted retries — a loop with gain",
     build: correlatedCascade,
+  },
+  {
+    id: "chat-20k",
+    label: "chat: 20k concurrent users",
+    blurb: "1,000 messages/s becomes 20,000 deliveries/s — fan-out is the whole cost",
+    build: chat20k,
+  },
+  {
+    id: "chat-reconnect-storm",
+    label: "chat: losing a gateway",
+    blurb: "a quarter of connections reconnect at once, and handshakes starve delivery",
+    build: chatReconnectStorm,
   },
 ];

@@ -17,7 +17,7 @@ function station(overrides: {
   lossProbability?: number;
 }): Design {
   return DesignSchema.parse({
-    version: 4,
+    version: 5,
     name: "t",
     nodes: [
       {
@@ -329,7 +329,7 @@ describe("Phase 1 scope is enforced rather than guessed at", () => {
      * neither exists until Phase 3, so the honest response is to say so.
      */
     const design = DesignSchema.parse({
-      version: 4,
+      version: 5,
       name: "cycle",
       nodes: [
         { id: "c", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 10 } } },
@@ -349,7 +349,7 @@ describe("Phase 1 scope is enforced rather than guessed at", () => {
 
   it("rejects a design with structural errors instead of running it", () => {
     const design = DesignSchema.parse({
-      version: 4,
+      version: 5,
       name: "broken",
       nodes: [{ id: "c", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 10 } } }],
       edges: [{ id: "e1", from: "c", to: "nonexistent" }],

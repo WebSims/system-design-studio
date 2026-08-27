@@ -436,6 +436,117 @@ export function analyse(design: Design, result: RunResult | null = null): Analys
     });
   }
 
+  // ---- connection capacity ----
+  for (const n of stations) {
+    const c = n.connections;
+    if (!c || c.capacity <= 1) continue;
+
+    if (c.refused > 0) {
+      findings.push({
+        id: `connections-refused:${n.nodeId}`,
+        severity: "critical",
+        title: `"${n.label}" is refusing connections`,
+        evidence:
+          `${c.refused.toLocaleString()} refused against ${c.capacity.toLocaleString()} of capacity, ` +
+          `holding ${Math.round(c.avgHeld).toLocaleString()} on average and ` +
+          `${Math.round(c.peakHeld).toLocaleString()} at peak.`,
+        remediation:
+          `a refused connection is a hard failure, not a slow response: the user gets nothing. ` +
+          `Raise capacity to at least ${Math.ceil((c.peakHeld + c.refused) / 1000) * 1000} sockets, ` +
+          `or add instances — and leave headroom for losing one, because when an instance dies its ` +
+          `connections land on the survivors.`,
+        nodeId: n.nodeId,
+        weight: 0.95,
+      });
+    } else if (c.utilization > 0.7) {
+      // Headroom on connections is not a nicety. Losing one instance of R moves its
+      // share onto the rest, so anything above 1 - 1/R cannot survive a single failure.
+      const cfg = design.nodes.find((x) => x.id === n.nodeId)?.gateway;
+      const replicas = cfg?.replicas ?? 1;
+      const survivable = replicas > 1 ? 1 - 1 / replicas : 0;
+      findings.push({
+        id: `connection-headroom:${n.nodeId}`,
+        severity: c.utilization > survivable ? "warning" : "info",
+        title: `"${n.label}" holds ${(c.utilization * 100).toFixed(0)}% of its connection capacity`,
+        evidence:
+          `${Math.round(c.avgHeld).toLocaleString()} of ${c.capacity.toLocaleString()} sockets across ` +
+          `${replicas} instance${replicas === 1 ? "" : "s"}, about ${c.memoryMb.toFixed(0)} MB.`,
+        remediation:
+          replicas > 1
+            ? `losing one of ${replicas} instances moves its share onto the others, so surviving a ` +
+              `single failure needs utilization below ${(survivable * 100).toFixed(0)}%. ` +
+              (c.utilization > survivable
+                ? `At ${(c.utilization * 100).toFixed(0)}% it would not.`
+                : `It currently would.`)
+            : `a single instance holds every connection, so losing it drops all of them at once. ` +
+              `Add replicas.`,
+        nodeId: n.nodeId,
+        weight: 0.5,
+      });
+    }
+
+    // Handshakes are far more expensive than messages and share the same work pool, so
+    // a slow accept is a signal that delivery is being starved.
+    if (c.acceptLatency.count > 50 && c.acceptLatency.p99 > 1000) {
+      findings.push({
+        id: `slow-accept:${n.nodeId}`,
+        severity: "warning",
+        title: `"${n.label}" is slow to accept connections`,
+        evidence:
+          `accept p99 ${(c.acceptLatency.p99 / 1000).toFixed(2)}s at ` +
+          `${c.acceptRatePerSec.toFixed(0)} handshakes/s, with the work pool ` +
+          `${(c.workUtilization * 100).toFixed(0)}% busy` +
+          (c.droppedByFault > 0
+            ? ` after ${c.droppedByFault.toLocaleString()} connections were dropped by a fault.`
+            : "."),
+        remediation:
+          `handshakes cost far more than messages and draw on the same work pool as delivery, so ` +
+          `this also stalls messages for people who never disconnected. Raise pushConcurrency, or ` +
+          `spread reconnects over time so the herd arrives gradually.`,
+        nodeId: n.nodeId,
+        weight: 0.6,
+      });
+    }
+  }
+
+  // ---- fan-out ----
+  if (result && result.largestFanout > 1) {
+    const fanoutEdge = [...design.edges]
+      .filter((e) => e.fanoutFactor > 1)
+      .sort((a, b) => b.fanoutFactor - a.fanoutFactor)[0];
+    const target = fanoutEdge ? stations.find((n) => n.nodeId === fanoutEdge.to) : undefined;
+    if (fanoutEdge) {
+      const severity: Severity =
+        target && target.utilization > UTIL_CRITICAL
+          ? "critical"
+          : target && target.utilization > UTIL_WARNING
+            ? "warning"
+            : "info";
+      findings.push({
+        id: `fanout:${fanoutEdge.id}`,
+        severity,
+        title: `fan-out multiplies the write path by ${fanoutEdge.fanoutFactor}×`,
+        evidence:
+          `${result.offeredRatePerSec.toFixed(0)} messages/s becomes about ` +
+          `${(result.offeredRatePerSec * fanoutEdge.fanoutFactor).toFixed(0)} deliveries/s at ` +
+          `"${target?.label ?? fanoutEdge.to}"` +
+          (target ? `, which is ${(target.utilization * 100).toFixed(0)}% utilized.` : ".") +
+          ` Total downstream work is ${result.callsPerMessage.toFixed(1)} calls per message.`,
+        remediation:
+          `the fan-out factor is a product decision — how many people are in a room — that is also ` +
+          `the largest capacity decision in the design, and it rarely appears in one. Sizing on ` +
+          `message rate alone understates delivery work by ${fanoutEdge.fanoutFactor}×. ` +
+          (severity === "info"
+            ? `Delivery has headroom here, so the exposure is to room size growing rather than to ` +
+              `traffic growing.`
+            : `Add delivery capacity, or reduce the factor by batching or capping room size.`),
+        edgeId: fanoutEdge.id,
+        nodeId: target?.nodeId,
+        weight: severity === "critical" ? 0.85 : 0.35,
+      });
+    }
+  }
+
   // ---- measurement quality ----
   if (result && !result.confidence.sufficient) {
     findings.push({

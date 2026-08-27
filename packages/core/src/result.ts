@@ -103,6 +103,48 @@ export interface QueueMetrics {
   backlogGrowthPerSec: number;
 }
 
+/**
+ * Connection behaviour at a gateway.
+ *
+ * Reported separately from throughput because it constrains a different thing. A
+ * gateway can be holding its full complement of idle sockets while comfortably keeping
+ * up with delivery, or keeping up with nothing while holding barely any -- and the fix
+ * differs completely.
+ */
+export interface ConnectionMetrics {
+  /** Sockets this gateway can hold: capacity x replicas. */
+  capacity: number;
+  /** Time-average connections held. */
+  avgHeld: number;
+  peakHeld: number;
+  heldNow: number;
+  /** avgHeld / capacity. The answer to "can it hold N users". */
+  utilization: number;
+  accepted: number;
+  /**
+   * Connections refused for want of a descriptor.
+   *
+   * A hard failure, not a slow response: the user does not get a slower chat, they get
+   * no chat.
+   */
+  refused: number;
+  closed: number;
+  /** Connections closed by a simulated fault rather than by the client. */
+  droppedByFault: number;
+  acceptRatePerSec: number;
+  /** Handshake latency, including any wait for a work slot. */
+  acceptLatency: LatencySummary;
+  pushes: number;
+  pushRatePerSec: number;
+  /** Delivery latency: the number a chat user actually experiences. */
+  pushLatency: LatencySummary;
+  memoryMb: number;
+  peakMemoryMb: number;
+  /** Utilization of the shared accept/push work pool. */
+  workUtilization: number;
+  connectionSeries: SeriesData;
+}
+
 export interface LoadBalancerMetrics {
   algorithm: string;
   dispatched: number;
@@ -179,6 +221,7 @@ export interface NodeResult {
   database?: DatabaseMetrics;
   queue?: QueueMetrics;
   loadbalancer?: LoadBalancerMetrics;
+  connections?: ConnectionMetrics;
 }
 
 export interface ClassResult {
@@ -339,6 +382,23 @@ export interface RunResult {
   firstBreach: { atSec: number; offeredRatePerSec: number; breach: "latency" | "errors" } | null;
   /** Offered rate over time. Only interesting when the load varies. */
   offeredRateSeries: SeriesData;
+  /**
+   * Edge traversals per message that entered the system, summed over every edge.
+   *
+   * A path of three hops with a twentyfold fan-out on the last one gives 23, not 20:
+   * this counts total downstream work, not the fan-out factor. Both are worth knowing
+   * and they are different numbers, so `largestFanout` reports the other one.
+   *
+   * It is the multiplier that makes a realtime system's cost bear little relation to
+   * its request rate, and it is easy to leave out of a capacity estimate entirely.
+   */
+  callsPerMessage: number;
+  /** The biggest single fan-out factor in the design. */
+  largestFanout: number;
+  /** Total connections held across every gateway, time-averaged. */
+  connectionsHeld: number;
+  /** Connections refused across every gateway. */
+  connectionsRefused: number;
   /** Completed successful requests per second of simulated time. */
   throughputPerSec: number;
   /** Offered load, per second. Diverges from throughput once saturated. */

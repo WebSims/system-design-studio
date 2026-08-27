@@ -64,6 +64,7 @@ export const NodeKindSchema = z.enum([
   "cache",
   "database",
   "queue",
+  "gateway",
 ]);
 export type NodeKind = z.infer<typeof NodeKindSchema>;
 
@@ -292,10 +293,79 @@ export function meanRate(arrival: ArrivalProcess, durationMs: number): number {
   }
 }
 
+/**
+ * A population of long-lived connections.
+ *
+ * EVERYTHING ELSE IN THIS MODEL IS A REQUEST THAT ARRIVES AND LEAVES. A CONNECTION
+ * IS NOT.
+ *
+ * A WebSocket sits open for minutes or hours, occupying a file descriptor and a
+ * memory buffer the whole time. That makes the binding constraint completely
+ * different from a request/response service: the question is not how many requests
+ * per second a box can serve but how many sockets it can hold, and the failure is a
+ * refused connection rather than a slow response.
+ *
+ * Modelling it needs a resource held across a session rather than across a service
+ * time, which is why this arrives as its own concept instead of a large concurrency
+ * number on a server.
+ */
+export const ConnectionPopulationSchema = z.object({
+  /** Concurrent connections this population maintains. */
+  count: z.number().int().positive(),
+  /**
+   * Seconds over which the initial connections are established.
+   *
+   * Not zero, and not cosmetic. Opening twenty thousand sockets in the same instant
+   * is a thundering herd that no real deployment experiences at start-up, and letting
+   * it happen would make every run begin with an artificial handshake storm that has
+   * nothing to do with the design.
+   */
+  establishOverSec: z.number().positive().default(30),
+  /**
+   * Session length before a client reconnects. Null means connections never drop.
+   *
+   * Real sessions end -- tab closed, network changed, phone slept -- and each ending
+   * is a new handshake for someone to pay for. A model where connections are
+   * established once and held forever understates accept work by however often
+   * reality churns.
+   */
+  sessionDuration: DistributionSchema.nullable().default(null),
+  /**
+   * A mass disconnection partway through the run.
+   *
+   * The failure mode that actually takes realtime systems down. When a gateway dies,
+   * every connection it held reconnects at once, and the surviving gateways receive a
+   * handshake burst far larger than their steady-state accept load -- while still
+   * serving everyone they already had. Modelling it is the difference between knowing
+   * a design holds 20,000 connections and knowing it survives losing a third of them.
+   */
+  disruption: z
+    .object({
+      atSec: z.number().nonnegative(),
+      /** Share of connections dropped, [0,1]. */
+      fraction: z.number().min(0).max(1),
+      /** Seconds over which the dropped connections come back. 0 = all at once. */
+      reconnectOverSec: z.number().nonnegative().default(0),
+    })
+    .nullable()
+    .default(null),
+});
+export type ConnectionPopulation = z.infer<typeof ConnectionPopulationSchema>;
+
 export const ClientConfigSchema = z.object({
+  /**
+   * Message arrival process.
+   *
+   * With a connection population this is the TOTAL message rate across all
+   * connections, not a per-connection figure. Keeping it a plain total means every
+   * existing tool -- load scaling, the knee search, ramps -- keeps working unchanged
+   * on a realtime design.
+   */
   arrival: ArrivalProcessSchema,
   /** Per-request end-to-end budget, ms. Null = no deadline. */
   timeoutMs: z.number().positive().nullable().default(null),
+  /** Long-lived connections this client holds, in addition to sending messages. */
+  connections: ConnectionPopulationSchema.nullable().default(null),
 });
 export type ClientConfig = z.infer<typeof ClientConfigSchema>;
 
@@ -525,6 +595,52 @@ export const QueueConfigSchema = z.object({
 });
 export type QueueConfig = z.infer<typeof QueueConfigSchema>;
 
+/**
+ * A realtime gateway: the thing that holds the sockets.
+ *
+ * Two capacities, and they constrain different things:
+ *
+ *   `connectionCapacity` is how many sockets one instance can hold at once -- file
+ *   descriptors, and the memory each connection's buffers occupy. This is what
+ *   "20,000 concurrent users" is really asking about, and it has nothing to do with
+ *   throughput.
+ *
+ *   `pushConcurrency` is how much work the instance can do at once, whether accepting
+ *   a handshake or delivering a message. A gateway can be holding its full complement
+ *   of idle sockets while entirely unable to keep up with delivery, or the reverse.
+ *
+ * Conflating them is the standard mistake, and it produces confident answers to the
+ * wrong question.
+ */
+export const GatewayConfigSchema = z.object({
+  /** Sockets ONE instance can hold. */
+  connectionCapacity: z.number().int().positive().default(10_000),
+  replicas: z.number().int().positive().default(1),
+  /**
+   * Handshake cost: TLS, auth, session setup.
+   *
+   * Far more expensive than a message, which is why a reconnect storm hurts so much
+   * more than an equivalent burst of traffic.
+   */
+  acceptTime: DistributionSchema.default({ kind: "lognormal", mean: 5, p99: 40 }),
+  /** Cost of pushing one message to one connection. */
+  pushTime: DistributionSchema.default({ kind: "deterministic", value: 0.05 }),
+  /**
+   * Concurrent work slots per instance, shared between accepts and pushes.
+   *
+   * Small on purpose. A gateway's push work is CPU-bound serialization and socket
+   * writes on an event loop, so the honest figure is single digits per instance -- not
+   * the hundreds that a connection count invites. Setting it high is the mistake that
+   * makes fan-out look free: twenty thousand deliveries a second against two hundred
+   * slots is nothing, and against eight it is half the machine.
+   */
+  pushConcurrency: z.number().int().positive().default(4),
+  /** Memory per held connection, for a footprint estimate. Zero for a push-only station. */
+  memoryPerConnectionKb: z.number().nonnegative().default(40),
+  citation: CitationSchema.optional(),
+});
+export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;
+
 export const NodeSchema = z.object({
   id: z.string().min(1),
   kind: NodeKindSchema,
@@ -538,6 +654,7 @@ export const NodeSchema = z.object({
   cache: CacheConfigSchema.optional(),
   database: DatabaseConfigSchema.optional(),
   queue: QueueConfigSchema.optional(),
+  gateway: GatewayConfigSchema.optional(),
 });
 export type SdsNode = z.infer<typeof NodeSchema>;
 
@@ -694,6 +811,23 @@ export const EdgeSchema = z.object({
   /** Relative weight for load-balancer target selection. */
   weight: z.number().positive().default(1),
   /**
+   * One call across this edge becomes this many downstream calls.
+   *
+   * THE NUMBER THAT DEFINES A REALTIME SYSTEM'S COST.
+   *
+   * A chat message sent to a room of fifty is one inbound request and fifty outbound
+   * deliveries. The read path is trivial and the write path is amplified fiftyfold,
+   * so a design sized on message rate is undersized by the room size -- and the room
+   * size is a product decision that nobody thinks of as a capacity decision.
+   *
+   * Deliberately a real multiplier rather than an equivalent increase in service
+   * time: fifty deliveries occupy fifty slots and queue independently, and collapsing
+   * them into one longer call would hide exactly the contention being modelled. The
+   * cost is that a fan-out run simulates far more work than its message rate
+   * suggests, which is the honest price of the effect being real.
+   */
+  fanoutFactor: z.number().int().positive().default(1),
+  /**
    * Timeout, retry, circuit-breaker and bulkhead settings for this call.
    *
    * On the edge rather than the node because that is what these things are: the
@@ -746,7 +880,7 @@ export const SloSchema = z.object({
 });
 export type Slo = z.infer<typeof SloSchema>;
 
-export const DESIGN_SCHEMA_VERSION = 4 as const;
+export const DESIGN_SCHEMA_VERSION = 5 as const;
 
 export const DesignSchema = z.object({
   version: z.literal(DESIGN_SCHEMA_VERSION),

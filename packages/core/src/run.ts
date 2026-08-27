@@ -22,8 +22,9 @@ import {
 } from "./components";
 import { assessConfidence } from "./confidence";
 import { LatencyHistogram } from "./histogram";
+import { sample } from "./distribution";
 import { RngBundle } from "./rng";
-import { Sim, type Process } from "./sim";
+import { Sim, delay, suspend, type Process } from "./sim";
 import { TimeSeries } from "./timeseries";
 import type {
   ClassResult,
@@ -500,6 +501,130 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     }
   }
 
+  /**
+   * CONNECTION LIFECYCLE.
+   *
+   * One long-running process per connection. That sounds extravagant for twenty
+   * thousand of them, and it is not: each process spends its life parked on a single
+   * scheduled event, so the cost is one heap entry per connection rather than anything
+   * proportional to time.
+   *
+   * Modelling connections individually rather than as an aggregate count is what makes
+   * the interesting behaviour fall out on its own -- refusal when descriptors run out,
+   * a handshake burst when a session ends, and the reconnect storm after a disruption.
+   * An aggregate would have to have each of those written into it by hand.
+   */
+  let connectionsRefused = 0;
+  const connectionTargets = new Map<string, SdsEdge[]>();
+  for (const c of clients) {
+    connectionTargets.set(
+      c.id,
+      design.edges.filter((e) => e.from === c.id)
+    );
+  }
+
+  function* connectionProcess(client: SdsNode, index: number, startDelayMs: number): Process<void> {
+    const pop = client.client!.connections!;
+    const edges = connectionTargets.get(client.id) ?? [];
+    if (edges.length === 0) return;
+    // Sticky by construction: a connection picks its gateway once and keeps it, which
+    // is what a real socket does.
+    const edge = edges[index % edges.length]!;
+    const ctx: RequestCtx = {
+      requestId: -1 - index,
+      classId: classes[0]!.id,
+      serviceMultiplier: 1,
+      deadlineAt: null,
+      traced: false,
+    };
+
+    if (startDelayMs > 0) yield* delay(startDelayMs);
+
+    for (;;) {
+      if (sim.now > durationMs) return;
+
+      const netMs = sample(edge.latency, rng.stream("network"));
+      yield* delay(netMs);
+
+      const target = components.get(edge.to);
+      if (!target?.connect) return;
+      const result = yield* target.connect(ctx);
+
+      if (!result.held || !result.token) {
+        if (measuring) connectionsRefused++;
+        // Retry after a pause rather than spinning: a client whose connection was
+        // refused does come back, and modelling it as an immediate retry would
+        // manufacture a load the design never sees.
+        yield* delay(1000 + rng.stream("failure").next() * 2000);
+        continue;
+      }
+
+      const token = result.token;
+      const sessionMs =
+        pop.sessionDuration === null
+          ? Math.max(1, durationMs - sim.now + 1)
+          : Math.max(1, sample(pop.sessionDuration, rng.stream("arrival")));
+
+      /**
+       * Park for the session, but wake early if the connection is revoked.
+       *
+       * Two ways this ends and they behave differently: the session expiring is a
+       * graceful close followed by a reconnect at leisure, while a revocation means the
+       * descriptor is already gone and the client is coming straight back. The second is
+       * the storm.
+       */
+      const parked = yield* suspend((resume) => {
+        token.onRevoke = resume;
+      }, sim.now + sessionMs);
+
+      token.onRevoke = null;
+      if (parked.timedOut) {
+        // Session ended on its own.
+        target.disconnect?.(token);
+      }
+      // Revoked: the gateway already returned the descriptor, so loop straight back
+      // into accept. Optional jitter spreads the herd if the design asks for it.
+      else if (pop.disruption && pop.disruption.reconnectOverSec > 0) {
+        yield* delay(rng.stream("failure").next() * pop.disruption.reconnectOverSec * 1000);
+      }
+    }
+  }
+
+  /** Establish the initial population, spread over `establishOverSec`. */
+  for (const client of clients) {
+    const pop = client.client?.connections;
+    if (!pop) continue;
+    const spreadMs = pop.establishOverSec * 1000;
+    for (let i = 0; i < pop.count; i++) {
+      // Deterministic spacing rather than random, so the establish phase is smooth and
+      // the run does not begin with an accidental herd.
+      const at = pop.count > 1 ? (spreadMs * i) / (pop.count - 1) : 0;
+      sim.spawn(connectionProcess(client, i, at));
+    }
+
+    /**
+     * A mass disconnection: the reconnect storm.
+     *
+     * Implemented by asking the gateway to drop connections, which forces the affected
+     * clients back through accept. That is the failure that takes realtime systems
+     * down -- the surviving gateways receive a handshake burst far above their
+     * steady-state accept load while still serving everyone they already had.
+     */
+    if (pop.disruption) {
+      const d = pop.disruption;
+      sim.at(d.atSec * 1000, () => {
+        const toDrop = Math.floor(pop.count * d.fraction);
+        let dropped = 0;
+        for (const edge of connectionTargets.get(client.id) ?? []) {
+          const target = components.get(edge.to);
+          if (!target?.dropConnections) continue;
+          dropped += target.dropConnections(toDrop - dropped);
+          if (dropped >= toDrop) break;
+        }
+      });
+    }
+  }
+
   for (const c of clients) sim.spawn(clientProcess(c));
   // Long-running component processes (queue consumers).
   for (const component of components.values()) {
@@ -577,6 +702,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
 
   // ---- assemble ----
   const rootRequests = rec.overall.succeeded + rec.overall.failed;
+  const totalTraversals = [...edgeTraversals.values()].reduce((a, b) => a + b, 0);
   const nodeResults: NodeResult[] = design.nodes.map((node) => {
     const component = components.get(node.id);
     if (!component) return clientResult(node);
@@ -681,6 +807,14 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
         `figure instead.`,
     firstBreach,
     offeredRateSeries: series(offeredRateSeries),
+    // Total downstream work per message, and the largest single fan-out. Different
+    // numbers: a three-hop path with a 20x fan-out on the last edge gives 23 and 20.
+    callsPerMessage: rootRequests > 0 ? totalTraversals / rootRequests : 1,
+    largestFanout: design.edges.reduce((m, e) => Math.max(m, e.fanoutFactor), 1),
+    connectionsHeld: nodeResults.reduce((s2, n) => s2 + (n.connections?.avgHeld ?? 0), 0),
+    connectionsRefused:
+      connectionsRefused +
+      nodeResults.reduce((s2, n) => s2 + (n.connections?.refused ?? 0), 0),
     throughputPerSec: observedSec > 0 ? rec.overall.succeeded / observedSec : 0,
     offeredRatePerSec,
     endToEnd,

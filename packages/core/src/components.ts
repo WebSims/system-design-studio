@@ -9,6 +9,7 @@ import { TimeSeries } from "./timeseries";
 import { ZipfSampler } from "./zipf";
 import type {
   CacheMetrics,
+  ConnectionMetrics,
   InvariantReport,
   DatabaseMetrics,
   ErrorReason,
@@ -80,9 +81,52 @@ export interface ComponentEnv {
   measuring: () => boolean;
 }
 
+/**
+ * A held connection.
+ *
+ * Carries its own revocation state so a forced drop and a graceful close cannot both
+ * release the same descriptor. An earlier version had the gateway release slots
+ * directly on a fault while the holding processes were still parked on their session
+ * timers; those processes then closed a connection that no longer existed, the
+ * descriptor count was decremented twice, and the reconnect storm never happened
+ * because nobody was told their connection had gone.
+ */
+export interface ConnectionToken {
+  revoked: boolean;
+  /** Invoked by the gateway when the connection is dropped by a fault. */
+  onRevoke: (() => void) | null;
+}
+
+/** Outcome of trying to establish a long-lived connection. */
+export interface ConnectResult {
+  held: boolean;
+  reason?: ErrorReason;
+  /** Time spent waiting for and completing the handshake, ms. */
+  acceptMs: number;
+  /** Present only when `held`. Pass back to `disconnect`. */
+  token?: ConnectionToken;
+}
+
 export interface Component {
   readonly node: SdsNode;
   handle(ctx: RequestCtx): Process<Outcome>;
+  /**
+   * Establish a long-lived connection, if this component can hold one.
+   *
+   * Separate from `handle` because the lifecycle is inverted. A request is handled and
+   * departs within the call; a connection is acquired here, held by the CALLER for as
+   * long as the session lasts, and released later. Only a gateway implements it.
+   */
+  connect?(ctx: RequestCtx): Process<ConnectResult>;
+  /** Release a previously held connection. A no-op if it was already revoked. */
+  disconnect?(token: ConnectionToken): void;
+  /**
+   * Forcibly close up to `count` held connections, returning how many were closed.
+   *
+   * Models an instance failing or being restarted. The clients holding those
+   * connections then come back through accept, which is the reconnect storm.
+   */
+  dropConnections?(count: number): number;
   /** Requests currently queued or in service. Used by load-balancer algorithms. */
   load(): number;
   resetStats(): void;
@@ -497,19 +541,37 @@ function* callDependencies(
   const chosen = eligible.filter((e) => (e.probability >= 1 ? true : routeRng.chance(e.probability)));
   if (chosen.length === 0) return OK;
 
-  if (chosen.length === 1) {
-    return yield* callThrough(env, chosen[0]!, ctx);
+  /**
+   * Expand fan-out into real, individual calls.
+   *
+   * A message to a room of fifty becomes fifty deliveries, each acquiring its own slot
+   * and queueing independently. Charging one call fifty times the service time would
+   * be far cheaper to simulate and would hide exactly the contention being modelled --
+   * fifty deliveries compete with each other and with everything else, one long call
+   * does not.
+   *
+   * The cost is that a fan-out run simulates far more work than its message rate
+   * suggests. That is the honest price of the effect being real, and it is why the chat
+   * examples use short scenarios.
+   */
+  const calls: Array<() => Process<Outcome>> = [];
+  for (const e of chosen) {
+    for (let i = 0; i < e.fanoutFactor; i++) {
+      calls.push(() => callThrough(env, e, ctx));
+    }
   }
 
+  if (calls.length === 1) return yield* calls[0]!();
+
   if (fanout === "sequential") {
-    for (const e of chosen) {
-      const outcome = yield* callThrough(env, e, ctx);
+    for (const make of calls) {
+      const outcome = yield* make();
       if (!outcome.ok) return outcome;
     }
     return OK;
   }
 
-  const results = yield* env.sim.joinAll(chosen.map((e) => callThrough(env, e, ctx)));
+  const results = yield* env.sim.joinAll(calls.map((make) => make()));
   return results.find((r) => !r.ok) ?? OK;
 }
 
@@ -1339,6 +1401,8 @@ export class QueueComponent implements Component {
 
   private backlogIntegral = 0;
   private busyIntegral = 0;
+  private depthAtStart = 0;
+  private inFlightAtStart = 0;
   private lastTouch = 0;
   private statsStart = 0;
   private maxBacklog = 0;
@@ -1381,6 +1445,8 @@ export class QueueComponent implements Component {
     this.busyIntegral = 0;
     this.statsStart = this.env.sim.now;
     this.maxBacklog = this.depth;
+    this.depthAtStart = this.depth;
+    this.inFlightAtStart = this.inFlight;
   }
 
   sample(tSec: number): void {
@@ -1484,19 +1550,29 @@ export class QueueComponent implements Component {
   }
 
   invariants(): InvariantReport[] {
-    // A message is enqueued, dropped, still waiting, or being worked on. Nothing
-    // else, and never twice. Consumers run forever, so `consumed` lags by whatever
-    // is in flight when the clock stops.
-    const accounted = this.consumed + this.depth + this.inFlight;
-    const passed = accounted <= this.enqueued + this.depth && this.consumed <= this.enqueued + this.depth;
+    /**
+     * A message is enqueued, dropped, still waiting, or being worked on. Nothing else,
+     * and never twice.
+     *
+     * The boundary terms are not optional. Measurement starts at the warm-up boundary
+     * with messages already backlogged and already being processed, so those are
+     * consumed inside the window without having been enqueued inside it. An earlier
+     * version omitted them and the check read `consumed <= enqueued`, which was simply
+     * false at any non-empty boundary -- it went unnoticed until a design arrived whose
+     * queue was actually busy when measurement began.
+     */
+    const lhs = this.enqueued + this.depthAtStart + this.inFlightAtStart;
+    const rhs = this.consumed + this.depth + this.inFlight + this.dropped;
+    const passed = lhs === rhs;
     return [
       {
         name: `queue "${this.node.label}" bookkeeping`,
         passed,
         detail: passed
-          ? `${this.enqueued} enqueued, ${this.consumed} consumed, ${this.depth} waiting, ` +
-            `${this.inFlight} in flight, ${this.dropped} dropped`
-          : `consumed ${this.consumed} exceeds what was enqueued (${this.enqueued})`,
+          ? `${this.enqueued} enqueued + ${this.depthAtStart} waiting and ${this.inFlightAtStart} ` +
+            `in flight at start = ${this.consumed} consumed + ${this.depth} waiting + ` +
+            `${this.inFlight} in flight + ${this.dropped} dropped`
+          : `in ${lhs} vs out ${rhs}: messages are being lost or double-counted`,
       },
     ];
   }
@@ -1556,6 +1632,389 @@ export class QueueComponent implements Component {
 }
 
 // ---------------------------------------------------------------------------
+// gateway
+// ---------------------------------------------------------------------------
+
+/**
+ * A realtime gateway: the component that holds the sockets.
+ *
+ * TWO RESOURCES, CONSTRAINING DIFFERENT THINGS.
+ *
+ * `connections` is a semaphore held for an entire session -- minutes or hours, not
+ * milliseconds. It is the only resource in this model with that lifetime, and it is
+ * what "how many concurrent users" actually asks about. Its queue capacity is zero and
+ * its policy is to shed, because a socket either gets a descriptor or is refused; there
+ * is no queue of half-open connections waiting for one to free up.
+ *
+ * `work` is ordinary short-lived concurrency, shared between accepting handshakes and
+ * pushing messages. Sharing it is deliberate and is where the interesting behaviour
+ * lives: during a reconnect storm, handshake work starves message delivery, so
+ * everyone still connected sees their messages stall because someone else's
+ * connections dropped. Modelling accept and push as separate pools would lose exactly
+ * that coupling.
+ */
+export class GatewayComponent implements Component {
+  private readonly connections: Resource;
+  private readonly work: Resource;
+  private readonly connectionSeries: TimeSeries;
+  private readonly workUtilSeries: TimeSeries;
+  private readonly acceptLatency = new LatencyHistogram();
+  private readonly pushLatency = new LatencyHistogram();
+  private readonly residency = new LatencyHistogram();
+  private readonly selfTime = new LatencyHistogram();
+
+  private accepted = 0;
+  private refused = 0;
+  private disconnects = 0;
+  private pushes = 0;
+  private droppedByFault = 0;
+  /** Tokens for every connection currently held, so faults can revoke them. */
+  private readonly tokens = new Set<ConnectionToken>();
+  private peakHeld = 0;
+  private heldIntegral = 0;
+  private lastTouch = 0;
+  private statsStart = 0;
+  private lastWorkBusy = 0;
+  private lastSampleT = 0;
+
+  constructor(
+    readonly node: SdsNode,
+    private readonly env: ComponentEnv
+  ) {
+    const cfg = node.gateway!;
+    this.connections = new Resource(env.sim, {
+      id: `${node.id}:connections`,
+      capacity: cfg.connectionCapacity * cfg.replicas,
+      // No queue: a socket is accepted or refused. Waiting for a descriptor that
+      // might free up in an hour is not a thing clients do.
+      queueCapacity: 0,
+      discipline: "fifo",
+      admissionPolicy: "shed",
+    });
+    this.work = new Resource(env.sim, {
+      id: `${node.id}:work`,
+      capacity: cfg.pushConcurrency * cfg.replicas,
+      queueCapacity: null,
+      discipline: "fifo",
+      admissionPolicy: "block",
+    });
+    this.connectionSeries = new TimeSeries(`${node.id}.connections`);
+    this.workUtilSeries = new TimeSeries(`${node.id}.workUtilization`);
+    this.lastTouch = env.sim.now;
+    this.statsStart = env.sim.now;
+    this.lastSampleT = env.sim.now;
+  }
+
+  private touch(): void {
+    const dt = this.env.sim.now - this.lastTouch;
+    if (dt > 0) {
+      this.heldIntegral += this.connections.inServiceCount * dt;
+      this.lastTouch = this.env.sim.now;
+    }
+  }
+
+  get held(): number {
+    return this.connections.inServiceCount;
+  }
+
+  load(): number {
+    return this.work.inServiceCount + this.work.queueLength;
+  }
+
+  resetStats(): void {
+    this.touch();
+    this.connections.resetStats();
+    this.work.resetStats();
+    this.connectionSeries.reset();
+    this.workUtilSeries.reset();
+    this.acceptLatency.reset();
+    this.pushLatency.reset();
+    this.residency.reset();
+    this.selfTime.reset();
+    this.accepted = 0;
+    this.refused = 0;
+    this.disconnects = 0;
+    this.pushes = 0;
+    this.droppedByFault = 0;
+    this.heldIntegral = 0;
+    this.statsStart = this.env.sim.now;
+    this.peakHeld = this.held;
+    this.lastWorkBusy = 0;
+    this.lastSampleT = this.env.sim.now;
+  }
+
+  sample(tSec: number): void {
+    this.connectionSeries.push(tSec, this.held);
+    const s = this.work.stats();
+    const busy = s.utilization * s.observedMs * this.work.capacity;
+    const dt = this.env.sim.now - this.lastSampleT;
+    const windowUtil = dt > 0 ? (busy - this.lastWorkBusy) / (dt * this.work.capacity) : 0;
+    this.workUtilSeries.push(tSec, Math.max(0, Math.min(1, windowUtil)));
+    this.lastWorkBusy = busy;
+    this.lastSampleT = this.env.sim.now;
+  }
+
+  /**
+   * Take a descriptor, then do the handshake.
+   *
+   * In that order, and it matters: the descriptor is what runs out first at scale, and
+   * a design that is refusing connections should refuse them before spending CPU on a
+   * handshake it cannot complete. Doing the work first would report accept latency for
+   * connections that were never going to be held.
+   */
+  *connect(ctx: RequestCtx): Process<ConnectResult> {
+    const cfg = this.node.gateway!;
+    const env = this.env;
+    const start = env.sim.now;
+
+    this.touch();
+    const slot = yield* acquire(this.connections, ctx.deadlineAt);
+    if (!slot.granted) {
+      if (env.measuring()) this.refused++;
+      return { held: false, reason: "shed", acceptMs: env.sim.now - start };
+    }
+
+    // Handshake work competes with message delivery for the same slots, which is what
+    // makes a reconnect storm hurt the people who never disconnected.
+    const workSlot = yield* acquire(this.work, ctx.deadlineAt);
+    if (!workSlot.granted) {
+      this.connections.release();
+      if (env.measuring()) this.refused++;
+      return { held: false, reason: workSlot.reason ?? "timeout", acceptMs: env.sim.now - start };
+    }
+    try {
+      const acceptMs = Math.max(
+        MIN_SERVICE_MS,
+        sample(cfg.acceptTime, env.rng.stream("service"))
+      );
+      const done = yield* delay(acceptMs, ctx.deadlineAt);
+      if (done.timedOut) {
+        this.connections.release();
+        if (env.measuring()) this.refused++;
+        return { held: false, reason: "timeout", acceptMs: env.sim.now - start };
+      }
+    } finally {
+      this.work.release();
+    }
+
+    this.touch();
+    if (this.held > this.peakHeld) this.peakHeld = this.held;
+    if (env.measuring()) {
+      this.accepted++;
+      this.acceptLatency.record(env.sim.now - start);
+    }
+    const token: ConnectionToken = { revoked: false, onRevoke: null };
+    this.tokens.add(token);
+    return { held: true, acceptMs: env.sim.now - start, token };
+  }
+
+  disconnect(token: ConnectionToken): void {
+    // A revoked connection's descriptor was already returned when the fault hit.
+    // Releasing again would decrement the count twice and quietly inflate capacity.
+    if (token.revoked) return;
+    token.revoked = true;
+    this.tokens.delete(token);
+    this.touch();
+    this.connections.release();
+    if (this.env.measuring()) this.disconnects++;
+  }
+
+  /**
+   * Drop connections without the holder's cooperation.
+   *
+   * The descriptors are released here and the holding processes discover it when their
+   * session ends -- which means a dropped connection's slot is freed immediately, as it
+   * would be when a process dies, while the client's reconnect arrives a moment later.
+   * That ordering is what produces the burst.
+   */
+  dropConnections(count: number): number {
+    this.touch();
+    let dropped = 0;
+    for (const token of [...this.tokens]) {
+      if (dropped >= count) break;
+      this.tokens.delete(token);
+      token.revoked = true;
+      this.connections.release();
+      if (this.env.measuring()) this.disconnects++;
+      dropped++;
+      // Waking the holder is what makes this a storm rather than a leak: it comes
+      // straight back through accept instead of sitting out the rest of its session.
+      token.onRevoke?.();
+    }
+    this.droppedByFault += dropped;
+    return dropped;
+  }
+
+  /**
+   * Handle a message: either inbound from a client, or a delivery to push.
+   *
+   * The same station and the same work pool for both, because on a real gateway they
+   * are the same event loop.
+   *
+   * THE WORK SLOT IS RELEASED BEFORE CALLING DOWNSTREAM.
+   *
+   * A gateway is event-driven: forwarding a frame to an API does not occupy the loop
+   * while the API thinks. Holding the slot -- as a thread-per-request server correctly
+   * does -- charges the gateway for the entire downstream path, and at fan-out scale
+   * that is catastrophically wrong. It made a gateway doing 0.26 core-seconds of real
+   * work per second read as 74% utilized, and pointed the bottleneck at the wrong
+   * component entirely.
+   */
+  *handle(ctx: RequestCtx): Process<Outcome> {
+    const cfg = this.node.gateway!;
+    const env = this.env;
+    const enqueuedAt = env.sim.now;
+
+    const slot = yield* acquire(this.work, ctx.deadlineAt);
+    if (!slot.granted) {
+      if (ctx.traced) {
+        env.trace.visit(
+          ctx.requestId,
+          this.node.id,
+          enqueuedAt,
+          null,
+          env.sim.now,
+          slot.reason === "shed" ? "shed" : "timeout"
+        );
+      }
+      return { ok: false, reason: slot.reason ?? "timeout" };
+    }
+
+    const serviceStart = env.sim.now;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      this.work.release();
+    };
+
+    try {
+      const pushMs = Math.max(
+        MIN_SERVICE_MS,
+        sample(cfg.pushTime, env.rng.stream("service")) * ctx.serviceMultiplier
+      );
+      const served = yield* delay(pushMs, ctx.deadlineAt);
+      if (env.measuring()) {
+        this.pushes++;
+        this.pushLatency.record(env.sim.now - enqueuedAt);
+        this.selfTime.record(slot.waitedMs + (env.sim.now - serviceStart));
+      }
+      if (served.timedOut) return { ok: false, reason: "timeout" };
+
+      // Hand the loop back before waiting on anything downstream.
+      release();
+
+      const downstream = yield* callDependencies(env, this.node.id, ctx, "parallel");
+      if (ctx.traced) {
+        env.trace.visit(
+          ctx.requestId,
+          this.node.id,
+          enqueuedAt,
+          serviceStart,
+          env.sim.now,
+          downstream.ok ? "served" : "timeout"
+        );
+      }
+      return downstream;
+    } finally {
+      release();
+      if (env.measuring()) this.residency.record(env.sim.now - enqueuedAt);
+    }
+  }
+
+  invariants(): InvariantReport[] {
+    const c = this.connections.stats();
+    const w = this.work.stats();
+    // Forced drops release a descriptor without the holder having finished, so they
+    // appear as completions here just like a graceful close. The identity still has to
+    // balance -- that is the point of checking it.
+    const connOk =
+      c.arrivals + c.queuedAtStart === c.admitted + c.shed + c.abandoned + c.currentQueueLength &&
+      c.admitted + c.inServiceAtStart === c.completed + c.currentInService;
+    const workOk =
+      w.arrivals + w.queuedAtStart === w.admitted + w.shed + w.abandoned + w.currentQueueLength &&
+      w.admitted + w.inServiceAtStart === w.completed + w.currentInService;
+
+    return [
+      {
+        name: `gateway "${this.node.label}" connections`,
+        passed: connOk,
+        detail: connOk
+          ? `${this.accepted} accepted, ${this.refused} refused, ${this.disconnects} closed, ` +
+            `${this.held} held now`
+          : `connection bookkeeping does not balance`,
+      },
+      {
+        name: `gateway "${this.node.label}" work`,
+        passed: workOk,
+        detail: workOk
+          ? `${w.arrivals} work items, ${this.pushes} pushes`
+          : `work bookkeeping does not balance`,
+      },
+    ];
+  }
+
+  result(observedSec: number): NodeResult {
+    this.touch();
+    const cfg = this.node.gateway!;
+    const span = this.env.sim.now - this.statsStart;
+    const denom = span > 0 ? span : 1;
+    const w = this.work.stats();
+    const capacity = cfg.connectionCapacity * cfg.replicas;
+    const avgHeld = this.heldIntegral / denom;
+
+    const connectionMetrics: ConnectionMetrics = {
+      capacity,
+      avgHeld,
+      peakHeld: this.peakHeld,
+      heldNow: this.held,
+      utilization: capacity > 0 ? avgHeld / capacity : 0,
+      accepted: this.accepted,
+      refused: this.refused,
+      closed: this.disconnects,
+      droppedByFault: this.droppedByFault,
+      acceptRatePerSec: observedSec > 0 ? this.accepted / observedSec : 0,
+      acceptLatency: summarize(this.acceptLatency),
+      pushes: this.pushes,
+      pushRatePerSec: observedSec > 0 ? this.pushes / observedSec : 0,
+      pushLatency: summarize(this.pushLatency),
+      memoryMb: (avgHeld * cfg.memoryPerConnectionKb) / 1024,
+      peakMemoryMb: (this.peakHeld * cfg.memoryPerConnectionKb) / 1024,
+      workUtilization: w.utilization,
+      connectionSeries: series(this.connectionSeries),
+    };
+
+    return {
+      nodeId: this.node.id,
+      label: this.node.label,
+      kind: "gateway",
+      // The work pool is the throughput constraint; connection capacity is reported
+      // separately because it constrains a different thing entirely.
+      capacity: this.work.capacity,
+      utilization: w.utilization,
+      avgQueueLength: w.avgQueueLength,
+      maxQueueLength: w.maxQueueLength,
+      avgInStation: w.avgInStation,
+      arrivals: w.arrivals,
+      admitted: w.admitted,
+      shed: w.shed + this.refused,
+      abandoned: w.abandoned,
+      completed: w.completed,
+      avgWaitMs: w.admitted > 0 ? w.totalWaitMs / w.admitted : 0,
+      serviceMeanMs: distMean(cfg.pushTime),
+      serviceScv: scv(cfg.pushTime),
+      arrivalRatePerSec: observedSec > 0 ? w.arrivals / observedSec : 0,
+      residencyMs: summarize(this.residency),
+      selfTimeMs: summarize(this.selfTime),
+      visitsPerRequest: 0,
+      queueLengthSeries: series(this.connectionSeries),
+      utilizationSeries: series(this.workUtilSeries),
+      connections: connectionMetrics,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // factory
 // ---------------------------------------------------------------------------
 
@@ -1571,6 +2030,8 @@ export function buildComponent(node: SdsNode, env: ComponentEnv): Component | nu
       return new DatabaseComponent(node, env);
     case "queue":
       return new QueueComponent(node, env);
+    case "gateway":
+      return new GatewayComponent(node, env);
     case "client":
       return null; // clients originate work; they are not a station
   }
@@ -1582,6 +2043,7 @@ export const STATION_KINDS: NodeKind[] = [
   "cache",
   "database",
   "queue",
+  "gateway",
 ];
 
 export { callDependencies, callThrough, eligibleEdges };

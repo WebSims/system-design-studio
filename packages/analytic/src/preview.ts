@@ -83,6 +83,18 @@ export interface NodePreview {
     load: number;
     backlogStable: boolean;
   };
+  /** Gateway only: the connection side, which constrains a different thing. */
+  connections?: {
+    capacity: number;
+    /** Connections predicted to be held, by Little's Law. */
+    held: number;
+    utilization: number;
+    /** Connections that cannot be held and will be refused. */
+    refused: number;
+    /** Handshakes per second from session churn. */
+    acceptRatePerSec: number;
+    memoryMb: number;
+  };
   /** Database only. */
   database?: {
     poolSize: number;
@@ -424,7 +436,14 @@ export function previewDesign(design: Design): DesignPreview {
           // Retries multiply the load the dependency actually sees. This is the term
           // that closes the feedback loop, and the reason a single pass is not enough.
           const multiplier = attemptMultiplier.get(edge.id) ?? 1;
-          bump(edge.to, cls.id, outbound * share * multiplier * (1 - edge.lossProbability));
+          // Fan-out multiplies the load a dependency sees, and by far the larger factor
+          // in a realtime design: a room of twenty turns one message into twenty
+          // deliveries. Omitting it would understate delivery load by the room size.
+          bump(
+            edge.to,
+            cls.id,
+            outbound * share * multiplier * edge.fanoutFactor * (1 - edge.lossProbability)
+          );
         }
       }
     }
@@ -505,7 +524,15 @@ export function previewDesign(design: Design): DesignPreview {
           ? node.server!.blocksOnDependencies
           : node.kind === "loadbalancer";
 
-      const preview = solveStation(node, classes, totalWeight, lambdaIn, dependencyMs, holdsSlot);
+      const preview = solveStation(
+      node,
+      classes,
+      totalWeight,
+      lambdaIn,
+      dependencyMs,
+      holdsSlot,
+      design
+    );
       previews.set(node.id, preview);
       if (preview.approximate) anyApproximate = true;
 
@@ -786,6 +813,14 @@ export function previewDesign(design: Design): DesignPreview {
     notes.push("at least one station is saturated: arrivals exceed service capacity");
   }
   for (const n of nodes) {
+    if (n.connections && n.connections.refused > 0) {
+      notes.push(
+        `"${n.label}" will refuse ${Math.round(n.connections.refused).toLocaleString()} connections: ` +
+          `${Math.round(n.connections.held + n.connections.refused).toLocaleString()} offered against ` +
+          `${n.connections.capacity.toLocaleString()} of capacity. A refused connection is a hard ` +
+          `failure, not a slow response.`
+      );
+    }
     if (n.database?.poolIsBinding) {
       notes.push(
         `"${n.label}" has a pool of ${n.database.poolSize} below its execution parallelism of ${n.database.parallelism}, so connections are the constraint`
@@ -839,13 +874,60 @@ function clientP99(
  * utilization is the sum of each class's demand, and the station is then solved
  * with the demand-weighted mean service time.
  */
+/**
+ * Connections a gateway will hold, and whether it can.
+ *
+ * Distribution across gateways is assumed even, which is what a connection-aware
+ * balancer achieves and what sticky hashing approximates. Accept rate follows from
+ * Little's Law inverted: holding N connections with sessions of length S means
+ * N/S handshakes per second, forever. That figure is easy to forget and it is the load
+ * a reconnect storm multiplies.
+ */
+function gatewayConnections(node: SdsNode, design: Design): NodePreview["connections"] {
+  const cfg = node.gateway!;
+  const capacity = cfg.connectionCapacity * cfg.replicas;
+
+  // Populations whose connections can reach this gateway.
+  const gateways = design.nodes.filter((n) => n.kind === "gateway" && n.gateway);
+  const totalCapacity = gateways.reduce(
+    (s, g) => s + g.gateway!.connectionCapacity * g.gateway!.replicas,
+    0
+  );
+  const offered = design.nodes.reduce((s, n) => s + (n.client?.connections?.count ?? 0), 0);
+  // Share proportional to capacity, which is what an even spread produces.
+  const share = totalCapacity > 0 ? capacity / totalCapacity : 0;
+  const wanted = offered * share;
+  const held = Math.min(capacity, wanted);
+  const refused = Math.max(0, wanted - capacity);
+
+  // Churn: each session that ends is a handshake for someone to pay for.
+  let acceptRatePerSec = 0;
+  for (const n of design.nodes) {
+    const pop = n.client?.connections;
+    if (!pop) continue;
+    if (pop.sessionDuration === null) continue;
+    const sessionSec = distMean(pop.sessionDuration) / 1000;
+    if (sessionSec > 0) acceptRatePerSec += (pop.count * share) / sessionSec;
+  }
+
+  return {
+    capacity,
+    held,
+    utilization: capacity > 0 ? held / capacity : 0,
+    refused,
+    acceptRatePerSec,
+    memoryMb: (held * cfg.memoryPerConnectionKb) / 1024,
+  };
+}
+
 function solveStation(
   node: SdsNode,
   classes: RequestClass[],
   totalWeight: number,
   lambdaIn: Map<string, number>,
   dependencyMs: Map<string, number>,
-  holdsSlot: boolean
+  holdsSlot: boolean,
+  design: Design
 ): NodePreview {
   void totalWeight;
 
@@ -929,6 +1011,13 @@ function solveStation(
     };
   }
 
+  // ---- gateway: connections are a separate constraint from throughput ----
+  //
+  // Connections held follow Little's Law exactly: a population reconnecting every
+  // session-length holds (accept rate x session length) descriptors. That is the same
+  // L = lambda x W identity the engine checks on requests, applied to a resource whose
+  // service time is measured in minutes.
+
   // ---- concurrency and admission per kind ----
   let c: number;
   let queueCapacity: number | null = null;
@@ -948,6 +1037,9 @@ function solveStation(
       break;
     case "cache":
       c = node.cache!.concurrency;
+      break;
+    case "gateway":
+      c = node.gateway!.pushConcurrency * node.gateway!.replicas;
       break;
     case "database": {
       const cfg = node.database!;
@@ -976,6 +1068,7 @@ function solveStation(
   const extras = {
     hitRatio: node.kind === "cache" ? analyticHitRatio(node) : undefined,
     database: databaseInfo,
+    connections: node.kind === "gateway" ? gatewayConnections(node, design) : undefined,
   };
 
   const compositeCaveat = holdsSlotForDependencies
@@ -1063,6 +1156,8 @@ function solveStation(
 
 function ownServiceMs(node: SdsNode): number {
   switch (node.kind) {
+    case "gateway":
+      return distMean(node.gateway!.pushTime);
     case "server":
       return distMean(node.server!.serviceTime);
     case "loadbalancer":
@@ -1080,6 +1175,8 @@ function ownServiceMs(node: SdsNode): number {
 
 function scvOf(node: SdsNode): number {
   switch (node.kind) {
+    case "gateway":
+      return distScv(node.gateway!.pushTime);
     case "server":
       return distScv(node.server!.serviceTime);
     case "loadbalancer":

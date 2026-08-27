@@ -151,6 +151,33 @@ function report(design: Design, result: RunResult): void {
     console.log(`  ${RED}${result.stability.asyncBacklogWarning}${OFF}`);
   }
 
+  if (result.largestFanout > 1 || result.connectionsHeld > 0) {
+    heading("realtime");
+    if (result.connectionsHeld > 0) {
+      console.log(
+        `  connections held  ${BOLD}${Math.round(result.connectionsHeld).toLocaleString()}${OFF}` +
+          (result.connectionsRefused > 0
+            ? `  ${RED}${result.connectionsRefused.toLocaleString()} refused${OFF}`
+            : "")
+      );
+    }
+    if (result.largestFanout > 1) {
+      console.log(
+        `  largest fan-out   ${BOLD}${result.largestFanout}x${OFF} ` +
+          `${DIM}one message becomes ${result.largestFanout} deliveries${OFF}`
+      );
+      console.log(
+        `  total work        ${BOLD}${result.callsPerMessage.toFixed(1)}${OFF} ` +
+          `${DIM}downstream calls per message, across every hop${OFF}`
+      );
+      console.log(
+        `  ${DIM}The write path costs ${result.largestFanout}x what the message rate suggests. Room ` +
+          `size is a product\n  decision that is also a capacity decision, and it rarely appears in ` +
+          `one.${OFF}`
+      );
+    }
+  }
+
   heading("throughput");
   console.log(`  offered      ${rpad(result.offeredRatePerSec.toFixed(1), 10)} req/s`);
   console.log(`  completed    ${rpad(result.throughputPerSec.toFixed(1), 10)} req/s`);
@@ -292,6 +319,38 @@ function report(design: Design, result: RunResult): void {
           `Raising the pool past parallelism moves the wait, it does not remove it.${OFF}`
       );
     }
+    if (n.connections) {
+      const c = n.connections;
+      if (c.capacity > 1) {
+        const utilColour = c.utilization >= 0.85 ? RED : c.utilization >= 0.7 ? YELLOW : GREEN;
+        console.log(
+          `    ${DIM}connections ${utilColour}${Math.round(c.avgHeld).toLocaleString()} of ` +
+            `${c.capacity.toLocaleString()}${OFF}${DIM} (${pctOf(c.utilization)}) \u00b7 ` +
+            `peak ${Math.round(c.peakHeld).toLocaleString()} \u00b7 ` +
+            `${c.memoryMb.toFixed(0)} MB (peak ${c.peakMemoryMb.toFixed(0)} MB)${OFF}`
+        );
+        console.log(
+          `    ${DIM}accepts ${c.acceptRatePerSec.toFixed(1)}/s at p99 ${ms(c.acceptLatency.p99)} \u00b7 ` +
+            `${c.closed.toLocaleString()} closed` +
+            (c.droppedByFault > 0 ? ` (${c.droppedByFault.toLocaleString()} by fault)` : "") +
+            `${OFF}`
+        );
+        if (c.refused > 0) {
+          console.log(
+            `    ${RED}${c.refused.toLocaleString()} connections REFUSED \u2014 a hard failure, not a ` +
+              `slow response${OFF}`
+          );
+        }
+      }
+      if (c.pushes > 0) {
+        console.log(
+          `    ${DIM}pushes ${CYAN}${c.pushRatePerSec.toFixed(0)}/s${OFF}${DIM} \u00b7 ` +
+            `delivery latency p50 ${ms(c.pushLatency.p50)} / p99 ${ms(c.pushLatency.p99)} \u00b7 ` +
+            `work pool ${pctOf(c.workUtilization)} busy${OFF}`
+        );
+      }
+    }
+
     if (n.queue) {
       const q = n.queue;
       const growing = q.backlogGrowthPerSec > 0.05;

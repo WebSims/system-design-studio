@@ -265,6 +265,24 @@ export function Inspector() {
             onChange={(v) => patch((e) => { e.probability = Math.min(1, Math.max(0, v / 100)); })}
           />
         </Field>
+        <Field label="fan-out" hint="calls per message">
+          <NumberInput
+            value={edge.fanoutFactor}
+            min={1}
+            onChange={(v) => patch((e) => { e.fanoutFactor = Math.max(1, Math.round(v)); })}
+          />
+        </Field>
+        {edge.fanoutFactor > 1 && (
+          <p className="note warn">
+            One call becomes <b className="tnum">{edge.fanoutFactor}</b> downstream calls. In a
+            realtime design this is the largest capacity decision there is &mdash; a chat message
+            to a room of {edge.fanoutFactor} is one request and {edge.fanoutFactor} deliveries, so
+            sizing on message rate understates delivery work by{" "}
+            <b className="tnum">{edge.fanoutFactor}&times;</b>. Room size is a product decision
+            that rarely appears in a capacity estimate.
+          </p>
+        )}
+
         <Field label="lb weight" hint="relative share">
           <NumberInput
             value={edge.weight}
@@ -368,6 +386,8 @@ export function Inspector() {
               onChange={(v) => patch((n) => { if (n.client) n.client.timeoutMs = v <= 0 ? null : v; })}
             />
           </Field>
+
+          <ConnectionEditor nodeId={node.id} />
         </>
       )}
 
@@ -626,6 +646,112 @@ export function Inspector() {
             onPolicy={(v) => patch((n) => { if (n.server) n.server.admissionPolicy = v; })}
           />
           <CitationNote citation={node.server.citation} />
+        </>
+      )}
+
+      {node.kind === "gateway" && node.gateway && (
+        <>
+          <div className="section">connections</div>
+          <Field label="sockets per instance">
+            <NumberInput
+              value={node.gateway.connectionCapacity}
+              min={1}
+              step={1000}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.gateway) n.gateway.connectionCapacity = Math.max(1, Math.round(v));
+                })
+              }
+            />
+          </Field>
+          <Field label="instances">
+            <NumberInput
+              value={node.gateway.replicas}
+              min={1}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.gateway) n.gateway.replicas = Math.max(1, Math.round(v));
+                })
+              }
+            />
+          </Field>
+          <Field label="memory per socket" hint="KB">
+            <NumberInput
+              value={node.gateway.memoryPerConnectionKb}
+              min={0}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.gateway) n.gateway.memoryPerConnectionKb = Math.max(0, v);
+                })
+              }
+            />
+          </Field>
+          <p className="note">
+            Total capacity{" "}
+            <b className="tnum">
+              {(node.gateway.connectionCapacity * node.gateway.replicas).toLocaleString()}
+            </b>{" "}
+            sockets, about{" "}
+            <b className="tnum">
+              {(
+                (node.gateway.connectionCapacity *
+                  node.gateway.replicas *
+                  node.gateway.memoryPerConnectionKb) /
+                1024
+              ).toFixed(0)}{" "}
+              MB
+            </b>{" "}
+            when full. A connection is held for the whole session, so this constrains
+            <i> how many users</i> &mdash; nothing to do with throughput. Leave headroom for
+            losing an instance: with {node.gateway.replicas} instance
+            {node.gateway.replicas === 1 ? "" : "s"}, surviving one failure needs utilization
+            below{" "}
+            <b className="tnum">
+              {node.gateway.replicas > 1
+                ? `${((1 - 1 / node.gateway.replicas) * 100).toFixed(0)}%`
+                : "n/a"}
+            </b>
+            .
+          </p>
+
+          <div className="section">work pool</div>
+          <Field label="slots per instance" hint="event loop">
+            <NumberInput
+              value={node.gateway.pushConcurrency}
+              min={1}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.gateway) n.gateway.pushConcurrency = Math.max(1, Math.round(v));
+                })
+              }
+            />
+          </Field>
+          <p className="note">
+            Shared between accepting handshakes and pushing messages, because on a real
+            gateway they are the same event loop. <b>Keep it small.</b> Push work is CPU-bound
+            serialization and socket writes, so the honest figure is single digits per instance
+            however many sockets it holds &mdash; and setting it to hundreds is what makes
+            fan-out look free.
+          </p>
+
+          <div className="section">handshake</div>
+          <DistributionEditor
+            value={node.gateway.acceptTime}
+            onChange={(acceptTime) => patch((n) => { if (n.gateway) n.gateway.acceptTime = acceptTime; })}
+          />
+          <p className="note">
+            Far more expensive than a message: TLS, auth, session setup. That asymmetry is why a
+            reconnect storm hurts so much more than an equivalent burst of traffic, and why it
+            stalls messages for people who never disconnected.
+          </p>
+
+          <div className="section">push</div>
+          <DistributionEditor
+            value={node.gateway.pushTime}
+            onChange={(pushTime) => patch((n) => { if (n.gateway) n.gateway.pushTime = pushTime; })}
+          />
+          <CitationNote citation={node.gateway.citation} />
         </>
       )}
 
@@ -1474,6 +1600,238 @@ function PolicyEditor({ edgeId }: { edgeId: string }) {
                 ` · breaker tripped ${measured.breakerTrips}\u00d7, open ${(measured.breakerOpenFraction * 100).toFixed(0)}%`}
               {measured.bulkheadRejections > 0 && ` · ${measured.bulkheadRejections.toLocaleString()} bulkhead-rejected`}
             </div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * A population of long-lived connections.
+ *
+ * Everything else in the model is a request that arrives and leaves. A connection is
+ * held for an entire session, which makes the binding constraint a socket count rather
+ * than a throughput, and the failure a refusal rather than a delay.
+ */
+function ConnectionEditor({ nodeId }: { nodeId: string }) {
+  const node = useStudio((s) => s.design.nodes.find((n) => n.id === nodeId));
+  const durationSec = useStudio((s) => s.design.scenario.durationSec);
+  const capacity = useStudio((s) =>
+    s.design.nodes.reduce(
+      (sum, n) => sum + (n.gateway ? n.gateway.connectionCapacity * n.gateway.replicas : 0),
+      0
+    )
+  );
+  const measured = useStudio((s) => (s.runStale ? undefined : s.run?.connectionsHeld));
+  const edit = useStudio((s) => s.edit);
+  if (!node?.client) return null;
+  const pop = node.client.connections;
+
+  const patch = (fn: (n: NonNullable<typeof node>) => void) =>
+    edit((d) => {
+      const n = d.nodes.find((x) => x.id === nodeId);
+      if (n) fn(n);
+    });
+
+  return (
+    <>
+      <div className="section">connections</div>
+      <Toggle
+        label={pop ? `${pop.count.toLocaleString()} concurrent connections` : "no connections"}
+        hint={pop ? "held for the whole session" : "stateless requests only"}
+        on={pop !== null}
+        onChange={(on) =>
+          patch((n) => {
+            if (!n.client) return;
+            n.client.connections = on
+              ? {
+                  count: 10_000,
+                  establishOverSec: 30,
+                  sessionDuration: { kind: "exponential", mean: 600_000 },
+                  disruption: null,
+                }
+              : null;
+          })
+        }
+      />
+
+      {pop && (
+        <>
+          <Field label="count" hint="concurrent">
+            <NumberInput
+              value={pop.count}
+              min={1}
+              step={1000}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.connections) n.client.connections.count = Math.max(1, Math.round(v));
+                })
+              }
+            />
+          </Field>
+          <Field label="establish over" hint="s">
+            <NumberInput
+              value={pop.establishOverSec}
+              min={0.001}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.connections) {
+                    n.client.connections.establishOverSec = Math.max(0.001, v);
+                  }
+                })
+              }
+            />
+          </Field>
+
+          <p className={`note ${capacity > 0 && pop.count > capacity ? "warn" : ""}`}>
+            {capacity > 0 ? (
+              <>
+                Gateway capacity is <b className="tnum">{capacity.toLocaleString()}</b> sockets.
+                {pop.count > capacity ? (
+                  <>
+                    {" "}
+                    <b>
+                      {(pop.count - capacity).toLocaleString()} of these will be refused
+                    </b>{" "}
+                    &mdash; a hard failure, not a slow response.
+                  </>
+                ) : (
+                  ` These fit, at ${((pop.count / capacity) * 100).toFixed(0)}% of it.`
+                )}
+              </>
+            ) : (
+              <>Wire this client to a gateway; only a gateway can hold a connection.</>
+            )}
+            {measured !== undefined && (
+              <>
+                {" "}
+                Measured: <b className="tnum">{Math.round(measured).toLocaleString()}</b> held.
+              </>
+            )}
+          </p>
+
+          <Field label="session length" hint="ms mean, 0 = never ends">
+            <NumberInput
+              value={
+                pop.sessionDuration === null
+                  ? 0
+                  : pop.sessionDuration.kind === "exponential"
+                    ? pop.sessionDuration.mean
+                    : 0
+              }
+              min={0}
+              step={60_000}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.connections) {
+                    n.client.connections.sessionDuration =
+                      v <= 0 ? null : { kind: "exponential", mean: v };
+                  }
+                })
+              }
+            />
+          </Field>
+          <p className="note">
+            {pop.sessionDuration === null ? (
+              <>
+                Connections never drop, so no handshakes are paid after start-up. Real sessions do
+                end &mdash; tab closed, network changed, phone slept &mdash; and each ending is a
+                handshake for someone to pay for, so this understates accept work.
+              </>
+            ) : (
+              <>
+                Churn costs{" "}
+                <b className="tnum">
+                  {(
+                    pop.count /
+                    (pop.sessionDuration.kind === "exponential"
+                      ? pop.sessionDuration.mean / 1000
+                      : 1)
+                  ).toFixed(1)}
+                </b>{" "}
+                handshakes per second, forever &mdash; Little&rsquo;s Law applied to sockets. It is
+                easy to leave out of a capacity estimate, and it is the load a reconnect storm
+                multiplies.
+              </>
+            )}
+          </p>
+
+          <div className="section">disruption</div>
+          <Toggle
+            label={pop.disruption ? "loses connections partway" : "no disruption"}
+            hint={
+              pop.disruption
+                ? `${(pop.disruption.fraction * 100).toFixed(0)}% drop at ${pop.disruption.atSec}s`
+                : "connections are never forcibly dropped"
+            }
+            on={pop.disruption !== null}
+            onChange={(on) =>
+              patch((n) => {
+                if (!n.client?.connections) return;
+                n.client.connections.disruption = on
+                  ? {
+                      atSec: Math.round(durationSec * 0.5),
+                      fraction: 0.25,
+                      reconnectOverSec: 0,
+                    }
+                  : null;
+              })
+            }
+          />
+          {pop.disruption && (
+            <>
+              <Field label="at" hint="s">
+                <NumberInput
+                  value={pop.disruption.atSec}
+                  min={0}
+                  step={10}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.client?.connections?.disruption) {
+                        n.client.connections.disruption.atSec = Math.max(0, v);
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <Field label="fraction dropped" hint="%">
+                <NumberInput
+                  value={Math.round(pop.disruption.fraction * 1000) / 10}
+                  min={0}
+                  max={100}
+                  step={5}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.client?.connections?.disruption) {
+                        n.client.connections.disruption.fraction = Math.min(1, Math.max(0, v / 100));
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <Field label="reconnect over" hint="s, 0 = all at once">
+                <NumberInput
+                  value={pop.disruption.reconnectOverSec}
+                  min={0}
+                  step={5}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.client?.connections?.disruption) {
+                        n.client.connections.disruption.reconnectOverSec = Math.max(0, v);
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <p className="note warn">
+                The failure realtime systems actually have. When an instance dies its connections
+                come back at once, handshakes cost far more than messages, and both draw on the
+                same work pool &mdash; so people who never disconnected see their messages stall.
+                Spreading the reconnects costs nothing and is the mitigation.
+              </p>
+            </>
           )}
         </>
       )}
