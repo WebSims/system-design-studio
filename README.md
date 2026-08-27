@@ -3,14 +3,14 @@
 A discrete-event simulator for finding bottlenecks and scaling limits in system
 designs, validated against closed-form queueing theory.
 
-## Status: Phase 7
+## Status: Phase 7 + visual layer
 
-Validated engine, component library, and studio. `legacy/` holds the previous
-animation-driven build, kept as a visual reference.
+Validated engine, component library, studio, and trace-driven visualisation.
+`legacy/` holds the previous animation-driven build, kept as a visual reference.
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 347 tests (~95s)
+pnpm verify     # typecheck + 388 tests (~75s)
 pnpm dev        # studio at localhost:5173
 ```
 
@@ -223,7 +223,7 @@ Four ways, cheapest first.
 ### 1. The automated gate
 
 ```bash
-pnpm verify                  # typecheck + all 347 tests
+pnpm verify                  # typecheck + all 388 tests
 pnpm test                    # tests only
 pnpm vitest run -t "M/M/c"   # one group
 ```
@@ -287,7 +287,10 @@ architecture, where the model advanced only on animation frames, seventeen
 | Open it | Estimate before any run: 80% bottleneck load, ~70.8ms mean, ~276.7ms p99 |
 | Press **run simulation** | p99 ~302ms, `MISSES SLO` against the 250ms target, all invariants green, Little's Law error 0.00% |
 | Read the precision box | `mean ±1.8%, p99 ±3.9%` — two figures, not one |
-| Press **play** under trace playback | Packets animate along the pipe; scrubbing and 4x work because playback cannot affect the model |
+| Look at **trace playback** | Opens in *follow one request* with a request already chosen; the waterfall shows where its time went, and a **non-linear timeline** warning names the stretch factor |
+| Watch the focused request | Its identicon sits in a chip at the station holding it, then launches out of that exact chip onto the pipe and docks into the chip waiting at the other end; the readout alternates `1 in flight` / `at a station` |
+| Switch to **ambient** | Waterfall and request picker disappear; several stations show occupancy at once, at the same simulated instant, and the default speed is 0.01x |
+| Scrub, then scrub back | The same requests occupy the same chips — slots are assigned from the trace, not from arrival order at render time |
 | Click the client, set rate to **260** | Estimate immediately withholds every number: *"does not scale — api server is offered 260/s against a capacity of 100/s (ρ = 2.60)"* |
 | Run it | Names the growing queue (~160 req/s) and warns the latency figures are a function of run length |
 | Set the server's service time to **lognormal**, mean 40, p99 200 | Inspector badges it `M/G/c (approx)`; the estimate's p99 is withheld with a reason |
@@ -309,6 +312,81 @@ The refusals are the point of the exercise: a tool that declines to answer is mo
 useful than one that guesses. So is the async example — every percentile green
 while the work silently piles up is a failure mode a synchronous queue model
 cannot express at all.
+
+### 5. Drive the built app in a real browser
+
+The step that has found the most, and the only one that exercises what a user
+actually loads:
+
+```bash
+pnpm build
+cd apps/studio && npx vite preview --port 4319
+```
+
+Then drive it over the Chrome DevTools Protocol — headless Chrome with
+`--remote-debugging-port`, clicking real buttons and reading the real DOM and canvas.
+Four of the bugs listed below were invisible to both `tsc` and the test suite: a
+missing `nodeTypes` entry that React Flow silently papered over, a non-null assertion
+that blanked the app on every run, a preview that blamed the wrong component, and a
+sprite canvas that was correct in every assertion and empty on screen.
+
+The canvas is worth checking by counting non-transparent pixels over a full playback
+loop rather than at one instant. A first attempt sampled 24 times across less than half
+a loop and reported the animation dead, when it was working and simply aliased against
+its own duty cycle — sprites are on wires roughly 8% of the time by nature of the
+designs, not by accident.
+
+## Watching it run
+
+The original build's best idea was visual: every request was a small identicon, it
+mutated as it crossed each hop so a fan-out read as one shape in several colours, and
+each station showed the requests currently inside it. That idea is back — but as an
+observer of a finished trace rather than as the model itself.
+
+The engine runs in a worker and finishes before anything is drawn. The player then
+samples the recorded trace. Nothing on screen can influence a number, which is what
+makes scrubbing, replaying and following one request free, and what lets the engine
+measure millions of requests while the canvas animates a sampled few thousand. The
+original could not exceed 60 frames per second or 150 concurrent packets, because the
+animation *was* the simulation.
+
+**Occupancy chips.** Each station shows the requests inside it right now, as identicons.
+A sprite arriving on a pipe docks into the exact chip its request will occupy, and
+launches from the chip it was in — so a fan-out reads as one shape leaving in several
+colours and each colour returning to the slot held open for it. Slots are assigned once
+by interval colouring, so a request keeps its slot for its whole visit and scrubbing
+backwards produces the same arrangement as scrubbing forwards. Green means in service,
+amber means queued.
+
+The strip holds seven and reports the rest as a count, for two reasons: the trace is
+sampled, so the chips were always a sample rather than a census; and React Flow measures
+node heights, so a node that grew during playback would re-measure many times a second.
+
+**Two modes, because one timescale cannot be honest about a real design.** Durations span
+four orders of magnitude — a quarter-millisecond network hop inside a request that takes
+half a second.
+
+*Ambient* plays simulated time linearly, so everything on screen is at the same instant.
+Its default is 0.01×, and even then wires are usually empty: a request spends almost all
+of its life at a station, not on a wire. The transport says `at a station` rather than
+leaving that to look like a broken animation. What ambient mode is genuinely good for is
+the chips — seeing which stations hold work, simultaneously.
+
+*Focus* follows one request and stretches its journey to a few seconds. This is a
+**non-linear timeline** and it says so, in the panel, with the stretch factor. It is
+defensible only because two things hold: following a single request makes no claim about
+what else was happening at that instant, so there is no simultaneity left to distort;
+and the waterfall beside it stays strictly to scale with every bar labelled in real time.
+The animation shows the shape of the journey, the waterfall owns its proportions.
+Ambient mode is never warped, because there the simultaneity claim is real.
+
+The compression is a power law rather than a floor, so ordering survives: a longer phase
+always gets at least as much screen time as a shorter one, and the station where the time
+actually goes still visibly dominates. Both properties are asserted.
+
+**The waterfall** is the payload of focus mode: which station held the request, for how
+long, and how much of that was queueing rather than work. Queue wait is hatched over the
+front of each bar, because that is the half capacity can buy back.
 
 ## Why this exists in this shape
 
@@ -334,10 +412,16 @@ missing object: a capacity-limited resource with a queue.
 packages/schema     Zod model, structural validation, versioned migrations
 packages/core       the engine — no DOM, no rAF, runs in Node and in a Worker
 packages/analytic   closed-form solver: Erlang-B/C, M/M/c, M/M/c/K, P-K
+packages/models     cited benchmark constants, component presets, examples
+packages/analyze    knobs, knees, critical path, sensitivity, config search
 apps/studio         Vite + React + React Flow; engine behind a Comlink worker
+  canvas/geometry      chip slots and edge curves, derived from the design
+  canvas/identicon     deterministic per-request icons with lineage
+  canvas/choreography  trace -> slots, anchors, sprites, time warp (no DOM)
+  canvas/PacketLayer   Canvas2D player; owns the clock, outside React
 ```
 
-Two properties are load-bearing:
+Three properties are load-bearing:
 
 **The simulator is headless and deterministic.** 1200 simulated seconds run in
 ~15ms. Identical `(design, seed)` gives a byte-identical result. Random draws come
@@ -348,6 +432,15 @@ rather than to a shifted workload.
 **One closed-form solver, two consumers.** The same code validates the engine in
 CI and powers the studio's instant estimate, so the estimate cannot drift from the
 simulation unnoticed — a test asserts they agree.
+
+**The visuals are a pure function of a finished trace, and never touch React Flow's
+node data.** Playback state lives in its own store and reaches nodes through narrow
+per-node selectors; the canvas owns its own clock and re-renders nothing. Pushing
+per-frame state through `nodes` would re-render the whole graph sixty times a second.
+`canvas/choreography` is DOM-free — edge curves are evaluated analytically with an
+arc-length table rather than by asking an SVG element for `getPointAtLength` — which is
+why the choreography can be unit-tested at all, and why sprites are positioned correctly
+on their first frame instead of after the element they wanted to measure exists.
 
 ## The validation gate
 
@@ -513,6 +606,23 @@ wrong numbers:
 - `nodeTypes` was missing `gateway`. React Flow silently falls back to a default node
   rather than failing, so the component shipped invisible and unselectable in a first
   pass. The map is now typed exhaustively over `NodeKind`.
+- A non-null assertion crashed the entire studio. Focus mode is the default, so the panel
+  rendered once before the effect that picks a request had run, and `focused!.endMs`
+  threw — blanking the app after every run. The `!` is what let it compile: it silenced
+  precisely the check that mattered. Caught by loading the built app in a browser, not by
+  `tsc`, and the reason a real browser check is part of the ritual.
+- The sprite canvas was drawing nothing, and the waterfall said why: two network hops
+  accounted for 0.6% of a 380ms request while a single database visit accounted for 99%.
+  Played to scale, the sprite crossing the wire existed for under one frame of a six-second
+  loop. Not a rendering bug — an honest picture of a design nobody can see. It forced the
+  time-warp decision above, including its disclosure.
+- A first attempt at the slot-overlap invariant was O(n^3) and hung the suite rather than
+  failing it. Rewritten as a per-slot sweep. A test that never finishes is worse than no
+  test, because it reads as an infrastructure problem instead of a bug.
+- `errIcon` was not idempotent and `hopIcon`/`visitIcon` shared a salt space, so a node
+  and an edge with the same id produced identical icons — a request would have looked
+  unchanged on docking. Both found by asserting properties of the identicons rather than
+  by looking at them.
 
 ## Design rules the tool holds itself to
 

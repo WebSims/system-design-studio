@@ -1,5 +1,7 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { describe } from "@sds/core";
+import { CHIP_SIZE, MAX_CHIPS, NODE_HEIGHT, NODE_WIDTH } from "./geometry";
+import { iconDataUrl, visitIcon } from "./identicon";
 import { isTimeVarying, peakRate, type ArrivalProcess, type NodeKind, type SdsNode } from "@sds/schema";
 import { useStudio } from "../store";
 import { usePlayback } from "../playback";
@@ -11,8 +13,6 @@ import { usePlayback } from "../playback";
  * height changed as its occupancy display grew would trigger re-measurement many
  * times a second during playback, so every kind renders into the same box.
  */
-export const NODE_WIDTH = 216;
-export const NODE_HEIGHT = 112;
 
 const KIND_ACCENT: Record<NodeKind, string> = {
   client: "var(--sky)",
@@ -149,6 +149,50 @@ function useMeasured(id: string) {
   return stale ? undefined : measured;
 }
 
+/**
+ * The occupancy strip: which requests are at this station right now.
+ *
+ * Restores the most legible idea from the original build. A request appears as its
+ * identicon while it is here, and the sprite that arrives on the pipe docks into
+ * exactly this chip -- so a fan-out reads as one shape leaving in several colours and
+ * each colour returning to the slot that was held open for it.
+ *
+ * SLOT POSITIONS ARE FIXED AND THE STRIP DOES NOT GROW.
+ *
+ * React Flow measures node dimensions, so a strip that grew with occupancy would
+ * trigger re-measurement many times a second during playback. It holds at most
+ * `MAX_CHIPS` and reports the rest as a count, which is honest anyway: the trace is
+ * sampled, so the chips were always a sample rather than a census.
+ */
+function ChipStrip({ nodeId }: { nodeId: string }) {
+  // Narrow selector: this strip re-renders only when ITS OWN occupancy changes.
+  const occ = usePlayback((s) => s.occupancy[nodeId]);
+  if (!occ || occ.chips.length === 0) return null;
+
+  const overflow = occ.total - occ.chips.length;
+
+  return (
+    <div className="chip-strip" style={{ height: CHIP_SIZE }}>
+      {Array.from({ length: MAX_CHIPS }, (_, slot) => {
+        const chip = occ.chips.find((c) => c.slot === slot);
+        if (!chip) return <span className="chip-slot" key={slot} style={{ width: CHIP_SIZE }} />;
+        const icon = visitIcon(chip.requestId, nodeId, chip.failed);
+        return (
+          <span
+            className={`chip-slot filled ${chip.inService ? "serving" : "waiting"}`}
+            key={slot}
+            style={{ width: CHIP_SIZE, height: CHIP_SIZE }}
+            title={chip.inService ? "in service" : "queued"}
+          >
+            <img src={iconDataUrl(icon, CHIP_SIZE * 2)} alt="" width={CHIP_SIZE} height={CHIP_SIZE} />
+          </span>
+        );
+      })}
+      {overflow > 0 && <span className="chip-overflow tnum">+{overflow}</span>}
+    </div>
+  );
+}
+
 export function StudioNode({ id, selected }: NodeProps) {
   const node = useStudio((s) => s.design.nodes.find((n) => n.id === id));
   const preview = useStudio((s) => s.preview.nodes.find((n) => n.nodeId === id));
@@ -206,6 +250,8 @@ export function StudioNode({ id, selected }: NodeProps) {
           <span className="node-src">{measured ? "measured" : "estimated"}</span>
         )}
       </div>
+
+      <ChipStrip nodeId={id} />
 
       <Handle type="source" position={Position.Right} />
     </div>

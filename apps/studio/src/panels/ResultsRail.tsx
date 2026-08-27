@@ -1,9 +1,9 @@
 import type { NodeResult, RunResult } from "@sds/core";
 import type { DesignPreview } from "@sds/analytic";
 import { useStudio } from "../store";
-import { usePlayback } from "../playback";
 import { AnalyzerPanel } from "./AnalyzerPanel";
 import { Chart } from "./Chart";
+import { Transport } from "./Transport";
 
 const ms = (v: number | null | undefined): string =>
   v == null || !isFinite(v) ? "—" : v >= 1000 ? `${(v / 1000).toFixed(2)}s` : `${v.toFixed(1)}ms`;
@@ -341,55 +341,6 @@ function ComponentDetail({ node }: { node: NodeResult }) {
         </div>
       )}
       <Chart series={node.queueLengthSeries} height={64} color="#7b51a1" yLabel="queue" />
-    </>
-  );
-}
-
-function Transport({ result }: { result: RunResult }) {
-  const playing = usePlayback((s) => s.playing);
-  const tMs = usePlayback((s) => s.tMs);
-  const speed = usePlayback((s) => s.speed);
-  const toggle = usePlayback((s) => s.toggle);
-  const setSpeed = usePlayback((s) => s.setSpeed);
-  const seek = usePlayback((s) => s.seek);
-
-  const hops = result.trace.hops;
-  if (hops.length === 0) return null;
-  const start = Math.min(...hops.map((h) => h.tStart));
-  const end = Math.max(...hops.map((h) => h.tEnd));
-
-  return (
-    <>
-      <div className="section">
-        trace playback
-        <span className="section-tag">1 in {result.trace.sampleEvery.toLocaleString()} sampled</span>
-      </div>
-      <div className="transport">
-        <button className="btn small" onClick={toggle}>
-          {playing ? "pause" : "play"}
-        </button>
-        <input
-          type="range"
-          min={start}
-          max={end}
-          step={(end - start) / 500}
-          value={Math.min(end, Math.max(start, tMs))}
-          onChange={(e) => {
-            usePlayback.getState().pause();
-            seek(Number(e.target.value));
-          }}
-        />
-        <select className="input tiny" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-          <option value={0.1}>0.1&times;</option>
-          <option value={0.25}>0.25&times;</option>
-          <option value={1}>1&times;</option>
-          <option value={4}>4&times;</option>
-        </select>
-      </div>
-      <p className="note">
-        The animation replays a recorded trace; the simulation already finished. Speed
-        and position are free because playback cannot influence the model.
-      </p>
     </>
   );
 }
