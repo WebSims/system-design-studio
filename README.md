@@ -3,14 +3,14 @@
 A discrete-event simulator for finding bottlenecks and scaling limits in system
 designs, validated against closed-form queueing theory.
 
-## Status: Phase 4
+## Status: Phase 5
 
 Validated engine, component library, and studio. `legacy/` holds the previous
 animation-driven build, kept as a visual reference.
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 278 tests (~70s)
+pnpm verify     # typecheck + 314 tests (~80s)
 pnpm dev        # studio at localhost:5173
 ```
 
@@ -28,6 +28,81 @@ Plus **request classes** (traffic mix, per-class routing, cost multipliers), so
 "reads go through the cache, writes go straight to the database" is expressible,
 and fan-out is either fork-join (`max`) or sequential (`sum`) — explicitly, not
 by assumption.
+
+## Measured uncertainty
+
+```bash
+pnpm sim --replicate                       # independent seeds, real confidence intervals
+pnpm sim --compare other.json              # paired comparison on shared seeds
+```
+
+Every precision figure before Phase 5 came from a *calibrated model* of the error.
+That was a large improvement on silence, and it was still a model. Running
+independent seeds and measuring the spread needs no calibration:
+
+```
+metric                      mean            95% interval      +/-
+p50 latency              55.94ms          [54.76, 57.12]     2.1%
+p99 latency             285.25ms        [268.94, 301.56]     5.7%
+throughput               80.14/s          [79.91, 80.36]     0.3%
+
+error model holds
+modelled p99 error ±3.8% against a measured ±6.8% (1σ over 8 seeds)
+```
+
+The model is kept and **checked against the measurement on every replicated run**.
+Two independent routes to the same quantity, which is the discipline the engine
+itself is held to. Note the model runs somewhat optimistic — that is reported, not
+smoothed over.
+
+Intervals use Student's *t*, not 1.96. At eight replications `t(0.975, 7)` is 2.365,
+so the normal quantile would report an interval ~20% too narrow — being optimistic
+about your own uncertainty is the specific failure this guards.
+
+## Did my change help?
+
+```
+metric                    baseline   candidate      change  verdict
+p99 latency                1984.00      142.17      +92.8%  better
+p50 latency                1642.67       28.65      +98.3%  better
+throughput                  400.60      340.62      -15.0%  worse
+error rate                   10.92       24.27     -122.3%  worse
+retry amplification           1.54        1.08      +29.8%  better
+```
+
+Comparisons are **paired**: both designs run on the same seeds, so they see a
+bit-identical workload and the per-seed difference isolates the effect of the change.
+An unpaired comparison of two eight-run averages would be swamped by run-to-run
+spread and would report a real 10% improvement as "not significant".
+
+This is the return on the independent-RNG-streams decision made in Phase 1, before
+there was anything to compare.
+
+## Time-varying load
+
+| Profile | Question it answers |
+|---|---|
+| **ramp** | how far does this get before it breaks — a load test in one run |
+| **spike** | does it survive a burst, and *how long does recovery take* |
+| **steps** | piecewise load changes |
+
+```bash
+pnpm sim --ramp --example ramp-to-failure
+pnpm sim --spike --multiple 3
+```
+
+A ramp finds the limit in one simulation instead of a dozen:
+
+```
+        t   offered       p99
+      169s     509/s   115.0ms
+      211s     625/s     1.99s     ← breach at 573/s
+```
+
+Arrivals use **thinning** (Lewis & Shedler), which is exact. The obvious alternative
+— recomputing an exponential gap from the instantaneous rate — assumes the rate holds
+for the whole gap, so it lags a rising ramp and overshoots a falling one. Validated
+against exact integrals: a ramp from *a* to *b* must deliver `(a+b)/2 × T` arrivals.
 
 ## The analyzer
 
@@ -102,7 +177,7 @@ Four ways, cheapest first.
 ### 1. The automated gate
 
 ```bash
-pnpm verify                  # typecheck + all 278 tests
+pnpm verify                  # typecheck + all 314 tests
 pnpm test                    # tests only
 pnpm vitest run -t "M/M/c"   # one group
 ```
@@ -180,6 +255,9 @@ architecture, where the model advanced only on animation frames, seventeen
 | **examples → one broken backend**, run | the outlier is ejected 98× (98% of the window) and takes 0.7% of traffic instead of 33% |
 | **analyse design** on the retry storm | ~25 simulations in 8s: holds to 345/s (23% over), api is 84% of latency and all of it queueing, parallelism 8→11 fixes it, pool size does nothing |
 | Read the first finding | *"over capacity, with the queue held down by abandonment"* — the closed form and the run disagree, and the analyzer explains why |
+| **examples → ramp to failure**, run | *"SLO first broke at 533/s"* — exactly the database's `parallelism/E[S]` ceiling, found in one run |
+| **measure intervals** | eight seeds, real 95% intervals, and the modelled error checked against them |
+| **save as baseline**, raise DB parallelism 8→20, **compare** | p99 +95.2%, throughput +9.7%, errors 8.29%→0 — all paired on shared seeds |
 
 The refusals are the point of the exercise: a tool that declines to answer is more
 useful than one that guesses. So is the async example — every percentile green
@@ -302,6 +380,21 @@ Phase 4 analyzer, against exact answers where they exist:
 - **Sensitivity is measured with common random numbers**, so a difference is
   attributable to the parameter and not to a different workload.
 
+Phase 5 statistics and scenarios:
+
+- **Interval coverage is tested by its own definition.** Samples drawn from a normal
+  with a known mean, 4000 trials: a 95% interval must contain the true mean about
+  95% of the time, and it does (93–97%).
+- **Paired comparison detects a shift smaller than the spread.** Samples swinging
+  80–130 with every pair moving down by exactly 5 → significant. Two independent
+  noise samples → correctly not significant. A design against itself → difference
+  exactly zero.
+- **Arrival profiles integrate to exact totals** — ramp, spike and steps each
+  checked against their integral.
+- **The ramp knee and the steady-state knee agree within a third**, and a *steeper*
+  ramp reports a higher limit — the lag, measured directly with duration held fixed
+  so the sample window doesn't confound the slope.
+
 Run lengths are derived from the `1/(1-rho)^2` relaxation scaling rather than tuned
 until green. Convergence was measured directly (5.4% → 0.07% error as a run grew
 64x) to confirm residual disagreement at `rho=0.9` is variance, not bias.
@@ -337,6 +430,13 @@ wrong numbers:
   rather than a tidy pie chart.
 - Two findings violated the project's own rule that evidence must cite numbers.
   A test asserting that rule across every shipped example caught them.
+- Breach detection fired on noise. A p99 taken from one ~20-sample window is
+  essentially the maximum, and a lognormal service time throws a large maximum often
+  enough that the ramp example reported its limit at 64/s instead of 533/s. Detection
+  now merges the last six windows and requires 200 samples.
+- Load-correlated failure counted the request being served as load, putting a floor
+  of `1/capacity` under the pressure term — a 4-slot station could never read below
+  25% busy. It now excludes the request itself and includes the queue.
 
 ## Design rules the tool holds itself to
 
@@ -375,6 +475,17 @@ into a bounded one by abandoning 11% of requests. The analyzer says exactly that
 rather than emitting "predicted unstable" next to a stable verdict and leaving the
 reader to reconcile it.
 
+**A zero-width interval is not precision.** When every seed returns the identical
+p99 it means the metric is clamped — almost always by a client deadline — not that
+the measurement is exact. The UI says so rather than letting a `±0.0%` read as
+certainty.
+
+**Aggregate percentiles are withheld for time-varying load.** A single p99 over a
+ramp averages across regimes that never coexisted, part of it measured at 50/s and
+part at 800/s. The figure is still computed, because it is the right thing for a
+spike where most of the run *is* the base rate, but the result says what it does and
+does not mean and points at the time series.
+
 **The analyzer states what it does not search.** Config search covers capacity
 only. Service times are excluded because "make the code twice as fast" is not a
 configuration change, and retry settings because they trade error rate against
@@ -399,6 +510,10 @@ towards a plateau" from "growing without bound". The retry-storm example reports
 unstable at 120 simulated seconds and stable at 600, and both are correct
 readings of their windows.
 
-Next: replication-based confidence intervals (measured rather than modelled),
-time-varying scenarios (ramp, spike, soak) so failures can correlate with overload
-instead of being constant, and run comparison.
+Failure probability now correlates with load, which is what gives a cascade positive
+gain. It is still a linear interpolation between idle and saturated, and real
+failures arrive in correlated bursts rather than independently — that would need a
+failure process with memory.
+
+Next: restoring the full identicon and occupancy choreography on the trace player
+(Phase 6), then stateful connections for the 20k-user chat case (Phase 7).

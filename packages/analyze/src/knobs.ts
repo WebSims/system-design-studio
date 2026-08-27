@@ -1,4 +1,4 @@
-import { DesignSchema, type Design, type SdsNode } from "@sds/schema";
+import { DesignSchema, meanRate, scaleArrival, type Design, type SdsNode } from "@sds/schema";
 import { mean as distMean, type RunResult } from "@sds/core";
 
 /**
@@ -14,9 +14,20 @@ import { mean as distMean, type RunResult } from "@sds/core";
  * simulated window.
  */
 
-/** Total offered load across every client, per second. */
+/**
+ * Total offered load across every client, per second.
+ *
+ * Time-averaged, so a ramp reports its mean rather than its endpoint. That is the
+ * right basis for a headroom figure -- a ramp's "current load" is not a single
+ * number, and quoting its peak would understate headroom while quoting its start
+ * would overstate it.
+ */
 export function offeredRate(design: Design): number {
-  return design.nodes.reduce((sum, n) => sum + (n.client?.arrival.ratePerSec ?? 0), 0);
+  const durationMs = design.scenario.durationSec * 1000;
+  return design.nodes.reduce(
+    (sum, n) => sum + (n.client ? meanRate(n.client.arrival, durationMs) : 0),
+    0
+  );
 }
 
 /**
@@ -31,16 +42,7 @@ export function scaleLoad(design: Design, factor: number): Design {
     ...design,
     nodes: design.nodes.map((n) =>
       n.client
-        ? {
-            ...n,
-            client: {
-              ...n.client,
-              arrival: {
-                ...n.client.arrival,
-                ratePerSec: Math.max(0.01, n.client.arrival.ratePerSec * factor),
-              },
-            },
-          }
+        ? { ...n, client: { ...n.client, arrival: scaleArrival(n.client.arrival, factor) } }
         : n
     ),
   });

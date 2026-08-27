@@ -1,6 +1,6 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { describe } from "@sds/core";
-import type { NodeKind, SdsNode } from "@sds/schema";
+import { isTimeVarying, peakRate, type ArrivalProcess, type NodeKind, type SdsNode } from "@sds/schema";
 import { useStudio } from "../store";
 import { usePlayback } from "../playback";
 
@@ -32,6 +32,21 @@ const KIND_LABEL: Record<NodeKind, string> = {
   queue: "queue",
 };
 
+/** One-line summary of an arrival profile, including the time-varying shapes. */
+function describeArrival(a: ArrivalProcess): string {
+  switch (a.kind) {
+    case "poisson":
+    case "deterministic":
+      return `${a.ratePerSec.toLocaleString()} req/s`;
+    case "ramp":
+      return `${a.fromRatePerSec.toLocaleString()} \u2192 ${a.toRatePerSec.toLocaleString()} req/s`;
+    case "spike":
+      return `${a.baseRatePerSec.toLocaleString()} \u2192 ${a.peakRatePerSec.toLocaleString()} for ${a.durationSec}s`;
+    case "steps":
+      return `${a.ratePerSec.toLocaleString()} req/s, ${a.steps.length} step${a.steps.length === 1 ? "" : "s"}`;
+  }
+}
+
 function utilTone(rho: number): string {
   // Queueing delay grows as 1/(1-rho), so 0.85 is already deep into the knee
   // rather than a comfortable margin.
@@ -45,8 +60,8 @@ function utilTone(rho: number): string {
 function summaryOf(node: SdsNode): string {
   switch (node.kind) {
     case "client": {
-      const c = node.client!;
-      return `${c.arrival.kind} \u00b7 ${c.arrival.ratePerSec.toLocaleString()} req/s`;
+      const a = node.client!.arrival;
+      return `${a.kind} \u00b7 ${describeArrival(a)}`;
     }
     case "loadbalancer":
       return `${node.loadbalancer!.algorithm} \u00b7 ${describe(node.loadbalancer!.serviceTime)}`;

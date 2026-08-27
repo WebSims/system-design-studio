@@ -7,6 +7,7 @@ export * from "./histogram";
 export * from "./timeseries";
 export * from "./zipf";
 export * from "./confidence";
+export * from "./statistics";
 export * from "./result";
 export * from "./components";
 export * from "./run";

@@ -112,7 +112,22 @@ export type RequestClass = z.infer<typeof RequestClassSchema>;
 // node configs
 // ---------------------------------------------------------------------------
 
-/** How work arrives at the system. */
+/**
+ * How work arrives at the system.
+ *
+ * The first two are stationary: the rate never changes, so the system has a steady
+ * state and aggregate percentiles mean something.
+ *
+ * The rest are TIME-VARYING, and that changes what can honestly be reported. A
+ * design under a ramp has no steady state by construction, so a single p99 over the
+ * whole run is an average across regimes that never coexisted -- part of it measured
+ * at 100/s and part at 1000/s. For those, the tool reports the time series and the
+ * moment the SLO first broke, and says why it is withholding the aggregate.
+ *
+ * They are worth having anyway, because they answer questions a steady-state run
+ * cannot: how far a design gets before it breaks, whether it survives a spike, and
+ * whether it recovers afterwards.
+ */
 export const ArrivalProcessSchema = z.discriminatedUnion("kind", [
   /**
    * Poisson: exponential inter-arrival times, mean 1/rate. The M/M/*
@@ -121,8 +136,161 @@ export const ArrivalProcessSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("poisson"), ratePerSec: z.number().positive() }),
   /** Perfectly spaced arrivals. Strictly better than Poisson at the same rate. */
   z.object({ kind: z.literal("deterministic"), ratePerSec: z.number().positive() }),
+  /**
+   * Linear ramp across the whole run.
+   *
+   * A load test in one run: the offered rate rises steadily and the first SLO breach
+   * marks the capacity limit. Its answer runs slightly HIGH compared with a
+   * steady-state search, because queues take time to fill -- the system is still
+   * catching up with the load when the load has already moved on. That lag is real
+   * and is reported rather than corrected away.
+   */
+  z.object({
+    kind: z.literal("ramp"),
+    fromRatePerSec: z.number().nonnegative(),
+    toRatePerSec: z.number().positive(),
+  }),
+  /**
+   * A steady base with a burst in the middle.
+   *
+   * Tests two things a ramp cannot: whether the design survives a sudden multiple of
+   * normal load, and how long it takes to drain afterwards. Recovery time is often
+   * the more interesting number, because a queue built during a spike keeps hurting
+   * requests that arrive after it has passed.
+   */
+  z.object({
+    kind: z.literal("spike"),
+    baseRatePerSec: z.number().positive(),
+    peakRatePerSec: z.number().positive(),
+    /** When the spike starts, simulated seconds from t=0. */
+    atSec: z.number().nonnegative(),
+    durationSec: z.number().positive(),
+  }),
+  /** Piecewise-constant rate. Each step takes effect at its time and holds. */
+  z.object({
+    kind: z.literal("steps"),
+    ratePerSec: z.number().positive(),
+    steps: z
+      .array(z.object({ atSec: z.number().nonnegative(), ratePerSec: z.number().positive() }))
+      .default([]),
+  }),
 ]);
 export type ArrivalProcess = z.infer<typeof ArrivalProcessSchema>;
+
+/** True when the rate changes over time, so there is no steady state. */
+export function isTimeVarying(arrival: ArrivalProcess): boolean {
+  return arrival.kind === "ramp" || arrival.kind === "spike" || arrival.kind === "steps";
+}
+
+/** Offered rate at simulated time `tMs`, for any arrival process. */
+export function rateAt(arrival: ArrivalProcess, tMs: number, durationMs: number): number {
+  switch (arrival.kind) {
+    case "poisson":
+    case "deterministic":
+      return arrival.ratePerSec;
+    case "ramp": {
+      const progress = durationMs > 0 ? Math.min(1, Math.max(0, tMs / durationMs)) : 0;
+      return arrival.fromRatePerSec + (arrival.toRatePerSec - arrival.fromRatePerSec) * progress;
+    }
+    case "spike": {
+      const startMs = arrival.atSec * 1000;
+      const endMs = startMs + arrival.durationSec * 1000;
+      return tMs >= startMs && tMs < endMs ? arrival.peakRatePerSec : arrival.baseRatePerSec;
+    }
+    case "steps": {
+      let rate = arrival.ratePerSec;
+      for (const step of arrival.steps) {
+        if (tMs >= step.atSec * 1000) rate = step.ratePerSec;
+      }
+      return rate;
+    }
+  }
+}
+
+/**
+ * Scale every rate in an arrival process by the same factor.
+ *
+ * Shape-preserving on purpose: scaling a ramp keeps it a ramp with the same slope
+ * ratio, and scaling a spike keeps its peak-to-base ratio. A knee search that
+ * flattened the profile while scaling it would be changing two things at once and
+ * attributing the result to load alone.
+ */
+export function scaleArrival(arrival: ArrivalProcess, factor: number): ArrivalProcess {
+  const f = Math.max(1e-9, factor);
+  switch (arrival.kind) {
+    case "poisson":
+    case "deterministic":
+      return { ...arrival, ratePerSec: Math.max(0.01, arrival.ratePerSec * f) };
+    case "ramp":
+      return {
+        ...arrival,
+        fromRatePerSec: arrival.fromRatePerSec * f,
+        toRatePerSec: Math.max(0.01, arrival.toRatePerSec * f),
+      };
+    case "spike":
+      return {
+        ...arrival,
+        baseRatePerSec: Math.max(0.01, arrival.baseRatePerSec * f),
+        peakRatePerSec: Math.max(0.01, arrival.peakRatePerSec * f),
+      };
+    case "steps":
+      return {
+        ...arrival,
+        ratePerSec: Math.max(0.01, arrival.ratePerSec * f),
+        steps: arrival.steps.map((st) => ({
+          ...st,
+          ratePerSec: Math.max(0.01, st.ratePerSec * f),
+        })),
+      };
+  }
+}
+
+/** Highest rate the process ever offers. Needed to bound thinning. */
+export function peakRate(arrival: ArrivalProcess): number {
+  switch (arrival.kind) {
+    case "poisson":
+    case "deterministic":
+      return arrival.ratePerSec;
+    case "ramp":
+      return Math.max(arrival.fromRatePerSec, arrival.toRatePerSec);
+    case "spike":
+      return Math.max(arrival.baseRatePerSec, arrival.peakRatePerSec);
+    case "steps":
+      return Math.max(arrival.ratePerSec, ...arrival.steps.map((s) => s.ratePerSec));
+  }
+}
+
+/** Time-average rate over a run of `durationMs`. Used for reporting offered load. */
+export function meanRate(arrival: ArrivalProcess, durationMs: number): number {
+  switch (arrival.kind) {
+    case "poisson":
+    case "deterministic":
+      return arrival.ratePerSec;
+    case "ramp":
+      return (arrival.fromRatePerSec + arrival.toRatePerSec) / 2;
+    case "spike": {
+      const spikeMs = Math.min(durationMs, arrival.durationSec * 1000);
+      const baseMs = Math.max(0, durationMs - spikeMs);
+      return durationMs > 0
+        ? (arrival.baseRatePerSec * baseMs + arrival.peakRatePerSec * spikeMs) / durationMs
+        : arrival.baseRatePerSec;
+    }
+    case "steps": {
+      // Integrate the piecewise-constant rate over the run.
+      const points = [{ atSec: 0, ratePerSec: arrival.ratePerSec }, ...arrival.steps].sort(
+        (a, b) => a.atSec - b.atSec
+      );
+      let area = 0;
+      for (let i = 0; i < points.length; i++) {
+        const startMs = points[i]!.atSec * 1000;
+        if (startMs >= durationMs) break;
+        const endMs = i + 1 < points.length ? Math.min(durationMs, points[i + 1]!.atSec * 1000) : durationMs;
+        area += points[i]!.ratePerSec * Math.max(0, endMs - startMs);
+      }
+      return durationMs > 0 ? area / durationMs : arrival.ratePerSec;
+    }
+  }
+}
 
 export const ClientConfigSchema = z.object({
   arrival: ArrivalProcessSchema,
@@ -190,6 +358,20 @@ export const ServerConfigSchema = z.object({
    * trip on, which is why it arrives alongside them.
    */
   failureProbability: z.number().min(0).max(1).default(0),
+  /**
+   * Failure probability when the station is fully busy, interpolated linearly from
+   * `failureProbability` at idle.
+   *
+   * Real services do not fail at a constant rate; they fail MORE when overloaded --
+   * memory pressure, connection limits, timeouts inside code the model does not
+   * see. That correlation is what makes a cascade self-reinforcing: load raises
+   * failures, failures raise retries, retries raise load. With a constant failure
+   * rate the loop has no gain and the worst outcome is a linear slowdown.
+   *
+   * Null means the rate does not vary with load, which is the conservative
+   * assumption and remains the default.
+   */
+  failureAtSaturation: z.number().min(0).max(1).nullable().default(null),
   citation: CitationSchema.optional(),
 });
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
@@ -310,6 +492,8 @@ export const DatabaseConfigSchema = z.object({
   admissionPolicy: AdmissionPolicySchema.default("block"),
   /** Probability a query fails for reasons unrelated to load. */
   failureProbability: z.number().min(0).max(1).default(0),
+  /** Failure probability at full execution utilization. See `ServerConfig`. */
+  failureAtSaturation: z.number().min(0).max(1).nullable().default(null),
   citation: CitationSchema.optional(),
 });
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
@@ -562,7 +746,7 @@ export const SloSchema = z.object({
 });
 export type Slo = z.infer<typeof SloSchema>;
 
-export const DESIGN_SCHEMA_VERSION = 3 as const;
+export const DESIGN_SCHEMA_VERSION = 4 as const;
 
 export const DesignSchema = z.object({
   version: z.literal(DESIGN_SCHEMA_VERSION),

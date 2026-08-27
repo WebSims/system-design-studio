@@ -1,5 +1,13 @@
 import { mean as distMean, scv as distScv, zipfTopMass } from "@sds/core";
-import { classesOf, type Design, type RequestClass, type SdsEdge, type SdsNode } from "@sds/schema";
+import {
+  classesOf,
+  isTimeVarying,
+  meanRate,
+  type Design,
+  type RequestClass,
+  type SdsEdge,
+  type SdsNode,
+} from "@sds/schema";
 import { allenCunneenWqMs, pkWqMs, solveMMc, solveMMcK } from "./queueing";
 
 /** Amplification above this is called out as a retry storm. Matches @sds/core. */
@@ -346,6 +354,7 @@ function analyticHitRatio(node: SdsNode): number {
  */
 export function previewDesign(design: Design): DesignPreview {
   const byId = new Map(design.nodes.map((n) => [n.id, n]));
+  const durationMs = design.scenario.durationSec * 1000;
   const order = topoOrder(design);
   const classes = classesOf(design);
   const totalWeight = classes.reduce((s, c) => s + c.weight, 0);
@@ -400,7 +409,9 @@ export function previewDesign(design: Design): DesignPreview {
       for (const cls of classes) {
         let outbound: number;
         if (node.kind === "client") {
-          const rate = node.client?.arrival.ratePerSec ?? 0;
+          // Time-average rate: for a ramp or a spike the closed form can only speak
+          // about the average regime, which is stated in the notes below.
+          const rate = node.client ? meanRate(node.client.arrival, durationMs) : 0;
           outbound = rate * (totalWeight > 0 ? cls.weight / totalWeight : 0);
         } else {
           outbound = lambdaIn.get(key(id, cls.id)) ?? 0;
@@ -635,7 +646,7 @@ export function previewDesign(design: Design): DesignPreview {
     let stationCount = 0;
 
     for (const client of clients) {
-      const rate = client.client?.arrival.ratePerSec ?? 0;
+      const rate = client.client ? meanRate(client.client.arrival, durationMs) : 0;
       const share = totalWeight > 0 ? cls.weight / totalWeight : 0;
       offered += rate * share;
       for (const { edge } of routeShares(design, client, cls.id)) {

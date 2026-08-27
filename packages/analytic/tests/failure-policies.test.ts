@@ -31,7 +31,7 @@ function design(parts: {
   warmupSec?: number;
 }): Design {
   return DesignSchema.parse({
-    version: 3,
+    version: 4,
     name: "phase3",
     nodes: parts.nodes,
     edges: parts.edges,

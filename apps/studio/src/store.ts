@@ -11,7 +11,15 @@ import {
   type SdsNode,
 } from "@sds/schema";
 import { defaultDesign } from "@sds/models";
-import { analyzeInWorker, runInWorker, type FullAnalysis } from "./engine/client";
+import {
+  analyzeInWorker,
+  compareInWorker,
+  replicateInWorker,
+  runInWorker,
+  type ComparisonSummary,
+  type FullAnalysis,
+  type ReplicationSummary,
+} from "./engine/client";
 
 const LS_KEY = "sds.design.v1";
 
@@ -38,6 +46,18 @@ interface StudioState {
   analysis: FullAnalysis | null;
   analysing: boolean;
   analysisStale: boolean;
+  /** Measured confidence intervals from independent seeds. */
+  replication: ReplicationSummary | null;
+  replicating: boolean;
+  /**
+   * A saved design to compare against.
+   *
+   * Held separately from the live design so a change can be evaluated against where
+   * you started, which is the question anyone actually has.
+   */
+  baseline: Design | null;
+  comparison: ComparisonSummary | null;
+  comparing: boolean;
   selection: Selection;
 
   select: (s: Selection) => void;
@@ -46,6 +66,10 @@ interface StudioState {
   loadDesign: (design: Design) => void;
   execute: () => Promise<void>;
   analyze: () => Promise<void>;
+  runReplications: (replications: number) => Promise<void>;
+  saveBaseline: () => void;
+  clearBaseline: () => void;
+  compareToBaseline: (replications: number) => Promise<void>;
   importDesign: (json: string) => void;
   exportDesign: () => string;
 }
@@ -114,6 +138,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   analysis: null,
   analysing: false,
   analysisStale: false,
+  replication: null,
+  replicating: false,
+  baseline: null,
+  comparison: null,
+  comparing: false,
   selection: null,
 
   select: (selection) => set({ selection }),
@@ -129,6 +158,9 @@ export const useStudio = create<StudioState>((set, get) => ({
         // silently showing measurements of a system that no longer exists.
         runStale: state.run !== null,
         analysisStale: state.analysis !== null,
+        // Intervals and comparisons describe a design that no longer exists.
+        replication: null,
+        comparison: null,
       };
     }),
 
@@ -191,6 +223,32 @@ export const useStudio = create<StudioState>((set, get) => ({
         analysis: null,
         error: e instanceof Error ? e.message : String(e),
       });
+    }
+  },
+
+  runReplications: async (replications) => {
+    const { design } = get();
+    set({ replicating: true, error: null });
+    try {
+      const replication = await replicateInWorker(design, replications);
+      set({ replication, replicating: false });
+    } catch (e) {
+      set({ replicating: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  saveBaseline: () => set({ baseline: get().design, comparison: null }),
+  clearBaseline: () => set({ baseline: null, comparison: null }),
+
+  compareToBaseline: async (replications) => {
+    const { design, baseline } = get();
+    if (!baseline) return;
+    set({ comparing: true, error: null });
+    try {
+      const comparison = await compareInWorker(baseline, design, replications);
+      set({ comparison, comparing: false });
+    } catch (e) {
+      set({ comparing: false, error: e instanceof Error ? e.message : String(e) });
     }
   },
 

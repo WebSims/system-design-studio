@@ -317,6 +317,28 @@ export interface RunResult {
   design: Design;
   /** Measurement window, simulated seconds (excludes warm-up). */
   observedSec: number;
+  /**
+   * False when any client varies its rate over time.
+   *
+   * When false, the aggregate percentiles below average across regimes that never
+   * coexisted -- part of the sample taken at one load and part at another. They are
+   * still computed, because they are the right thing for a spike (where most of the
+   * run IS the base rate), but `aggregateCaveat` says what they do and do not mean,
+   * and the time series is the figure to read instead.
+   */
+  steadyState: boolean;
+  /** Set when the aggregate statistics need qualifying. */
+  aggregateCaveat: string | null;
+  /**
+   * When the SLO was first breached, simulated seconds into the measurement window,
+   * and the offered rate at that moment.
+   *
+   * The point of a ramp: a single run that finds the capacity limit. Null when the
+   * SLO was never breached, or when there is no SLO.
+   */
+  firstBreach: { atSec: number; offeredRatePerSec: number; breach: "latency" | "errors" } | null;
+  /** Offered rate over time. Only interesting when the load varies. */
+  offeredRateSeries: SeriesData;
   /** Completed successful requests per second of simulated time. */
   throughputPerSec: number;
   /** Offered load, per second. Diverges from throughput once saturated. */

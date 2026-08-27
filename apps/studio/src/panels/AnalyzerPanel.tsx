@@ -65,6 +65,220 @@ function FindingCard({ finding }: { finding: Finding }) {
   );
 }
 
+/**
+ * Measured confidence intervals, and the model they are checked against.
+ *
+ * Every precision figure before this came from a calibrated formula. A formula can be
+ * wrong in ways its own fit cannot reveal; running independent seeds and measuring the
+ * spread needs no calibration at all. Both are shown, because agreement between two
+ * independent routes is evidence and disagreement is a finding.
+ */
+function ReplicationSection() {
+  const replication = useStudio((s) => s.replication);
+  const replicating = useStudio((s) => s.replicating);
+  const run = useStudio((s) => s.runReplications);
+
+  const clamped =
+    replication !== null &&
+    replication.intervals.p99Ms.samples > 1 &&
+    replication.intervals.p99Ms.sd === 0;
+
+  const rows: Array<[string, keyof NonNullable<typeof replication>["intervals"], string]> = [
+    ["p50 latency", "p50Ms", "ms"],
+    ["p99 latency", "p99Ms", "ms"],
+    ["p99.9 latency", "p999Ms", "ms"],
+    ["throughput", "throughputPerSec", "/s"],
+    ["error rate", "errorRatePct", "%"],
+  ];
+
+  return (
+    <>
+      <div className="section">
+        confidence
+        {replication && (
+          <span className="section-tag">{replication.seeds.length} seeds in {(replication.wallMs / 1000).toFixed(1)}s</span>
+        )}
+      </div>
+      <button className="btn" onClick={() => run(8)} disabled={replicating}>
+        {replicating ? "replicating…" : replication ? "re-measure intervals" : "measure intervals"}
+      </button>
+
+      {!replication && !replicating && (
+        <p className="note">
+          Runs eight independent seeds and measures the spread directly, rather than estimating it
+          from a formula. A single run's p99 moves several percent between seeds, so any conclusion
+          drawn from one run is only as sharp as that.
+        </p>
+      )}
+
+      {replication && (
+        <>
+          {rows.map(([label, key, unit]) => {
+            const iv = replication.intervals[key];
+            return (
+              <div className="knob-row" key={key}>
+                <div className="knob-head">
+                  <span>{label}</span>
+                  <span className="tnum">
+                    {iv.mean.toFixed(iv.mean < 10 ? 2 : 1)}
+                    {unit}
+                    {Number.isFinite(iv.halfWidth) && (
+                      <span className="ci-pm">
+                        {" "}&plusmn;{iv.halfWidth.toFixed(iv.halfWidth < 10 ? 2 : 1)}
+                        {unit}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="knob-detail tnum">
+                  95% interval [{iv.low.toFixed(2)}, {iv.high.toFixed(2)}]
+                  {Number.isFinite(iv.relativeHalfWidth) &&
+                    ` · ±${(iv.relativeHalfWidth * 100).toFixed(1)}%`}
+                </div>
+                {/*
+                  A zero-width interval reads like infinite precision and almost never
+                  is. It means every seed produced the identical value, which happens
+                  when a metric is clamped -- a p99 pinned at the client deadline, or an
+                  error rate of exactly zero. Saying so stops a zero being mistaken for
+                  certainty.
+                */}
+                {iv.samples > 1 && iv.sd === 0 && (
+                  <div className="knob-detail tnum warn">
+                    identical across all {iv.samples} seeds — clamped, not precise
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <p className={`note ${replication.sloPassCount > 0 && replication.sloPassCount < replication.seeds.length ? "warn" : ""}`}>
+            SLO met in{" "}
+            <b className="tnum">
+              {replication.sloPassCount}/{replication.seeds.length}
+            </b>{" "}
+            runs.
+            {replication.sloPassCount > 0 &&
+              replication.sloPassCount < replication.seeds.length &&
+              " This design sits on the boundary, and a single run of it would have reported whichever answer its seed happened to give."}
+          </p>
+
+          {clamped && (
+            <p className="note warn">
+              The p99 is identical across every seed, which means it is being clamped rather than
+              measured &mdash; almost always by a client deadline. Read it as &ldquo;at the
+              timeout&rdquo;, not as a precise figure.
+            </p>
+          )}
+
+          <div className={`confidence ${replication.errorModel.agrees ? "ok" : "warn"}`}>
+            <b>
+              {replication.errorModel.agrees
+                ? "error model holds"
+                : "error model needs recalibrating"}
+            </b>
+            <div>{replication.errorModel.detail}</div>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * Paired comparison against a saved baseline.
+ *
+ * The question anyone actually has after making a change. Comparing two single runs
+ * compares noise; comparing two eight-run averages unpaired is barely better. Both
+ * sides are run on the SAME seeds, so they see a bit-identical workload and the
+ * per-seed difference isolates the effect of the change.
+ */
+function ComparisonSection() {
+  const baseline = useStudio((s) => s.baseline);
+  const comparison = useStudio((s) => s.comparison);
+  const comparing = useStudio((s) => s.comparing);
+  const save = useStudio((s) => s.saveBaseline);
+  const clear = useStudio((s) => s.clearBaseline);
+  const run = useStudio((s) => s.compareToBaseline);
+
+  return (
+    <>
+      <div className="section">
+        compare
+        {comparison && (
+          <span className="section-tag">
+            {comparison.simulations} simulations in {(comparison.wallMs / 1000).toFixed(1)}s
+          </span>
+        )}
+      </div>
+
+      {!baseline ? (
+        <>
+          <button className="btn" onClick={save}>
+            save this design as baseline
+          </button>
+          <p className="note">
+            Save where you are, change something, then compare. Both sides run on the same seeds,
+            so the per-seed difference removes the workload variance and only the effect of your
+            change remains &mdash; which is what makes a small real improvement detectable at all.
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="knob-row">
+            <div className="knob-head">
+              <span>baseline: {baseline.name}</span>
+              <button className="btn small" onClick={clear}>
+                clear
+              </button>
+            </div>
+            <div className="knob-detail tnum">
+              {baseline.nodes.length} nodes · {baseline.edges.length} links
+            </div>
+          </div>
+          <button className="btn primary" onClick={() => run(8)} disabled={comparing}>
+            {comparing ? "comparing…" : "compare against baseline"}
+          </button>
+        </>
+      )}
+
+      {comparison && (
+        <>
+          {comparison.metrics.map((m) => (
+            <div className="knob-row" key={m.metric}>
+              <div className="knob-head">
+                <span>{m.label}</span>
+                <span
+                  className={`tnum ${
+                    m.verdict === "better" ? "ok" : m.verdict === "worse" ? "bad" : ""
+                  }`}
+                >
+                  {m.improvementFraction >= 0 ? "+" : ""}
+                  {(m.improvementFraction * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="knob-detail tnum">
+                {m.difference.baselineMean.toFixed(2)} &rarr;{" "}
+                {m.difference.candidateMean.toFixed(2)} · {m.verdict}
+              </div>
+            </div>
+          ))}
+          <p className="note">{comparison.sloSummary}</p>
+          <p className="note">
+            <b>&ldquo;no detectable change&rdquo;</b> means the 95% interval for the difference
+            contains zero &mdash; not that the change did nothing, but that eight replications
+            cannot tell. Run more, or make a bigger change.
+          </p>
+          {comparison.notes.map((n) => (
+            <p className="note warn" key={n}>
+              {n}
+            </p>
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
 export function AnalyzerPanel() {
   const analysis = useStudio((s) => s.analysis);
   const analysing = useStudio((s) => s.analysing);
@@ -106,6 +320,9 @@ export function AnalyzerPanel() {
           The design changed after this analysis. Re-run it before acting on anything below.
         </p>
       )}
+
+      <ReplicationSection />
+      <ComparisonSection />
 
       {analysis && (
         <>

@@ -367,6 +367,32 @@ function ResultPanel({ result }: { result: RunResult }) {
         measured <span className="section-tag">{result.observedSec}s simulated in {result.wallMs}ms</span>
       </div>
 
+      {/*
+        Time-varying load has no steady state, so the aggregate percentiles below
+        average across regimes that never coexisted. The figure to read is the first
+        breach and the time series.
+      */}
+      {!result.steadyState && (
+        <div className={`verdict ${result.firstBreach ? "bad" : "ok"}`}>
+          <div className="verdict-title">
+            {result.firstBreach
+              ? `SLO first broke at ${result.firstBreach.offeredRatePerSec.toFixed(0)}/s`
+              : "load varied, and the SLO held throughout"}
+          </div>
+          <div className="verdict-body">
+            {result.firstBreach && (
+              <>
+                {result.firstBreach.atSec.toFixed(0)}s into the run, on{" "}
+                <b>{result.firstBreach.breach}</b>. That is the capacity limit this run found. A
+                ramp reads slightly high, because queues take time to fill and the system is
+                always catching up with a load that has already moved on.{" "}
+              </>
+            )}
+            {result.aggregateCaveat}
+          </div>
+        </div>
+      )}
+
       {!result.stability.stable && (
         <div className="verdict crit">
           <div className="verdict-title">unstable — latency below is not meaningful</div>
@@ -437,10 +463,12 @@ function ResultPanel({ result }: { result: RunResult }) {
         />
         <Metric label="p99.9" value={ms(result.endToEnd.p999)} />
       </div>
-      <p className="note">
+      <p className={`note ${result.steadyState ? "" : "warn"}`}>
         Mean {ms(result.endToEnd.mean)}, max {ms(result.endToEnd.max)}, over{" "}
         <b className="tnum">{result.endToEnd.count.toLocaleString()}</b> requests. Percentiles carry
         up to {(result.endToEnd.relativeError * 100).toFixed(1)}% bucketing error.
+        {!result.steadyState &&
+          " Because load varied, these span more than one regime — read the time series above instead."}
       </p>
 
       <div className={`confidence ${result.confidence.sufficient ? "ok" : "warn"}`}>
@@ -565,6 +593,13 @@ function ResultPanel({ result }: { result: RunResult }) {
           <ComponentDetail node={n} />
         </div>
       ))}
+
+      {!result.steadyState && (
+        <>
+          <div className="section">offered load over time</div>
+          <Chart series={result.offeredRateSeries} color="#4ab4e6" yLabel="req/s" />
+        </>
+      )}
 
       <div className="section">throughput over time</div>
       <Chart series={result.throughputSeries} color="#2aa8a8" yLabel="req/s" />

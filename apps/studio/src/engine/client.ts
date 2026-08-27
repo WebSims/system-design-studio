@@ -1,7 +1,12 @@
 import * as Comlink from "comlink";
 import type { RunOptions, RunResult } from "@sds/core";
 import type { Design } from "@sds/schema";
-import type { FullAnalysis, SimWorkerApi } from "./worker";
+import type {
+  ComparisonSummary,
+  FullAnalysis,
+  ReplicationSummary,
+  SimWorkerApi,
+} from "./worker";
 
 /**
  * Main-thread handle to the simulation worker.
@@ -29,7 +34,22 @@ export async function analyzeInWorker(design: Design): Promise<FullAnalysis> {
   return ensure().analyze(design);
 }
 
-export type { FullAnalysis };
+export async function replicateInWorker(
+  design: Design,
+  replications: number
+): Promise<ReplicationSummary> {
+  return ensure().replicate(design, replications);
+}
+
+export async function compareInWorker(
+  baseline: Design,
+  candidate: Design,
+  replications: number
+): Promise<ComparisonSummary> {
+  return ensure().compare(baseline, candidate, replications);
+}
+
+export type { ComparisonSummary, FullAnalysis, ReplicationSummary };
 
 /** Tear down the worker, e.g. on hot reload. */
 export function disposeWorker(): void {

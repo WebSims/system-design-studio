@@ -2,6 +2,7 @@ import {
   DESIGN_SCHEMA_VERSION,
   DesignSchema,
   classesOf,
+  isTimeVarying,
   type Design,
   type NodeKind,
   type SdsNode,
@@ -263,6 +264,58 @@ export function validateDesign(design: Design): DesignIssue[] {
     });
   }
 
+  // ---- time-varying arrival ----
+  for (const n of design.nodes) {
+    if (!n.client) continue;
+    const arrival = n.client.arrival;
+    if (!isTimeVarying(arrival)) continue;
+
+    if (design.scenario.warmupSec > 0 && arrival.kind === "ramp") {
+      issues.push({
+        severity: "warning",
+        code: "warmup-with-ramp",
+        message:
+          `client "${n.label}" ramps its load, so there is no steady state for the warm-up to ` +
+          `reach. The discarded window just removes the start of the ramp; set warm-up to 0.`,
+        nodeId: n.id,
+      });
+    }
+    if (arrival.kind === "spike") {
+      const endSec = arrival.atSec + arrival.durationSec;
+      if (endSec >= design.scenario.durationSec) {
+        issues.push({
+          severity: "warning",
+          code: "spike-truncated",
+          message:
+            `client "${n.label}" spikes until ${endSec}s but the run ends at ` +
+            `${design.scenario.durationSec}s, so recovery after the spike is never observed. ` +
+            `Recovery is usually the more interesting half.`,
+          nodeId: n.id,
+        });
+      }
+      if (arrival.atSec < design.scenario.warmupSec) {
+        issues.push({
+          severity: "warning",
+          code: "spike-in-warmup",
+          message: `the spike on "${n.label}" starts inside the discarded warm-up window.`,
+          nodeId: n.id,
+        });
+      }
+    }
+    if (arrival.kind === "steps") {
+      for (const step of arrival.steps) {
+        if (step.atSec >= design.scenario.durationSec) {
+          issues.push({
+            severity: "warning",
+            code: "step-after-end",
+            message: `a load step on "${n.label}" is scheduled at ${step.atSec}s, after the run ends.`,
+            nodeId: n.id,
+          });
+        }
+      }
+    }
+  }
+
   if (design.scenario.warmupSec >= design.scenario.durationSec) {
     issues.push({
       severity: "error",
@@ -316,6 +369,11 @@ const MIGRATIONS: Record<number, Migration> = {
   // field defaults to "off", so a Phase 2 document keeps behaving identically --
   // which is the property that makes a schema bump safe.
   2: (doc) => ({ ...doc, version: 3 }),
+
+  // 3 -> 4: time-varying arrival profiles and load-correlated failure. Existing
+  // arrival processes are unchanged variants of the widened union, and the new
+  // failure field defaults to null, so behaviour is again identical.
+  3: (doc) => ({ ...doc, version: 4 }),
 };
 
 /**

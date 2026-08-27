@@ -8,6 +8,11 @@
  *   pnpm sim --analyze          findings, critical path, knee, sensitivity, config search
  *   pnpm sim --validate         cross-check the run against closed-form theory
  *   pnpm sim --sweep            sweep arrival rate and find where the design breaks
+ *   pnpm sim --replicate        run independent seeds and report measured confidence intervals
+ *   pnpm sim --compare FILE     paired comparison against another design, on shared seeds
+ *   pnpm sim --ramp             one ramping run: where does the SLO first break
+ *   pnpm sim --spike            a burst, and how long recovery takes
+ *                               (--multiple N, --spike-sec N)
  *
  * The sweep is included deliberately: it is the clearest demonstration of why the
  * engine had to be headless. It runs dozens of full simulations in a couple of
@@ -16,9 +21,27 @@
  */
 import { readFileSync } from "node:fs";
 import { previewDesign, solveMMc } from "@sds/analytic";
-import { analyse, criticalPath, findKnee, searchConfig, sensitivity } from "@sds/analyze";
+import {
+  analyse,
+  checkErrorModel,
+  compare,
+  criticalPath,
+  findKnee,
+  rampToFailure,
+  replicate,
+  searchConfig,
+  sensitivity,
+  spikeTest,
+} from "@sds/analyze";
 import { runSimulation, type RunResult } from "@sds/core";
-import { DesignSchema, migrateAndParse, validateDesign, type Design } from "@sds/schema";
+import {
+  DesignSchema,
+  meanRate,
+  migrateAndParse,
+  scaleArrival,
+  validateDesign,
+  type Design,
+} from "@sds/schema";
 import { EXAMPLES, defaultDesign } from "@sds/models";
 
 const args = process.argv.slice(2);
@@ -77,6 +100,33 @@ function report(design: Design, result: RunResult): void {
     `  ${DIM}simulated ${result.observedSec}s of measurement in ${result.wallMs}ms of wall clock ` +
       `(${Math.round(result.observedSec / (result.wallMs / 1000)).toLocaleString()}x real time)${OFF}`
   );
+
+  if (!result.steadyState) {
+    heading("time-varying load");
+    console.log(`  ${YELLOW}${result.aggregateCaveat}${OFF}`);
+    if (result.firstBreach) {
+      console.log(
+        `  ${RED}${BOLD}SLO first broke at ${result.firstBreach.atSec.toFixed(0)}s${OFF}, ` +
+          `with ${BOLD}${result.firstBreach.offeredRatePerSec.toFixed(0)}/s${OFF} offered ` +
+          `(${result.firstBreach.breach}).`
+      );
+      console.log(
+        `  ${DIM}That is the capacity limit this run found. A ramp reads slightly HIGH, because ` +
+          `queues\n  take time to fill and the system is always catching up with a load that has ` +
+          `already moved on.${OFF}`
+      );
+    } else {
+      console.log(`  ${GREEN}the SLO held for the whole run.${OFF}`);
+    }
+    const rates = result.offeredRateSeries.points;
+    if (rates.length > 1) {
+      console.log(
+        `  ${DIM}offered load went ${rates[0]!.value.toFixed(0)}/s \u2192 ` +
+          `${Math.max(...rates.map((r) => r.value)).toFixed(0)}/s peak \u2192 ` +
+          `${rates.at(-1)!.value.toFixed(0)}/s${OFF}`
+      );
+    }
+  }
 
   if (!result.stability.stable) {
     heading("VERDICT: does not scale");
@@ -350,7 +400,15 @@ function validate(design: Design): void {
     return;
   }
 
-  const lambda = clients[0]!.client!.arrival.ratePerSec;
+  const arrival = clients[0]!.client!.arrival;
+  if (arrival.kind !== "poisson" && arrival.kind !== "deterministic") {
+    console.log(
+      `  ${YELLOW}Skipped: exact M/M/c results assume a stationary arrival rate, and this client ` +
+        `varies its load over the run.${OFF}`
+    );
+    return;
+  }
+  const lambda = arrival.ratePerSec;
   const mu = 1000 / s.serviceTime.mean;
   const c = s.concurrency * s.replicas;
   const exact = solveMMc({ lambda, mu, c });
@@ -401,6 +459,157 @@ function validate(design: Design): void {
       `  ${DIM}Samples needed for a given accuracy scale as 1/(1-rho)^2. Raise --duration.${OFF}`
     );
   }
+}
+
+/**
+ * Independent replications with measured confidence intervals.
+ *
+ * Replaces a modelled precision figure with an observed one, and checks the model
+ * against it. Two independent routes to the same quantity is the discipline the
+ * engine itself is held to.
+ */
+function replicateMode(design: Design): void {
+  heading("replications");
+  const count = Number(value("replications") ?? 8);
+  const rep = replicate(design, { replications: count });
+  console.log(
+    `  ${DIM}${rep.seeds.length} independent seeds, ${rep.wallMs}ms. ` +
+      `Intervals are 95% (Student's t).${OFF}`
+  );
+  console.log(
+    `  ${DIM}${pad("metric", 20)}${rpad("mean", 12)}${rpad("95% interval", 24)}${rpad("+/-", 9)}${OFF}`
+  );
+
+  const rows: Array<[string, keyof typeof rep.intervals, string]> = [
+    ["p50 latency", "p50Ms", "ms"],
+    ["p99 latency", "p99Ms", "ms"],
+    ["p99.9 latency", "p999Ms", "ms"],
+    ["mean latency", "meanMs", "ms"],
+    ["throughput", "throughputPerSec", "/s"],
+    ["error rate", "errorRatePct", "%"],
+    ["peak utilization", "maxUtilization", ""],
+    ["retry amplification", "retryAmplification", "x"],
+  ];
+  for (const [label, key, unit] of rows) {
+    const iv = rep.intervals[key];
+    const rel = Number.isFinite(iv.relativeHalfWidth)
+      ? `${(iv.relativeHalfWidth * 100).toFixed(1)}%`
+      : "\u2014";
+    console.log(
+      `  ${pad(label, 20)}${rpad(iv.mean.toFixed(2) + unit, 12)}` +
+        `${rpad(`[${iv.low.toFixed(2)}, ${iv.high.toFixed(2)}]`, 24)}${rpad(rel, 9)}`
+    );
+  }
+
+  console.log(
+    `\n  SLO met in ${rep.sloPassCount}/${rep.seeds.length} runs` +
+      (rep.sloPassCount > 0 && rep.sloPassCount < rep.seeds.length
+        ? ` ${YELLOW}\u2014 on the boundary. A single run would have reported whichever answer ` +
+          `its seed gave.${OFF}`
+        : ".")
+  );
+
+  const check = checkErrorModel(rep);
+  console.log(`\n  ${check.agrees ? GREEN + "error model holds" : YELLOW + "error model off"}${OFF}`);
+  console.log(`  ${DIM}${check.detail}${OFF}`);
+}
+
+/** Paired comparison of two designs on shared seeds. */
+function compareMode(design: Design, otherFile: string): void {
+  const other = migrateAndParse(JSON.parse(readFileSync(otherFile, "utf8")));
+  heading("paired comparison");
+  const count = Number(value("replications") ?? 8);
+  const cmp = compare(design, other, { replications: count });
+
+  console.log(
+    `  ${DIM}baseline "${design.name}" against candidate "${other.name}", ` +
+      `${cmp.baseline.seeds.length} shared seeds, ${cmp.simulations} simulations in ${cmp.wallMs}ms${OFF}`
+  );
+  console.log(
+    `  ${DIM}Paired: both sides saw a bit-identical workload, so the per-seed difference removes\n` +
+      `  the workload variance and only the effect of the change remains.${OFF}\n`
+  );
+  console.log(
+    `  ${DIM}${pad("metric", 22)}${rpad("baseline", 12)}${rpad("candidate", 12)}${rpad("change", 12)}  verdict${OFF}`
+  );
+  for (const m of cmp.metrics) {
+    const colour =
+      m.verdict === "better" ? GREEN : m.verdict === "worse" ? RED : DIM;
+    const pct = (m.improvementFraction * 100).toFixed(1);
+    console.log(
+      `  ${pad(m.label, 22)}${rpad(m.difference.baselineMean.toFixed(2), 12)}` +
+        `${rpad(m.difference.candidateMean.toFixed(2), 12)}` +
+        `${colour}${rpad(`${m.improvementFraction >= 0 ? "+" : ""}${pct}%`, 12)}${OFF}` +
+        `  ${colour}${m.verdict}${OFF}`
+    );
+  }
+  console.log(`\n  ${cmp.sloSummary}`);
+  for (const n of cmp.notes) console.log(`  ${YELLOW}${n}${OFF}`);
+  console.log(
+    `  ${DIM}"no detectable change" means the 95% interval for the difference contains zero \u2014 ` +
+      `not that\n  the change did nothing, but that this many replications cannot tell.${OFF}`
+  );
+}
+
+/** One ramping run: where does the SLO first break. */
+function rampMode(design: Design): void {
+  heading("ramp to failure");
+  const knee = rampToFailure(design, {
+    fromRatePerSec: value("from") ? Number(value("from")) : undefined,
+    toRatePerSec: value("to") ? Number(value("to")) : undefined,
+    durationSec: value("duration") ? Number(value("duration")) : undefined,
+  });
+
+  if (knee.unavailableReason) {
+    console.log(`  ${YELLOW}${knee.unavailableReason}${OFF}`);
+    return;
+  }
+  console.log(
+    `  ${BOLD}SLO first broke at ${knee.breachRatePerSec!.toFixed(0)}/s${OFF} ` +
+      `(${knee.breachAtSec!.toFixed(0)}s in, ${knee.breach})`
+  );
+  console.log(`  ${DIM}${knee.note}${OFF}`);
+  console.log(
+    `  ${DIM}one simulation in ${knee.result.wallMs}ms, against about ten for a binary search.${OFF}`
+  );
+
+  const series = knee.result.latencyP99Series.points;
+  const rates = knee.result.offeredRateSeries.points;
+  if (series.length > 4) {
+    console.log(`\n  ${DIM}${rpad("t", 8)}${rpad("offered", 10)}${rpad("p99", 10)}${OFF}`);
+    const step = Math.max(1, Math.floor(series.length / 14));
+    for (let i = 0; i < series.length; i += step) {
+      const rate = rates[i]?.value ?? 0;
+      const p99 = series[i]!.value;
+      const breached = knee.breachAtSec !== null && series[i]!.t >= knee.breachAtSec;
+      console.log(
+        `  ${rpad(series[i]!.t.toFixed(0) + "s", 8)}${rpad(rate.toFixed(0) + "/s", 10)}` +
+          `${breached ? RED : GREEN}${rpad(ms(p99), 10)}${OFF}`
+      );
+    }
+  }
+}
+
+/** A burst, and how long recovery takes. */
+function spikeMode(design: Design): void {
+  heading("spike test");
+  // `--spike` is a boolean flag, so the burst length needs its own option name;
+  // reading the flag as a value picks up whatever argument follows it.
+  const spike = spikeTest(design, {
+    multiple: value("multiple") ? Number(value("multiple")) : undefined,
+    durationSec: value("spike-sec") ? Number(value("spike-sec")) : undefined,
+  });
+  console.log(
+    `  base ${spike.baseRatePerSec.toFixed(0)}/s, peak ${BOLD}${spike.peakRatePerSec.toFixed(0)}/s${OFF}`
+  );
+  console.log(
+    `  p99 baseline ${ms(spike.baselineP99Ms)} \u2192 worst ` +
+      `${spike.survivedSpike ? GREEN : RED}${ms(spike.worstP99Ms)}${OFF}`
+  );
+  console.log(
+    `  recovery ${spike.recoverySec === null ? RED + "never" + OFF : GREEN + spike.recoverySec.toFixed(0) + "s" + OFF}`
+  );
+  console.log(`  ${DIM}${spike.note}${OFF}`);
 }
 
 /**
@@ -545,7 +754,7 @@ function sweep(design: Design): void {
     console.log(`  ${YELLOW}Skipped: sweeping needs exactly one client to vary.${OFF}`);
     return;
   }
-  const base = clients[0]!.client!.arrival.ratePerSec;
+  const base = meanRate(clients[0]!.client!.arrival, design.scenario.durationSec * 1000);
   const target = design.slo.p99LatencyMs;
 
   // Shorter runs than a headline measurement: a sweep is looking for the shape of
@@ -574,7 +783,7 @@ function sweep(design: Design): void {
       ...design,
       nodes: design.nodes.map((n) =>
         n.kind === "client" && n.client
-          ? { ...n, client: { ...n.client, arrival: { ...n.client.arrival, ratePerSec: rate } } }
+          ? { ...n, client: { ...n.client, arrival: scaleArrival(n.client.arrival, rate / base) } }
           : n
       ),
       scenario: { ...design.scenario, durationSec, warmupSec },
@@ -637,11 +846,19 @@ if (issues.length > 0) {
   process.exit(1);
 }
 
-console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 4 verification${OFF}`);
+console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 5 verification${OFF}`);
 
 try {
   if (flag("analyze") || flag("analyse")) {
     analyze(effective);
+  } else if (flag("replicate")) {
+    replicateMode(effective);
+  } else if (value("compare")) {
+    compareMode(effective, value("compare")!);
+  } else if (flag("ramp")) {
+    rampMode(effective);
+  } else if (flag("spike")) {
+    spikeMode(effective);
   } else if (flag("sweep")) {
     sweep(effective);
   } else if (flag("validate")) {

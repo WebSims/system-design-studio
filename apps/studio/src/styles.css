@@ -1070,3 +1070,14 @@ body {
   color: var(--fg-3);
   margin-top: 3px;
 }
+
+.ci-pm {
+  color: var(--fg-3);
+  font-size: 10.5px;
+}
+.knob-head .bad {
+  color: var(--crit);
+}
+.warn-text {
+  color: var(--warn);
+}

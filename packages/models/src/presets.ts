@@ -729,6 +729,238 @@ export function outlierBackend(): Design {
   });
 }
 
+/**
+ * A ramp to failure: one run that finds the capacity limit.
+ *
+ * Offered load rises steadily from 50/s to 800/s over ten minutes of simulated time.
+ * The database, with 8 execution slots at 15ms, tops out around 530/s, so the SLO
+ * breaks partway up and the run records exactly where.
+ *
+ * The limit it reports runs slightly HIGH compared with a steady-state search,
+ * because queues take time to fill and the system is always catching up with a load
+ * that has already moved on. That bias is real, it is what a live load test also
+ * does, and the tool names it rather than correcting it away.
+ */
+export function rampToFailure(): Design {
+  return DesignSchema.parse({
+    version: DESIGN_SCHEMA_VERSION,
+    name: "ramp to failure",
+    classes: [],
+    nodes: [
+      {
+        id: "client",
+        kind: "client",
+        label: "users",
+        x: 40,
+        y: 220,
+        client: {
+          arrival: { kind: "ramp", fromRatePerSec: 50, toRatePerSec: 800 },
+          timeoutMs: 2000,
+        },
+      },
+      {
+        id: "api",
+        kind: "server",
+        label: "api",
+        x: 380,
+        y: 220,
+        server: {
+          concurrency: 64,
+          serviceTime: bench("app-json-endpoint").distribution,
+          replicas: 3,
+          blocksOnDependencies: true,
+          citation: bench("app-json-endpoint").citation,
+        },
+      },
+      {
+        id: "db",
+        kind: "database",
+        label: "postgres",
+        x: 740,
+        y: 220,
+        database: {
+          poolSize: 20,
+          parallelism: 8,
+          serviceTime: { kind: "lognormal", mean: 15, p99: 90 },
+          citation: bench("postgres-range-scan").citation,
+        },
+      },
+    ],
+    edges: [
+      { id: "e1", from: "client", to: "api", latency: SAME_RACK, classes: [] },
+      { id: "e2", from: "api", to: "db", latency: SAME_RACK, classes: [] },
+    ],
+    // No warm-up: a ramp has no steady state to reach, and discarding the first slice
+    // would delete the bottom of the ramp along with the baseline.
+    scenario: { durationSec: 600, warmupSec: 0, seed: 1, traceLimit: 3000 },
+    slo: { p99LatencyMs: 250, maxErrorRatePct: 2 },
+  });
+}
+
+/**
+ * A traffic spike, and the recovery afterwards.
+ *
+ * Four times normal load for thirty seconds, with calm on either side. Two questions
+ * a steady-state run cannot ask: does the design survive the burst, and how long does
+ * it take to work through the backlog once the burst has passed.
+ *
+ * Recovery is usually the more interesting answer. A queue built during a spike keeps
+ * hurting requests that arrive after it, so a design can pass the spike itself and
+ * still spend minutes catching up.
+ */
+export function trafficSpike(): Design {
+  return DesignSchema.parse({
+    version: DESIGN_SCHEMA_VERSION,
+    name: "traffic spike",
+    classes: [],
+    nodes: [
+      {
+        id: "client",
+        kind: "client",
+        label: "users",
+        x: 40,
+        y: 220,
+        client: {
+          arrival: {
+            kind: "spike",
+            baseRatePerSec: 300,
+            peakRatePerSec: 1200,
+            atSec: 60,
+            durationSec: 30,
+          },
+          timeoutMs: 3000,
+        },
+      },
+      {
+        id: "api",
+        kind: "server",
+        label: "api",
+        x: 380,
+        y: 220,
+        server: {
+          concurrency: 64,
+          serviceTime: bench("app-json-endpoint").distribution,
+          replicas: 3,
+          blocksOnDependencies: true,
+          citation: bench("app-json-endpoint").citation,
+        },
+      },
+      {
+        id: "db",
+        kind: "database",
+        label: "postgres",
+        x: 740,
+        y: 220,
+        database: {
+          poolSize: 20,
+          parallelism: 12,
+          serviceTime: { kind: "lognormal", mean: 15, p99: 90 },
+          citation: bench("postgres-range-scan").citation,
+        },
+      },
+    ],
+    edges: [
+      { id: "e1", from: "client", to: "api", latency: SAME_RACK, classes: [] },
+      { id: "e2", from: "api", to: "db", latency: SAME_RACK, classes: [] },
+    ],
+    scenario: { durationSec: 300, warmupSec: 0, seed: 1, traceLimit: 3000 },
+    slo: { p99LatencyMs: 300, maxErrorRatePct: 2 },
+  });
+}
+
+/**
+ * A cascade driven by load-correlated failure.
+ *
+ * The database fails 2% of the time when idle and 40% when saturated. Combined with
+ * unbudgeted retries that gives the feedback loop positive gain: load raises failures,
+ * failures raise retries, retries raise load. With a CONSTANT failure rate the same
+ * design merely slows down; the correlation is what makes it run away.
+ *
+ * This is the failure mode that no amount of steady-state analysis at the design's
+ * nominal load would reveal, because at nominal load the database is not saturated and
+ * so is not yet failing.
+ */
+export function correlatedCascade(): Design {
+  return DesignSchema.parse({
+    version: DESIGN_SCHEMA_VERSION,
+    name: "load-correlated cascade",
+    classes: [],
+    nodes: [
+      {
+        id: "client",
+        kind: "client",
+        label: "users",
+        x: 40,
+        y: 220,
+        client: {
+          // A spike is what tips it over: nominal load is comfortable.
+          arrival: {
+            kind: "spike",
+            baseRatePerSec: 300,
+            peakRatePerSec: 700,
+            atSec: 60,
+            durationSec: 60,
+          },
+          timeoutMs: 2000,
+        },
+      },
+      {
+        id: "api",
+        kind: "server",
+        label: "api",
+        x: 380,
+        y: 220,
+        server: {
+          concurrency: 64,
+          serviceTime: bench("app-json-endpoint").distribution,
+          replicas: 3,
+          blocksOnDependencies: true,
+          citation: bench("app-json-endpoint").citation,
+        },
+      },
+      {
+        id: "db",
+        kind: "database",
+        label: "postgres",
+        x: 740,
+        y: 220,
+        database: {
+          poolSize: 20,
+          parallelism: 10,
+          serviceTime: { kind: "lognormal", mean: 15, p99: 90 },
+          failureProbability: 0.02,
+          // The term that gives the loop gain.
+          failureAtSaturation: 0.4,
+          citation: bench("postgres-range-scan").citation,
+        },
+      },
+    ],
+    edges: [
+      { id: "e1", from: "client", to: "api", latency: SAME_RACK, classes: [] },
+      {
+        id: "e2",
+        from: "api",
+        to: "db",
+        latency: SAME_RACK,
+        classes: [],
+        policy: {
+          timeoutMs: 300,
+          retry: {
+            maxAttempts: 3,
+            backoff: { kind: "exponential", baseMs: 20, maxMs: 500, jitter: true },
+            retryOn: ["error", "timeout"],
+            budgetRatio: null,
+          },
+          circuitBreaker: { enabled: false },
+          bulkhead: { enabled: false },
+        },
+      },
+    ],
+    scenario: { durationSec: 300, warmupSec: 0, seed: 1, traceLimit: 3000 },
+    slo: { p99LatencyMs: 300, maxErrorRatePct: 2 },
+  });
+}
+
 export const EXAMPLES: Array<{ id: string; label: string; blurb: string; build: () => Design }> = [
   {
     id: "single-service",
@@ -765,5 +997,23 @@ export const EXAMPLES: Array<{ id: string; label: string; blurb: string; build: 
     label: "one broken backend",
     blurb: "health checking ejects the outlier instead of routing a third of traffic into it",
     build: outlierBackend,
+  },
+  {
+    id: "ramp-to-failure",
+    label: "ramp to failure",
+    blurb: "load rises 50→800/s in one run; the first SLO breach marks the limit",
+    build: rampToFailure,
+  },
+  {
+    id: "traffic-spike",
+    label: "traffic spike",
+    blurb: "4× load for 30s, then how long the backlog takes to drain",
+    build: trafficSpike,
+  },
+  {
+    id: "correlated-cascade",
+    label: "load-correlated cascade",
+    blurb: "a database that fails more when busy, plus unbudgeted retries — a loop with gain",
+    build: correlatedCascade,
   },
 ];

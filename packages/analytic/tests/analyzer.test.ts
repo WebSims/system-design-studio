@@ -68,7 +68,7 @@ function station(o: {
   durationSec?: number;
 }): Design {
   return DesignSchema.parse({
-    version: 3,
+    version: 4,
     name: "knee",
     nodes: [
       {
@@ -285,7 +285,7 @@ describe("critical-path attribution is exact for the mean", () => {
       prev = id;
     });
     return DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "chain",
       nodes,
       edges,
@@ -347,7 +347,7 @@ describe("critical-path attribution is exact for the mean", () => {
 
   it("flags fork-join, where shares cannot sum to the request's experience", () => {
     const design = DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "fanout",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 30 } } },
@@ -374,7 +374,7 @@ describe("critical-path attribution is exact for the mean", () => {
 describe("sensitivity ranks by measured effect", () => {
   it("capacity at the bottleneck beats capacity anywhere else", () => {
     const design = DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "sens",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 90 } } },
@@ -404,7 +404,7 @@ describe("sensitivity ranks by measured effect", () => {
 
   it("elasticity is signed by the parameter, not by whether it helped", () => {
     const design = DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "sens2",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 90 } } },
@@ -436,7 +436,7 @@ describe("sensitivity ranks by measured effect", () => {
   it("measures integer knobs against the change that actually happened", () => {
     // Concurrency 4 perturbed by 20% rounds to 5, a real change of 25%.
     const design = DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "sens3",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 80 } } },
@@ -455,7 +455,7 @@ describe("sensitivity ranks by measured effect", () => {
 
   it("reports knobs that cannot be moved rather than silently dropping them", () => {
     const design = DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "sens4",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 10 } } },
@@ -591,7 +591,7 @@ describe("findings fire on their conditions, and not otherwise", () => {
 
   it("flags an undersized connection pool with the value to raise it to", () => {
     const design = DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "pool",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 50 } } },
@@ -617,7 +617,7 @@ describe("findings fire on their conditions, and not otherwise", () => {
 
   it("flags retries that have no budget, and retries of shed requests", () => {
     const design = DesignSchema.parse({
-      version: 3,
+      version: 4,
       name: "bad-retries",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 50 } } },

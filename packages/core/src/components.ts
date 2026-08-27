@@ -213,6 +213,37 @@ abstract class StationComponent implements Component {
   }
 
   /**
+   * Failure probability at this instant, interpolated from the station's own load.
+   *
+   * Real services fail more when overloaded -- memory pressure, connection limits,
+   * timeouts inside code the model does not represent. That correlation is what gives
+   * a cascade positive gain: load raises failures, failures raise retries, retries
+   * raise load. With a constant failure rate the loop has no gain at all and the
+   * worst outcome is a linear slowdown.
+   *
+   * Read from INSTANTANEOUS occupancy rather than the time-averaged utilization,
+   * because the effect is meant to bite during a burst rather than after one.
+   *
+   * Load EXCLUDES the request being served and INCLUDES the queue. Both matter:
+   *
+   *   Counting itself would put a floor of 1/capacity under the pressure term, so a
+   *   single-slot station would always look fully loaded and a 4-slot one would never
+   *   read below 25%. At low utilization that inflates the failure rate several-fold,
+   *   for a station that is in fact nearly idle.
+   *
+   *   Counting the queue matters because a station with every slot busy and forty
+   *   requests waiting is under far more pressure than the same station with nothing
+   *   waiting, and the failure mechanisms being modelled -- memory, connections,
+   *   internal timeouts -- track the backlog rather than just the workers.
+   */
+  protected failureProbabilityNow(base: number, atSaturation: number | null): number {
+    if (atSaturation === null) return base;
+    const others = this.resource.inServiceCount - 1 + this.resource.queueLength;
+    const busy = Math.min(1, Math.max(0, others / Math.max(1, this.resource.capacity)));
+    return base + (atSaturation - base) * busy;
+  }
+
+  /**
    * Exact conservation identities for one resource.
    *
    *   arrivals + queued-at-start   == admitted + shed + abandoned + queued-now
@@ -564,7 +595,11 @@ export class ServerComponent extends StationComponent {
       // still consumed the capacity to discover that. Failing for free would make
       // an unhealthy dependency look cheap, which is the opposite of the truth and
       // would hide exactly the load a retry storm adds.
-      if (cfg.failureProbability > 0 && env.rng.stream("failure").chance(cfg.failureProbability)) {
+      const failureNow = this.failureProbabilityNow(
+        cfg.failureProbability,
+        cfg.failureAtSaturation
+      );
+      if (failureNow > 0 && env.rng.stream("failure").chance(failureNow)) {
         if (ctx.traced) {
           env.trace.visit(ctx.requestId, this.node.id, enqueuedAt, serviceStart, env.sim.now, "error");
         }
@@ -1202,10 +1237,18 @@ export class DatabaseComponent extends StationComponent {
           );
         }
         if (served.timedOut) return { ok: false, reason: "timeout" };
-        if (
-          cfg.failureProbability > 0 &&
-          env.rng.stream("failure").chance(cfg.failureProbability)
-        ) {
+        // Execution occupancy, not pool occupancy: the real constraint is what is
+        // running, and a large pool would otherwise dilute the signal. Excludes this
+        // query and includes the queue, for the reasons in `failureProbabilityNow`.
+        const others =
+          this.execution.inServiceCount - 1 + this.execution.queueLength;
+        const busy = Math.min(1, Math.max(0, others / Math.max(1, this.execution.capacity)));
+        const failureNow =
+          cfg.failureAtSaturation === null
+            ? cfg.failureProbability
+            : cfg.failureProbability +
+              (cfg.failureAtSaturation - cfg.failureProbability) * busy;
+        if (failureNow > 0 && env.rng.stream("failure").chance(failureNow)) {
           return { ok: false, reason: "error" };
         }
         return OK;

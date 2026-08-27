@@ -1,5 +1,5 @@
 import { citationText } from "@sds/models";
-import type { Citation, Distribution, RetryableReason } from "@sds/schema";
+import { isTimeVarying, type ArrivalProcess, type Citation, type Distribution, type RetryableReason } from "@sds/schema";
 import { useStudio } from "../store";
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -357,30 +357,7 @@ export function Inspector() {
 
       {node.kind === "client" && node.client && (
         <>
-          <div className="section">arrival process</div>
-          <Field label="process" hint={node.client.arrival.kind === "poisson" ? "independent users" : "perfectly paced"}>
-            <Select
-              value={node.client.arrival.kind}
-              options={[
-                { value: "poisson" as const, label: "poisson" },
-                { value: "deterministic" as const, label: "deterministic" },
-              ]}
-              onChange={(v) => patch((n) => { if (n.client) n.client.arrival.kind = v; })}
-            />
-          </Field>
-          <Field label="rate" hint="req/s">
-            <NumberInput
-              value={node.client.arrival.ratePerSec}
-              min={0.1}
-              step={10}
-              onChange={(v) => patch((n) => { if (n.client) n.client.arrival.ratePerSec = Math.max(0.1, v); })}
-            />
-          </Field>
-          <p className="note">
-            Poisson arrivals are burstier than a fixed rate at the same average, and
-            burstiness alone lengthens queues. A deterministic source is the best-case
-            workload, not a neutral one.
-          </p>
+          <ArrivalEditor nodeId={node.id} />
 
           <div className="section">client timeout</div>
           <Field label="deadline" hint="ms, 0 = none">
@@ -594,11 +571,51 @@ export function Inspector() {
               onChange={(v) => patch((n) => { if (n.server) n.server.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
             />
           </Field>
+          <Field label="at saturation" hint="%, 0 = constant">
+            <NumberInput
+              value={
+                node.server.failureAtSaturation === null
+                  ? 0
+                  : Math.round(node.server.failureAtSaturation * 1000) / 10
+              }
+              min={0}
+              max={100}
+              step={5}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.server) {
+                    n.server.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
+                  }
+                })
+              }
+            />
+          </Field>
           <p className="note">
             Failures unrelated to load: bugs, bad deploys, a dependency this model does not
             include. Charged <i>after</i> the work is done, because a server that fails still
             consumed the capacity to discover that &mdash; failing for free would make an
             unhealthy dependency look cheap and hide the load a retry storm adds.
+          </p>
+          <p className={`note ${node.server.failureAtSaturation !== null ? "warn" : ""}`}>
+            {node.server.failureAtSaturation === null ? (
+              <>
+                The rate is <b>constant</b>. Real services fail more when overloaded, and that
+                correlation is what gives a cascade positive gain: load raises failures, failures
+                raise retries, retries raise load. With a constant rate the loop has no gain and
+                the worst outcome is a linear slowdown.
+              </>
+            ) : (
+              <>
+                Failure rises from{" "}
+                <b className="tnum">{(node.server.failureProbability * 100).toFixed(1)}%</b> when
+                idle to{" "}
+                <b className="tnum">
+                  {(node.server.failureAtSaturation * 100).toFixed(1)}%
+                </b>{" "}
+                when saturated. This closes the feedback loop &mdash; combine it with unbudgeted
+                retries and the design can run away rather than just slow down.
+              </>
+            )}
           </p>
 
           <div className="section">queue</div>
@@ -782,6 +799,30 @@ export function Inspector() {
               onChange={(v) => patch((n) => { if (n.database) n.database.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
             />
           </Field>
+          <Field label="at saturation" hint="%, 0 = constant">
+            <NumberInput
+              value={
+                node.database.failureAtSaturation === null
+                  ? 0
+                  : Math.round(node.database.failureAtSaturation * 1000) / 10
+              }
+              min={0}
+              max={100}
+              step={5}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.database) {
+                    n.database.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
+                  }
+                })
+              }
+            />
+          </Field>
+          <p className="note">
+            A rate that rises with load closes the feedback loop that turns a slowdown into a
+            cascade. Measured from execution occupancy excluding the query itself, so a nearly
+            idle database is not charged for being busy with one request.
+          </p>
 
           <div className="section">pool queue</div>
           <QueueLimitEditor
@@ -871,6 +912,298 @@ export function Inspector() {
       <ClassEditor />
       <ScenarioEditor />
     </aside>
+  );
+}
+
+/**
+ * The arrival profile.
+ *
+ * The first two shapes are stationary and the rest are not, and the difference
+ * changes what the tool can honestly report. A design under a ramp has no steady
+ * state, so a single p99 over the whole run averages across regimes that never
+ * coexisted -- part measured at 50/s and part at 800/s. The result panel says so and
+ * points at the time series instead.
+ *
+ * They earn their place because they answer questions a steady-state run cannot: how
+ * far a design gets before it breaks, whether it survives a burst, and how long it
+ * takes to recover afterwards.
+ */
+function ArrivalEditor({ nodeId }: { nodeId: string }) {
+  const node = useStudio((s) => s.design.nodes.find((n) => n.id === nodeId));
+  const durationSec = useStudio((s) => s.design.scenario.durationSec);
+  const edit = useStudio((s) => s.edit);
+  if (!node?.client) return null;
+  const a = node.client.arrival;
+
+  const patch = (fn: (n: NonNullable<typeof node>) => void) =>
+    edit((d) => {
+      const n = d.nodes.find((x) => x.id === nodeId);
+      if (n) fn(n);
+    });
+
+  const setKind = (kind: ArrivalProcess["kind"]) =>
+    patch((n) => {
+      if (!n.client) return;
+      const current =
+        a.kind === "poisson" || a.kind === "deterministic"
+          ? a.ratePerSec
+          : a.kind === "ramp"
+            ? a.toRatePerSec
+            : a.kind === "spike"
+              ? a.baseRatePerSec
+              : a.ratePerSec;
+      switch (kind) {
+        case "poisson":
+        case "deterministic":
+          n.client.arrival = { kind, ratePerSec: current };
+          break;
+        case "ramp":
+          n.client.arrival = {
+            kind,
+            fromRatePerSec: Math.max(1, current * 0.1),
+            toRatePerSec: current * 2,
+          };
+          break;
+        case "spike":
+          n.client.arrival = {
+            kind,
+            baseRatePerSec: current,
+            peakRatePerSec: current * 3,
+            atSec: Math.round(durationSec * 0.3),
+            durationSec: Math.max(5, Math.round(durationSec * 0.1)),
+          };
+          break;
+        case "steps":
+          n.client.arrival = {
+            kind,
+            ratePerSec: current,
+            steps: [{ atSec: Math.round(durationSec * 0.5), ratePerSec: current * 2 }],
+          };
+          break;
+      }
+    });
+
+  const timeVarying = isTimeVarying(a);
+
+  return (
+    <>
+      <div className="section">
+        arrival process
+        {timeVarying && <span className="section-tag">time-varying</span>}
+      </div>
+      <Field label="profile">
+        <Select
+          value={a.kind}
+          options={[
+            { value: "poisson" as const, label: "poisson (independent users)" },
+            { value: "deterministic" as const, label: "deterministic (paced)" },
+            { value: "ramp" as const, label: "ramp (find the limit)" },
+            { value: "spike" as const, label: "spike (burst + recovery)" },
+            { value: "steps" as const, label: "steps" },
+          ]}
+          onChange={setKind}
+        />
+      </Field>
+
+      {(a.kind === "poisson" || a.kind === "deterministic") && (
+        <>
+          <Field label="rate" hint="req/s">
+            <NumberInput
+              value={a.ratePerSec}
+              min={0.1}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client && (n.client.arrival.kind === "poisson" || n.client.arrival.kind === "deterministic")) {
+                    n.client.arrival.ratePerSec = Math.max(0.1, v);
+                  }
+                })
+              }
+            />
+          </Field>
+          <p className="note">
+            Poisson arrivals are burstier than a fixed rate at the same average, and burstiness
+            alone lengthens queues. A deterministic source is the best-case workload, not a
+            neutral one.
+          </p>
+        </>
+      )}
+
+      {a.kind === "ramp" && (
+        <>
+          <Field label="from" hint="req/s">
+            <NumberInput
+              value={a.fromRatePerSec}
+              min={0}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.arrival.kind === "ramp") n.client.arrival.fromRatePerSec = Math.max(0, v);
+                })
+              }
+            />
+          </Field>
+          <Field label="to" hint="req/s">
+            <NumberInput
+              value={a.toRatePerSec}
+              min={0.1}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.arrival.kind === "ramp") n.client.arrival.toRatePerSec = Math.max(0.1, v);
+                })
+              }
+            />
+          </Field>
+          <p className="note">
+            A load test in one run: the offered rate rises steadily and the first SLO breach marks
+            the limit. It reads slightly <b>high</b> against a steady-state search, because queues
+            take time to fill and the system is always catching up with a load that has already
+            moved on &mdash; the same bias a live load test has. Set warm-up to 0; there is no
+            steady state for it to reach.
+          </p>
+        </>
+      )}
+
+      {a.kind === "spike" && (
+        <>
+          <Field label="base" hint="req/s">
+            <NumberInput
+              value={a.baseRatePerSec}
+              min={0.1}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.arrival.kind === "spike") n.client.arrival.baseRatePerSec = Math.max(0.1, v);
+                })
+              }
+            />
+          </Field>
+          <Field label="peak" hint="req/s">
+            <NumberInput
+              value={a.peakRatePerSec}
+              min={0.1}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.arrival.kind === "spike") n.client.arrival.peakRatePerSec = Math.max(0.1, v);
+                })
+              }
+            />
+          </Field>
+          <Field label="starts at" hint="s">
+            <NumberInput
+              value={a.atSec}
+              min={0}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.arrival.kind === "spike") n.client.arrival.atSec = Math.max(0, v);
+                })
+              }
+            />
+          </Field>
+          <Field label="lasts" hint="s">
+            <NumberInput
+              value={a.durationSec}
+              min={1}
+              step={5}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.arrival.kind === "spike") n.client.arrival.durationSec = Math.max(1, v);
+                })
+              }
+            />
+          </Field>
+          <p className="note">
+            Leave room after the burst: <b>recovery is usually the more interesting half</b>. A
+            queue built during a spike keeps hurting requests that arrive after it has passed, so a
+            design can survive the spike itself and still spend minutes catching up.
+            {a.atSec + a.durationSec >= durationSec && (
+              <>
+                {" "}
+                <b className="warn-text">
+                  This spike runs to the end of the run, so recovery is never observed.
+                </b>
+              </>
+            )}
+          </p>
+        </>
+      )}
+
+      {a.kind === "steps" && (
+        <>
+          <Field label="initial rate" hint="req/s">
+            <NumberInput
+              value={a.ratePerSec}
+              min={0.1}
+              step={10}
+              onChange={(v) =>
+                patch((n) => {
+                  if (n.client?.arrival.kind === "steps") n.client.arrival.ratePerSec = Math.max(0.1, v);
+                })
+              }
+            />
+          </Field>
+          {a.steps.map((step, i) => (
+            <div className="class-editor-row" key={i}>
+              <Field label={`step ${i + 1} at`} hint="s">
+                <NumberInput
+                  value={step.atSec}
+                  min={0}
+                  step={10}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.client?.arrival.kind === "steps") {
+                        const st = n.client.arrival.steps[i];
+                        if (st) st.atSec = Math.max(0, v);
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <Field label="rate" hint="req/s">
+                <NumberInput
+                  value={step.ratePerSec}
+                  min={0.1}
+                  step={10}
+                  onChange={(v) =>
+                    patch((n) => {
+                      if (n.client?.arrival.kind === "steps") {
+                        const st = n.client.arrival.steps[i];
+                        if (st) st.ratePerSec = Math.max(0.1, v);
+                      }
+                    })
+                  }
+                />
+              </Field>
+            </div>
+          ))}
+          <button
+            className="btn small"
+            onClick={() =>
+              patch((n) => {
+                if (n.client?.arrival.kind === "steps") {
+                  n.client.arrival.steps.push({
+                    atSec: Math.round(durationSec * 0.5),
+                    ratePerSec: n.client.arrival.ratePerSec * 2,
+                  });
+                }
+              })
+            }
+          >
+            add step
+          </button>
+        </>
+      )}
+
+      {timeVarying && (
+        <p className="note warn">
+          With load varying over the run there is no steady state, so a single p99 averages across
+          regimes that never coexisted. Read the time series and the first-breach figure instead.
+        </p>
+      )}
+    </>
   );
 }
 
