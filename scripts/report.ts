@@ -316,7 +316,15 @@ function report(design: Design, result: RunResult): void {
       );
       console.log(
         `    ${DIM}ceiling ${db.maxThroughputPerSec.toFixed(0)}/s \u2014 set by ${binding}. ` +
-          `Raising the pool past parallelism moves the wait, it does not remove it.${OFF}`
+          // The advice has to follow the binding resource. It read "raising the pool
+          // past parallelism moves the wait" unconditionally, which is the right
+          // warning for an execution-bound database and the exact opposite of what a
+          // pool-bound one needs, where raising the pool is the fix.
+          `${
+            binding === "pool"
+              ? `Raise the pool towards parallelism (${db.parallelism}) to lift it.`
+              : `Raising the pool past parallelism moves the wait, it does not remove it.`
+          }${OFF}`
       );
     }
     if (n.connections) {
@@ -921,11 +929,26 @@ const effective = DesignSchema.parse({
   },
 });
 
-const issues = validateDesign(effective).filter((i) => i.severity === "error");
+const allIssues = validateDesign(effective);
+const issues = allIssues.filter((i) => i.severity === "error");
 if (issues.length > 0) {
   console.log(`${RED}design is not runnable:${OFF}`);
   for (const i of issues) console.log(`  ${i.message}`);
   process.exit(1);
+}
+
+/**
+ * Warnings were being discarded here, which made them not warnings.
+ *
+ * `validateDesign` produces both severities and the CLI filtered to errors and threw the
+ * rest away — so a design flagged "percentiles will not converge" ran and printed
+ * percentiles with an error bar, and nothing on screen mentioned it. The studio surfaces
+ * warnings; the CLI silently did not.
+ */
+const warnings = allIssues.filter((i) => i.severity === "warning");
+if (warnings.length > 0) {
+  console.log(`${YELLOW}design warnings:${OFF}`);
+  for (const w of warnings) console.log(`  ${w.message}`);
 }
 
 console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 5 verification${OFF}`);

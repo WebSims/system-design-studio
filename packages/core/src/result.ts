@@ -174,7 +174,14 @@ export interface NodeResult {
   nodeId: string;
   label: string;
   kind: NodeKind;
-  /** Total service slots. For a database this is execution parallelism. */
+  /**
+   * Total service slots.
+   *
+   * For a database this is the BINDING resource, `min(poolSize, parallelism)` -- a
+   * request needs both a connection and an execution slot, so the ceiling is set by
+   * whichever there are fewer of. Reporting execution parallelism unconditionally hid
+   * a saturated pool behind an idle-looking utilization.
+   */
   capacity: number;
   /** Time-weighted fraction of capacity busy, [0,1]. The bottleneck signal. */
   utilization: number;

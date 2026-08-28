@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { runSimulation, zipfTopMass, type RunResult } from "@sds/core";
-import { DesignSchema, type Design, type SdsEdge, type SdsNode } from "@sds/schema";
+import {
+  DesignSchema,
+  isRunnable,
+  validateDesign,
+  type Design,
+  type SdsEdge,
+  type SdsNode,
+} from "@sds/schema";
 import { previewDesign } from "../src/preview";
 import { solveMMc } from "../src/queueing";
 import { meanOf, relError, SEEDS } from "./harness";
@@ -768,5 +775,189 @@ describe("edge probability calls a dependency on only some requests", () => {
     expect(
       relError(preview.nodes.find((n) => n.nodeId === "audit")!.arrivalRatePerSec, 10)
     ).toBeLessThan(1e-9);
+  });
+});
+
+describe("a database reports whichever resource is binding", () => {
+  /**
+   * A request needs both a pool connection and an execution slot, so the station's
+   * ceiling is set by whichever there are fewer of.
+   *
+   * The engine used to report execution unconditionally. With `poolSize 2,
+   * parallelism 8` at 350/s that meant a headline **22% utilization, in green**, for a
+   * station whose pool was 88% busy — so the saturation finding never fired, the
+   * precision block computed error bars at the wrong rho, the printed ceiling was 4x
+   * too high, and the closed-form cross-check disagreed by -74.8% with no indication
+   * which side was right. It was the analytic: it has always used min(pool, parallelism).
+   */
+  const poolBound = (poolSize: number, parallelism: number, ratePerSec: number): Design =>
+    DesignSchema.parse({
+      version: 5,
+      nodes: [
+        {
+          id: "c",
+          kind: "client",
+          label: "client",
+          x: 0,
+          y: 0,
+          client: { arrival: { kind: "poisson", ratePerSec } },
+        },
+        {
+          id: "db",
+          kind: "database",
+          label: "db",
+          x: 300,
+          y: 0,
+          database: {
+            poolSize,
+            parallelism,
+            serviceTime: { kind: "exponential", mean: 5 },
+          },
+        },
+      ],
+      edges: [{ id: "e1", from: "c", to: "db" }],
+      scenario: { durationSec: 240, warmupSec: 40, seed: 1, traceLimit: 1000 },
+      slo: { p99LatencyMs: 500, maxErrorRatePct: null },
+      classes: [],
+    });
+
+  it("reports the pool when the pool is smaller", () => {
+    const r = runSimulation(poolBound(2, 8, 350), { seed: 1 });
+    const db = r.nodes.find((n) => n.nodeId === "db")!;
+
+    expect(db.capacity).toBe(2);
+    // The binding resource is busy; execution is not. The headline must be the former.
+    expect(db.database!.poolUtilization).toBeGreaterThan(0.8);
+    expect(db.database!.executionUtilization).toBeLessThan(0.3);
+    expect(db.utilization).toBeCloseTo(db.database!.poolUtilization, 6);
+  });
+
+  it("derives the ceiling from the binding resource too", () => {
+    // The label and the number used to contradict each other: the report said "set by
+    // pool" while the figure came from parallelism.
+    const r = runSimulation(poolBound(2, 8, 350), { seed: 1 });
+    const db = r.nodes.find((n) => n.nodeId === "db")!.database!;
+    // 2 connections / 5ms = 400/s, not 8 / 5ms = 1600/s.
+    expect(db.maxThroughputPerSec).toBeCloseTo(400, 6);
+  });
+
+  it("still reports execution when execution is the constraint", () => {
+    const r = runSimulation(poolBound(20, 8, 350), { seed: 1 });
+    const db = r.nodes.find((n) => n.nodeId === "db")!;
+    expect(db.capacity).toBe(8);
+    expect(db.utilization).toBeCloseTo(db.database!.executionUtilization, 6);
+    expect(db.database!.maxThroughputPerSec).toBeCloseTo(1600, 6);
+  });
+
+  it("agrees with the closed form in both regimes", () => {
+    // The independent check. Before the fix the pool-bound case disagreed by -74.8%;
+    // two separate code paths now converge, which is the real evidence.
+    for (const [poolSize, parallelism] of [
+      [2, 8],
+      [20, 8],
+    ] as const) {
+      const design = poolBound(poolSize, parallelism, 350);
+      const r = runSimulation(design, { seed: 1 });
+      const preview = previewDesign(design);
+      const measured = Math.max(...r.nodes.map((n) => n.utilization));
+      expect(relError(measured, preview.bottleneckUtilization!)).toBeLessThan(0.1);
+    }
+  });
+});
+
+describe("service times with no finite moments are refused", () => {
+  /**
+   * The engine happily samples a Pareto with alpha <= 1 and reports a p99 with an error
+   * bar, while the closed-form solver withholds every figure because the mean is
+   * infinite. Sampling a distribution with no mean gives a number that is purely a
+   * function of run length, so an error bar on it describes the precision of a quantity
+   * that does not exist.
+   */
+  const withService = (dist: unknown): Design =>
+    DesignSchema.parse({
+      version: 5,
+      nodes: [
+        {
+          id: "c",
+          kind: "client",
+          label: "client",
+          x: 0,
+          y: 0,
+          client: { arrival: { kind: "poisson", ratePerSec: 20 } },
+        },
+        {
+          id: "s",
+          kind: "server",
+          label: "svc",
+          x: 300,
+          y: 0,
+          server: { concurrency: 32, replicas: 1, serviceTime: dist },
+        },
+      ],
+      edges: [{ id: "e1", from: "c", to: "s" }],
+      scenario: { durationSec: 120, warmupSec: 20, seed: 1, traceLimit: 500 },
+      slo: { p99LatencyMs: 2000, maxErrorRatePct: null },
+      classes: [],
+    });
+
+  it("rejects an infinite mean as an error, not a warning", () => {
+    const issues = validateDesign(withService({ kind: "pareto", scale: 1, alpha: 0.7 }));
+    const err = issues.find((i) => i.code === "infinite-mean-service");
+    expect(err).toBeDefined();
+    expect(err!.severity).toBe("error");
+    // Must be blocking: a warning would still print percentiles.
+    expect(isRunnable(withService({ kind: "pareto", scale: 1, alpha: 0.7 }))).toBe(false);
+  });
+
+  it("warns on infinite variance but still runs, because the mean exists", () => {
+    const design = withService({ kind: "pareto", scale: 1, alpha: 1.6 });
+    const issues = validateDesign(design);
+    const warn = issues.find((i) => i.code === "infinite-variance-service");
+    expect(warn).toBeDefined();
+    expect(warn!.severity).toBe("warning");
+    expect(isRunnable(design)).toBe(true);
+  });
+
+  it("says nothing about a Pareto with both moments", () => {
+    const issues = validateDesign(withService({ kind: "pareto", scale: 1, alpha: 2.5 }));
+    expect(issues.some((i) => i.code.startsWith("infinite-"))).toBe(false);
+  });
+
+  it("checks every service distribution, not just serviceTime", () => {
+    // A gateway's acceptTime and a queue's consumer service time are sampled by the
+    // engine and feed the same statistics, so they need the same guard.
+    const design = DesignSchema.parse({
+      version: 5,
+      nodes: [
+        {
+          id: "c",
+          kind: "client",
+          label: "client",
+          x: 0,
+          y: 0,
+          client: { arrival: { kind: "poisson", ratePerSec: 10 } },
+        },
+        {
+          id: "gw",
+          kind: "gateway",
+          label: "gw",
+          x: 300,
+          y: 0,
+          gateway: {
+            capacity: 1000,
+            replicas: 1,
+            pushConcurrency: 8,
+            acceptTime: { kind: "pareto", scale: 1, alpha: 0.5 },
+          },
+        },
+      ],
+      edges: [{ id: "e1", from: "c", to: "gw" }],
+      scenario: { durationSec: 120, warmupSec: 20, seed: 1, traceLimit: 500 },
+      slo: { p99LatencyMs: 2000, maxErrorRatePct: null },
+      classes: [],
+    });
+    const err = validateDesign(design).find((i) => i.code === "infinite-mean-service");
+    expect(err).toBeDefined();
+    expect(err!.message).toContain("accept time");
   });
 });

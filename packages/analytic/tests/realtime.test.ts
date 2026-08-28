@@ -609,3 +609,56 @@ describe("the shipped chat examples answer the original question", () => {
     }
   });
 });
+
+describe("a gateway's held connections are not mistaken for a backlog", () => {
+  /**
+   * `checkStability` regresses `queueLengthSeries` and reads a positive slope as
+   * "arrivals exceed service capacity". The gateway was publishing its HELD CONNECTION
+   * COUNT there, because it sampled no work-queue series at all.
+   *
+   * A socket count is not a backlog. It rises because users arrive and stays high
+   * because they stay, which is the gateway doing its job. So `chat-reconnect-storm` --
+   * the flagship failure-mode example -- reported "does not scale" for a station at 6%
+   * utilization with zero sheds and zero errors, and the false verdict suppressed the
+   * Little's Law check that would have contradicted it.
+   */
+  it("does not call a recovering socket count an unbounded queue", () => {
+    const design = chatReconnectStorm();
+    const r = runSimulation(design, { seed: 1 });
+
+    const gw = r.nodes.find((n) => n.label === "gateways")!;
+    expect(gw.connections).toBeDefined();
+    // The premise: connections climb steeply as 5,000 users come back after the drop.
+    expect(gw.connections!.peakHeld).toBeGreaterThan(1000);
+
+    // A station this idle, shedding and failing nothing, cannot be over capacity.
+    expect(gw.utilization).toBeLessThan(0.5);
+    expect(gw.shed).toBe(0);
+    expect(r.stability.stable).toBe(true);
+    expect(r.stability.worstNodeId).not.toBe("gw");
+  });
+
+  it("publishes the work queue as the queue series, not the connection count", () => {
+    const design = chatReconnectStorm();
+    const r = runSimulation(design, { seed: 1 });
+    const gw = r.nodes.find((n) => n.label === "gateways")!;
+
+    const maxSeries = Math.max(...gw.queueLengthSeries.points.map((p) => p.value));
+    // Held connections run to thousands; the work queue does not. If these ever match
+    // again, the two series have been conflated a second time.
+    expect(maxSeries).toBeLessThan(gw.connections!.peakHeld / 2);
+  });
+
+  it("re-enables Little's Law, which then confirms the run", () => {
+    // The strongest evidence the fix is right: the self-audit that the false verdict was
+    // suppressing now runs, and agrees.
+    const r = runSimulation(chatReconnectStorm(), { seed: 1 });
+    const little = r.invariants.find((i) => i.name.includes("Little"));
+    expect(little).toBeDefined();
+    // A skipped check still reports passed:true, so "not skipped" has to be read off the
+    // detail string -- checking `passed` alone would have been satisfied by the bug.
+    expect(little!.detail).not.toContain("skipped");
+    expect(little!.passed).toBe(true);
+    expect(little!.error).toBeLessThan(0.05);
+  });
+});

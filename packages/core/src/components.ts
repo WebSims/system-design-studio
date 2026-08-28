@@ -1335,6 +1335,23 @@ export class DatabaseComponent extends StationComponent {
     const cfg = this.node.database!;
     const pool = this.resource.stats();
     const exec = this.execution.stats();
+
+    /**
+     * THE BINDING RESOURCE IS THE ONE TO REPORT.
+     *
+     * A request needs both a pool slot and an execution slot, so the station's ceiling
+     * is set by whichever there are fewer of. Reporting execution unconditionally was
+     * wrong whenever the pool was smaller, and it was wrong in the direction that
+     * matters: a database with `poolSize 2, parallelism 8` at 350/s reported **22%
+     * utilization in green** while its pool sat at 88%, so the saturation finding never
+     * fired (it requires utilization above a threshold), the precision block computed
+     * its error bars at rho=0.22 instead of 0.88, and the closed-form cross-check
+     * disagreed by -74.8% with no explanation of which side was right. It was the
+     * analytic: `preview.ts` has always used `min(poolSize, parallelism)`.
+     */
+    const bindingCapacity = Math.min(cfg.poolSize, cfg.parallelism);
+    const poolIsBinding = cfg.poolSize < cfg.parallelism;
+
     const db: DatabaseMetrics = {
       poolSize: cfg.poolSize,
       parallelism: cfg.parallelism,
@@ -1342,16 +1359,17 @@ export class DatabaseComponent extends StationComponent {
       executionUtilization: exec.utilization,
       avgPoolWaitMs: pool.admitted > 0 ? pool.totalWaitMs / pool.admitted : 0,
       avgExecutionWaitMs: this.execWaitCount > 0 ? this.execWaitTotal / this.execWaitCount : 0,
-      maxThroughputPerSec: (cfg.parallelism * 1000) / distMean(cfg.serviceTime),
+      // Derived from the binding resource, so the printed ceiling and the resource named
+      // beside it can no longer contradict each other. Previously this always used
+      // `parallelism` while the label said "set by pool", overstating a pool-bound
+      // database's capacity by parallelism/poolSize -- 4x in the example above.
+      maxThroughputPerSec: (bindingCapacity * 1000) / distMean(cfg.serviceTime),
     };
     return {
       ...base,
-      // Report execution utilization as THE utilization: that is the real capacity
-      // constraint, and reporting pool occupancy instead would flag a saturated
-      // pool as the bottleneck when execution is what is full.
-      capacity: cfg.parallelism,
-      utilization: exec.utilization,
-      utilizationSeries: series(this.execSeries),
+      capacity: bindingCapacity,
+      utilization: poolIsBinding ? pool.utilization : exec.utilization,
+      utilizationSeries: series(poolIsBinding ? this.utilSeries : this.execSeries),
       database: db,
     };
   }
@@ -1657,6 +1675,18 @@ export class GatewayComponent implements Component {
   private readonly connections: Resource;
   private readonly work: Resource;
   private readonly connectionSeries: TimeSeries;
+  /**
+   * Length of the WORK queue, sampled separately from the connection count.
+   *
+   * These two must not be conflated. `checkStability` runs a regression on
+   * `queueLengthSeries` and reads a positive slope as "arrivals exceed service
+   * capacity". A held-connection count is not a backlog: it rises because users
+   * arrive and stays high because they stay, which is the gateway working as
+   * intended. Publishing sockets here made `chat-reconnect-storm` report "does not
+   * scale" for a station at 6% utilization with zero sheds and zero errors, and
+   * suppressed the Little's Law check that would have contradicted it.
+   */
+  private readonly workQueueSeries: TimeSeries;
   private readonly workUtilSeries: TimeSeries;
   private readonly acceptLatency = new LatencyHistogram();
   private readonly pushLatency = new LatencyHistogram();
@@ -1699,6 +1729,7 @@ export class GatewayComponent implements Component {
       admissionPolicy: "block",
     });
     this.connectionSeries = new TimeSeries(`${node.id}.connections`);
+    this.workQueueSeries = new TimeSeries(`${node.id}.queueLength`);
     this.workUtilSeries = new TimeSeries(`${node.id}.workUtilization`);
     this.lastTouch = env.sim.now;
     this.statsStart = env.sim.now;
@@ -1726,6 +1757,7 @@ export class GatewayComponent implements Component {
     this.connections.resetStats();
     this.work.resetStats();
     this.connectionSeries.reset();
+    this.workQueueSeries.reset();
     this.workUtilSeries.reset();
     this.acceptLatency.reset();
     this.pushLatency.reset();
@@ -1745,6 +1777,7 @@ export class GatewayComponent implements Component {
 
   sample(tSec: number): void {
     this.connectionSeries.push(tSec, this.held);
+    this.workQueueSeries.push(tSec, this.work.queueLength);
     const s = this.work.stats();
     const busy = s.utilization * s.observedMs * this.work.capacity;
     const dt = this.env.sim.now - this.lastSampleT;
@@ -2007,7 +2040,7 @@ export class GatewayComponent implements Component {
       residencyMs: summarize(this.residency),
       selfTimeMs: summarize(this.selfTime),
       visitsPerRequest: 0,
-      queueLengthSeries: series(this.connectionSeries),
+      queueLengthSeries: series(this.workQueueSeries),
       utilizationSeries: series(this.workUtilSeries),
       connections: connectionMetrics,
     };
