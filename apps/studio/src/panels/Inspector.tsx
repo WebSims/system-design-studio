@@ -1,6 +1,18 @@
 import { citationText } from "@sds/models";
-import { isTimeVarying, type ArrivalProcess, type Citation, type Distribution, type RetryableReason } from "@sds/schema";
+import {
+  MAX_CONCURRENCY,
+  MAX_REPLICAS,
+  isTimeVarying,
+  type ArrivalProcess,
+  type Citation,
+  type Distribution,
+  type RetryableReason,
+} from "@sds/schema";
 import { useStudio } from "../store";
+
+/** Round to an integer and hold it inside the schema's bounds. */
+const clampInt = (v: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, Math.round(v)));
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -37,7 +49,19 @@ function NumberInput({
       step={step ?? 1}
       onChange={(e) => {
         const v = Number(e.target.value);
-        if (Number.isFinite(v)) onChange(v);
+        if (!Number.isFinite(v)) return;
+        /**
+         * Clamp here rather than at each call site.
+         *
+         * `min` and `max` on a number input are advisory: the browser will happily let
+         * you type past them, and every call site was clamping the lower bound by hand
+         * and none the upper. Typing a concurrency of 1e9 froze the studio outright,
+         * because the closed-form solvers are linear in the server count and the live
+         * preview evaluates them on every keystroke.
+         */
+        const lo = min ?? -Infinity;
+        const hi = max ?? Infinity;
+        onChange(Math.min(hi, Math.max(lo, v)));
       }}
     />
   );
@@ -423,7 +447,8 @@ export function Inspector() {
               value={node.loadbalancer.concurrency}
               min={1}
               step={64}
-              onChange={(v) => patch((n) => { if (n.loadbalancer) n.loadbalancer.concurrency = Math.max(1, Math.round(v)); })}
+              max={MAX_CONCURRENCY}
+              onChange={(v) => patch((n) => { if (n.loadbalancer) n.loadbalancer.concurrency = clampInt(v, 1, MAX_CONCURRENCY); })}
             />
           </Field>
           <div className="section">health checking</div>
@@ -502,14 +527,16 @@ export function Inspector() {
             <NumberInput
               value={node.server.concurrency}
               min={1}
-              onChange={(v) => patch((n) => { if (n.server) n.server.concurrency = Math.max(1, Math.round(v)); })}
+              max={MAX_CONCURRENCY}
+              onChange={(v) => patch((n) => { if (n.server) n.server.concurrency = clampInt(v, 1, MAX_CONCURRENCY); })}
             />
           </Field>
           <Field label="replicas" hint="identical instances">
             <NumberInput
               value={node.server.replicas}
               min={1}
-              onChange={(v) => patch((n) => { if (n.server) n.server.replicas = Math.max(1, Math.round(v)); })}
+              max={MAX_REPLICAS}
+              onChange={(v) => patch((n) => { if (n.server) n.server.replicas = clampInt(v, 1, MAX_REPLICAS); })}
             />
           </Field>
 
@@ -670,7 +697,7 @@ export function Inspector() {
               min={1}
               onChange={(v) =>
                 patch((n) => {
-                  if (n.gateway) n.gateway.replicas = Math.max(1, Math.round(v));
+                  if (n.gateway) n.gateway.replicas = clampInt(v, 1, MAX_REPLICAS);
                 })
               }
             />
@@ -722,7 +749,7 @@ export function Inspector() {
               min={1}
               onChange={(v) =>
                 patch((n) => {
-                  if (n.gateway) n.gateway.pushConcurrency = Math.max(1, Math.round(v));
+                  if (n.gateway) n.gateway.pushConcurrency = clampInt(v, 1, MAX_CONCURRENCY);
                 })
               }
             />

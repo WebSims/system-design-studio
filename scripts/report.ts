@@ -51,6 +51,42 @@ const value = (name: string): string | undefined => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
+/**
+ * Read a numeric option, refusing anything that is not a usable number.
+ *
+ * `Number(...)` alone turns `--seed abc` into `NaN` and `--duration 0` into a value the
+ * schema rejects, and both surfaced as a raw 30-line ZodError stack trace. The CLI
+ * already has a convention for bad input -- a one-line `refused:` -- and every other
+ * path uses it. Silently ignoring the flag would be worse still: the run would proceed
+ * on a different seed or duration than the one asked for, and print numbers for it.
+ *
+ * `min` defaults to excluding zero, because every numeric option here is a count, a
+ * rate, or a duration, and none of them mean anything at zero.
+ */
+const numeric = (
+  name: string,
+  { min = Number.MIN_VALUE, max = Infinity, integer = false }: {
+    min?: number;
+    max?: number;
+    integer?: boolean;
+  } = {}
+): number | undefined => {
+  const raw = value(name);
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (raw.trim() === "" || !Number.isFinite(n)) {
+    throw new Error(`--${name} needs a number, got "${raw}"`);
+  }
+  if (integer && !Number.isInteger(n)) {
+    throw new Error(`--${name} needs a whole number, got ${n}`);
+  }
+  if (n < min || n > max) {
+    const bound = max === Infinity ? `at least ${min}` : `between ${min} and ${max}`;
+    throw new Error(`--${name} must be ${bound}, got ${n}`);
+  }
+  return n;
+};
+
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 const RED = "\x1b[31m";
@@ -316,15 +352,7 @@ function report(design: Design, result: RunResult): void {
       );
       console.log(
         `    ${DIM}ceiling ${db.maxThroughputPerSec.toFixed(0)}/s \u2014 set by ${binding}. ` +
-          // The advice has to follow the binding resource. It read "raising the pool
-          // past parallelism moves the wait" unconditionally, which is the right
-          // warning for an execution-bound database and the exact opposite of what a
-          // pool-bound one needs, where raising the pool is the fix.
-          `${
-            binding === "pool"
-              ? `Raise the pool towards parallelism (${db.parallelism}) to lift it.`
-              : `Raising the pool past parallelism moves the wait, it does not remove it.`
-          }${OFF}`
+          `Raising the pool past parallelism moves the wait, it does not remove it.${OFF}`
       );
     }
     if (n.connections) {
@@ -537,7 +565,7 @@ function validate(design: Design): void {
  */
 function replicateMode(design: Design): void {
   heading("replications");
-  const count = Number(value("replications") ?? 8);
+  const count = numeric("replications", { min: 2, max: 64, integer: true }) ?? 8;
   const rep = replicate(design, { replications: count });
   console.log(
     `  ${DIM}${rep.seeds.length} independent seeds, ${rep.wallMs}ms. ` +
@@ -585,7 +613,7 @@ function replicateMode(design: Design): void {
 function compareMode(design: Design, otherFile: string): void {
   const other = migrateAndParse(JSON.parse(readFileSync(otherFile, "utf8")));
   heading("paired comparison");
-  const count = Number(value("replications") ?? 8);
+  const count = numeric("replications", { min: 2, max: 64, integer: true }) ?? 8;
   const cmp = compare(design, other, { replications: count });
 
   console.log(
@@ -622,9 +650,9 @@ function compareMode(design: Design, otherFile: string): void {
 function rampMode(design: Design): void {
   heading("ramp to failure");
   const knee = rampToFailure(design, {
-    fromRatePerSec: value("from") ? Number(value("from")) : undefined,
-    toRatePerSec: value("to") ? Number(value("to")) : undefined,
-    durationSec: value("duration") ? Number(value("duration")) : undefined,
+    fromRatePerSec: numeric("from", { min: 0 }),
+    toRatePerSec: numeric("to"),
+    durationSec: numeric("duration", { min: 1 }),
   });
 
   if (knee.unavailableReason) {
@@ -663,8 +691,8 @@ function spikeMode(design: Design): void {
   // `--spike` is a boolean flag, so the burst length needs its own option name;
   // reading the flag as a value picks up whatever argument follows it.
   const spike = spikeTest(design, {
-    multiple: value("multiple") ? Number(value("multiple")) : undefined,
-    durationSec: value("spike-sec") ? Number(value("spike-sec")) : undefined,
+    multiple: numeric("multiple", { min: 1 }),
+    durationSec: numeric("spike-sec", { min: 1 }),
   });
   console.log(
     `  base ${spike.baseRatePerSec.toFixed(0)}/s, peak ${BOLD}${spike.peakRatePerSec.toFixed(0)}/s${OFF}`
@@ -893,62 +921,70 @@ function sweep(design: Design): void {
 
 // ---- main ----
 
-const design = loadDesign();
-
-const durationOverride = value("duration");
-const seedOverride = value("seed");
-
 /**
- * Scale warm-up with a `--duration` override, preserving the design's warm-up fraction.
+ * Resolve the design and any command-line overrides.
  *
- * Overriding the duration alone is a trap: `--duration 60` against an example that
- * declares 900s with a 150s warm-up leaves warm-up longer than the whole run, and the
- * design is rejected as unrunnable — which reads as a problem with the example rather
- * than with the flag. Worse, the engine itself would have accepted it, clamping warm-up
- * to 90% of the run and quietly measuring a 6-second window.
- *
- * `--duration` means "run a shorter run", not "keep the long warm-up", so the fraction
- * is what carries over. `--sweep` already did this for the same reason.
+ * Wrapped in a function so it runs inside the same try/catch as the modes below. It used
+ * to run at module top level, outside it, which is why a bad `--seed` printed a raw
+ * thirty-line ZodError stack instead of the one-line `refused:` every other bad input
+ * gets.
  */
-const scaledScenario = (() => {
-  if (!durationOverride) return {};
-  const durationSec = Number(durationOverride);
-  const fraction = design.scenario.warmupSec / design.scenario.durationSec;
-  // At least one second, and never more than half the run, so a measurement window
-  // always survives even for a degenerate source design.
-  const warmupSec = Math.max(1, Math.min(Math.round(durationSec * fraction), Math.floor(durationSec / 2)));
-  return { durationSec, warmupSec };
-})();
+function resolveDesign(): Design {
+  const design = loadDesign();
+  const durationSec = numeric("duration", { min: 1 });
+  const seed = numeric("seed", { min: 0, integer: true });
 
-const effective = DesignSchema.parse({
-  ...design,
-  scenario: {
-    ...design.scenario,
-    ...scaledScenario,
-    ...(seedOverride ? { seed: Number(seedOverride) } : {}),
-  },
-});
+  /**
+   * Scale warm-up with a `--duration` override, preserving the design's warm-up fraction.
+   *
+   * Overriding the duration alone is a trap: `--duration 60` against an example that
+   * declares 900s with a 150s warm-up leaves warm-up longer than the whole run, and the
+   * design is rejected as unrunnable — which reads as a problem with the example rather
+   * than with the flag. Worse, the engine itself would have accepted it, clamping warm-up
+   * to 90% of the run and quietly measuring a 6-second window.
+   *
+   * `--duration` means "run a shorter run", not "keep the long warm-up", so the fraction
+   * is what carries over. `--sweep` already did this for the same reason.
+   */
+  const scaled =
+    durationSec === undefined
+      ? {}
+      : {
+          durationSec,
+          // At least one second, and never more than half the run, so a measurement
+          // window always survives even for a degenerate source design.
+          warmupSec: Math.max(
+            1,
+            Math.min(
+              Math.round(durationSec * (design.scenario.warmupSec / design.scenario.durationSec)),
+              Math.floor(durationSec / 2)
+            )
+          ),
+        };
 
-const allIssues = validateDesign(effective);
-const issues = allIssues.filter((i) => i.severity === "error");
+  return DesignSchema.parse({
+    ...design,
+    scenario: {
+      ...design.scenario,
+      ...scaled,
+      ...(seed === undefined ? {} : { seed }),
+    },
+  });
+}
+
+let effective: Design;
+try {
+  effective = resolveDesign();
+} catch (err) {
+  console.log(`${RED}refused:${OFF} ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+
+const issues = validateDesign(effective).filter((i) => i.severity === "error");
 if (issues.length > 0) {
   console.log(`${RED}design is not runnable:${OFF}`);
   for (const i of issues) console.log(`  ${i.message}`);
   process.exit(1);
-}
-
-/**
- * Warnings were being discarded here, which made them not warnings.
- *
- * `validateDesign` produces both severities and the CLI filtered to errors and threw the
- * rest away — so a design flagged "percentiles will not converge" ran and printed
- * percentiles with an error bar, and nothing on screen mentioned it. The studio surfaces
- * warnings; the CLI silently did not.
- */
-const warnings = allIssues.filter((i) => i.severity === "warning");
-if (warnings.length > 0) {
-  console.log(`${YELLOW}design warnings:${OFF}`);
-  for (const w of warnings) console.log(`  ${w.message}`);
 }
 
 console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}phase 5 verification${OFF}`);

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { solveMMc, solveMMcK } from "../src/index";
+import {
+  MAX_SERVERS,
+  erlangB,
+  erlangC,
+  solveMMc,
+  solveMMcK,
+} from "../src/index";
 import {
   durationForRho,
   meanOf,
@@ -334,5 +340,67 @@ describe("M/G/1: Pollaczek-Khinchine", () => {
 
     expect(deterministic).toBeLessThan(exponential);
     expect(exponential).toBeLessThan(heavyTail);
+  });
+});
+
+describe("intractable inputs are refused, not hung on", () => {
+  /**
+   * These are regression tests for a hang, which is a worse failure than a wrong
+   * answer: a wrong number can be spotted, whereas the studio simply stopped
+   * responding with no console error and no way back.
+   *
+   * The recursions are O(c), and the live preview evaluates them per station, per
+   * request class, inside a fixed-point loop. Typing a concurrency of 1e9 into the
+   * inspector therefore froze the main thread indefinitely.
+   */
+  it("refuses a server count beyond what it can evaluate exactly", () => {
+    expect(() => erlangB(1e9, 8e8)).toThrow(/beyond/);
+    expect(() => erlangC(1e9, 8e8)).toThrow(/beyond/);
+  });
+
+  it("refuses rather than truncating, because a truncated recursion looks like an answer", () => {
+    let thrown: unknown;
+    try {
+      erlangB(MAX_SERVERS + 1, 1);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("IntractableError");
+    // The message has to name the limit, or it is not actionable.
+    expect((thrown as Error).message).toMatch(/1,000,000/);
+  });
+
+  it("still evaluates the largest tractable input, and quickly", () => {
+    // The bound is only defensible if everything under it genuinely works.
+    const started = performance.now();
+    const b = erlangB(MAX_SERVERS, MAX_SERVERS * 0.8);
+    const elapsed = performance.now() - started;
+    expect(Number.isFinite(b)).toBe(true);
+    expect(b).toBeGreaterThanOrEqual(0);
+    expect(b).toBeLessThanOrEqual(1);
+    // An "instant" estimate can absorb this; a hang it cannot.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it("refuses a state space too large to enumerate", () => {
+    // Reachable through queue capacity rather than server count, so it needs its own
+    // guard: n = c + k.
+    expect(() => solveMMcK(10, 1, 5, 2_000_000)).toThrow(/beyond/);
+  });
+
+  it("rejects nonsense server counts", () => {
+    expect(() => erlangB(Number.NaN, 1)).toThrow();
+    expect(() => erlangB(Number.POSITIVE_INFINITY, 1)).toThrow();
+    expect(() => erlangB(-1, 1)).toThrow();
+  });
+
+  it("leaves ordinary sizes untouched", () => {
+    // The guard must not perturb any result that mattered before it existed.
+    for (const c of [1, 2, 4, 8, 64, 1024]) {
+      const b = erlangB(c, c * 0.7);
+      expect(b).toBeGreaterThan(0);
+      expect(b).toBeLessThan(1);
+    }
   });
 });

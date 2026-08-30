@@ -79,8 +79,15 @@ function recompute(design: Design): { preview: DesignPreview; issues: DesignIssu
   let preview: DesignPreview;
   try {
     preview = previewDesign(design);
-  } catch {
-    // A malformed intermediate state during editing must not crash the app.
+  } catch (err) {
+    // A malformed intermediate state during editing must not crash the app. The reason
+    // is carried through rather than swallowed: "design is incomplete" is right while a
+    // node is half-built, but wrong and unhelpful when the real problem is a value the
+    // solver refuses to evaluate, which the user can only fix if told.
+    const reason =
+      err instanceof Error && err.name === "IntractableError"
+        ? err.message
+        : "design is incomplete";
     preview = {
       stable: true,
       bottleneckNodeId: null,
@@ -92,7 +99,7 @@ function recompute(design: Design): { preview: DesignPreview; issues: DesignIssu
       endToEndMeanMs: null,
       endToEndP99Ms: null,
       meanIsLowerBound: false,
-      p99Reason: "design is incomplete",
+      p99Reason: reason,
       approximate: false,
       asyncBacklogWarning: null,
       edges: [],

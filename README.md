@@ -14,7 +14,7 @@ There is no natural-language layer, by decision rather than by omission — see
 
 ```bash
 pnpm install
-pnpm verify     # typecheck + 388 tests (~75s)
+pnpm verify     # typecheck + 399 tests (~95s)
 pnpm dev        # studio at localhost:5173
 ```
 
@@ -227,7 +227,7 @@ Four ways, cheapest first.
 ### 1. The automated gate
 
 ```bash
-pnpm verify                  # typecheck + all 388 tests
+pnpm verify                  # typecheck + all 399 tests
 pnpm test                    # tests only
 pnpm vitest run -t "M/M/c"   # one group
 ```
@@ -607,32 +607,22 @@ wrong numbers:
   server correctly does. For an event loop that is wrong, and at fan-out scale
   catastrophically so: a station doing 0.26 core-seconds of work per second read as
   **74% utilized** and the bottleneck was attributed to the wrong component.
-- A gateway published its **held connection count** as its queue-length series, and
-  `checkStability` regresses that series and reads a positive slope as "arrivals exceed
-  service capacity". A socket count is not a backlog — it rises because users arrive and
-  stays high because they stay. So `chat-reconnect-storm`, the flagship failure-mode
-  example, reported **"does not scale"** for a station at 6% utilization with zero sheds
-  and zero errors, and the false verdict **suppressed the Little's Law check** that would
-  have contradicted it. The gateway sampled no work-queue series at all; it now does, and
-  Little's Law runs and passes at 0.01%.
-- A database reported **execution** utilization unconditionally, but a request needs both
-  a pool connection and an execution slot, so the ceiling is set by whichever there are
-  fewer of. With `poolSize 2, parallelism 8` at 350/s the headline read **22%, in green**,
-  while the pool sat at 88%. Four numbers were wrong at once: the saturation finding never
-  fired, the error bars were computed at rho=0.22 instead of 0.88, the printed ceiling was
-  **4x too high** (1600/s against a real 400/s while 350/s was offered), and the ceiling's
-  own label said "set by pool" beside a figure derived from parallelism. The closed-form
-  cross-check had been screaming about it all along at -74.8%; the analytic was right, and
-  it now agrees to +0.6%.
-- A Pareto service time with `alpha <= 1` has **no finite mean**. The schema documented
-  it, `mean()` returned Infinity, and the closed-form solver withheld every figure — while
-  the engine printed `p99 720ms`, `adequate +/-2.0%` and `MEETS SLO` right beside
-  "no percentile exists". Nothing validated it. Now an error for infinite mean, a warning
-  for infinite variance, checked across every service distribution rather than just
-  `serviceTime`.
-- The CLI filtered validation issues to errors and **discarded every warning**, which made
-  them not warnings. Surfacing them immediately revealed a pre-existing one nobody had
-  ever seen: `ramp-to-failure` has been advising "set warm-up to 0" since Phase 5.
+- **A concurrency of 1e9 typed into the inspector froze the studio permanently** — no
+  console error, no recovery, just an unresponsive tab. The Erlang recursion is O(c) and
+  the M/M/c/K solver is O(c+k), and the live preview evaluates them per station, per
+  request class, inside a fixed-point loop, so one nine-second call became an endless
+  one. Three fixes, because one was not enough: the solvers now refuse beyond a million
+  states rather than truncating (a truncated recursion returns something that looks like
+  an answer); `validateDesign` checks *effective* concurrency, because the quantity that
+  reaches the solver is `concurrency x replicas` and bounding each factor separately still
+  permits 1e10; and `NumberInput` clamps to both bounds instead of only `min`, since
+  `min`/`max` on a number input are advisory and every call site had been clamping the
+  lower bound by hand and none the upper.
+- Bad numeric CLI flags printed a raw thirty-line ZodError stack. `--seed abc` became
+  `NaN` and `--duration 0` a value the schema rejects, and the whole override block sat
+  *outside* the try/catch that produces the one-line `refused:` every other bad input
+  gets. Silently ignoring the flag would have been worse: the run would have proceeded on
+  a different seed than the one asked for and printed numbers for it.
 - `--duration` overrode the run length but not the warm-up, so asking any shipped example
   for a short run was rejected as unrunnable — warm-up outlasted the whole run. The
   engine would have accepted it, clamping warm-up to 90% and quietly measuring a

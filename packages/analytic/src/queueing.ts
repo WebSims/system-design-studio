@@ -62,13 +62,47 @@ export interface MMcSolution {
 }
 
 /**
+ * The largest server count these solvers will evaluate.
+ *
+ * The recursions below are O(c), which is fine at any physical scale and a denial of
+ * service beyond one. A station with a million requests genuinely in service at once is
+ * already past anything worth modelling; a billion froze the studio outright, because
+ * the live preview evaluates this per station, per request class, inside a fixed-point
+ * loop, so a nine-second call became a permanent hang on the main thread.
+ *
+ * A million iterations costs ~12ms, which an "instant" estimate can absorb. Beyond that
+ * the solver refuses rather than either hanging or guessing.
+ */
+export const MAX_SERVERS = 1_000_000;
+
+/** Thrown when a queueing input is too large to evaluate exactly. */
+export class IntractableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IntractableError";
+  }
+}
+
+/**
  * Erlang-B (blocking probability of M/M/c/c) by the stable recursion.
  *
  * Computed recursively rather than from the textbook a^c/c! ratio, which
  * overflows for c above ~170 and loses precision long before that. The recursion
  * is exact in floating point for any c we will ever model.
+ *
+ * Refuses beyond `MAX_SERVERS`. Truncating the recursion instead would return a number
+ * that looks like an answer and is not one, which is the failure mode this project
+ * exists to avoid.
  */
 export function erlangB(c: number, a: number): number {
+  if (!Number.isFinite(c) || c < 0) {
+    throw new IntractableError(`server count must be a non-negative number, got ${c}`);
+  }
+  if (c > MAX_SERVERS) {
+    throw new IntractableError(
+      `${c.toLocaleString()} servers is beyond the ${MAX_SERVERS.toLocaleString()} this solver evaluates exactly`
+    );
+  }
   let b = 1;
   for (let k = 1; k <= c; k++) {
     b = (a * b) / (k + a * b);
@@ -215,6 +249,17 @@ export function solveMMcK(lambda: number, mu: number, c: number, k: number): MMc
   const a = lambda / mu;
   const rho = a / c;
   const n = c + k;
+
+  // Same O(n) exposure as erlangB, and reachable independently through a large queue
+  // capacity rather than a large server count.
+  if (!Number.isFinite(n) || n < 0) {
+    throw new IntractableError(`state space must be a non-negative number, got ${n}`);
+  }
+  if (n > MAX_SERVERS) {
+    throw new IntractableError(
+      `a ${n.toLocaleString()}-state queue is beyond the ${MAX_SERVERS.toLocaleString()} this solver evaluates exactly`
+    );
+  }
 
   // Unnormalised state probabilities, computed as ratios to p0.
   const terms: number[] = [];

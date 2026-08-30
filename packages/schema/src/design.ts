@@ -1,6 +1,28 @@
 import { z } from "zod";
 
 /**
+ * Upper bounds on the fields that drive the closed-form solvers' loop counts.
+ *
+ * These are not taste. The Erlang recursions and the M/M/c/K state enumeration are
+ * O(c) and O(c+k), and the live preview evaluates them per station, per request class,
+ * inside a fixed-point loop. A concurrency of 1e9 typed into the inspector therefore did
+ * not merely produce a slow estimate — it froze the studio permanently, on the main
+ * thread, with no way back.
+ *
+ * The limits are set where the model stops describing anything real. A single station
+ * holding a million requests in service at once, or a queue with a million waiters, is
+ * already past any system these numbers would help you reason about.
+ *
+ * `MAX_EFFECTIVE_CONCURRENCY` is checked separately in `validateDesign`, because the
+ * quantity that reaches the solver is a PRODUCT — `concurrency * replicas` — and
+ * bounding each factor on its own still permits a product that is not solvable.
+ */
+export const MAX_CONCURRENCY = 1_000_000;
+export const MAX_REPLICAS = 10_000;
+export const MAX_QUEUE_CAPACITY = 1_000_000;
+export const MAX_EFFECTIVE_CONCURRENCY = 1_000_000;
+
+/**
  * A service-time / latency distribution.
  *
  * Every duration in the model is a distribution, never a scalar. This is the
@@ -379,9 +401,9 @@ export type ClientConfig = z.infer<typeof ClientConfigSchema>;
  * independent of load.
  */
 export const ServerConfigSchema = z.object({
-  concurrency: z.number().int().positive(),
+  concurrency: z.number().int().positive().max(MAX_CONCURRENCY),
   /** Null = unbounded queue (the M/M/c assumption). */
-  queueCapacity: z.number().int().nonnegative().nullable().default(null),
+  queueCapacity: z.number().int().nonnegative().max(MAX_QUEUE_CAPACITY).nullable().default(null),
   serviceTime: DistributionSchema,
   admissionPolicy: AdmissionPolicySchema.default("block"),
   queueDiscipline: QueueDisciplineSchema.default("fifo"),
@@ -390,7 +412,7 @@ export const ServerConfigSchema = z.object({
    * `replicas * concurrency`; modelled as one station with c = r*c so that
    * closed-form M/M/c applies exactly.
    */
-  replicas: z.number().int().positive().default(1),
+  replicas: z.number().int().positive().max(MAX_REPLICAS).default(1),
   /**
    * How this station calls its dependencies.
    *
@@ -499,7 +521,7 @@ export const LoadBalancerConfigSchema = z.object({
   algorithm: LbAlgorithmSchema.default("round-robin"),
   /** The proxy's own overhead. Small, but it is not free and it can saturate. */
   serviceTime: DistributionSchema.default({ kind: "deterministic", value: 0.5 }),
-  concurrency: z.number().int().positive().default(1024),
+  concurrency: z.number().int().positive().max(MAX_CONCURRENCY).default(1024),
   healthCheck: HealthCheckSchema.default({}),
   citation: CitationSchema.optional(),
 });
@@ -528,11 +550,11 @@ export type Keyspace = z.infer<typeof KeyspaceSchema>;
 
 export const CacheConfigSchema = z.object({
   /** Entries the cache holds before evicting. Ignored for a fixed hit ratio. */
-  capacity: z.number().int().positive().default(10_000),
+  capacity: z.number().int().positive().max(MAX_QUEUE_CAPACITY).default(10_000),
   keyspace: KeyspaceSchema.default({ kind: "zipf", keys: 100_000, skew: 0.9 }),
   /** Time to serve a hit. */
   serviceTime: DistributionSchema.default({ kind: "deterministic", value: 0.2 }),
-  concurrency: z.number().int().positive().default(512),
+  concurrency: z.number().int().positive().max(MAX_CONCURRENCY).default(512),
   /** Entry lifetime, ms. Null = no expiry. */
   ttlMs: z.number().positive().nullable().default(null),
   citation: CitationSchema.optional(),
@@ -553,12 +575,12 @@ export type CacheConfig = z.infer<typeof CacheConfigSchema>;
  * effect impossible to see and "just increase the pool" look like a fix.
  */
 export const DatabaseConfigSchema = z.object({
-  poolSize: z.number().int().positive().default(20),
+  poolSize: z.number().int().positive().max(MAX_CONCURRENCY).default(20),
   /** Queries genuinely executing at once. Usually cores, or disk queue depth. */
-  parallelism: z.number().int().positive().default(8),
+  parallelism: z.number().int().positive().max(MAX_CONCURRENCY).default(8),
   serviceTime: DistributionSchema,
   /** Waiters allowed on the pool. Null = unbounded. */
-  queueCapacity: z.number().int().nonnegative().nullable().default(null),
+  queueCapacity: z.number().int().nonnegative().max(MAX_QUEUE_CAPACITY).nullable().default(null),
   admissionPolicy: AdmissionPolicySchema.default("block"),
   /** Probability a query fails for reasons unrelated to load. */
   failureProbability: z.number().min(0).max(1).default(0),
@@ -586,7 +608,7 @@ export const QueueConfigSchema = z.object({
   /** Messages the queue can hold. Null = unbounded. */
   maxDepth: z.number().int().positive().nullable().default(null),
   /** Consumers draining it. This is the queue's service capacity. */
-  consumers: z.number().int().positive().default(1),
+  consumers: z.number().int().positive().max(MAX_CONCURRENCY).default(1),
   /** Time for one consumer to handle one message. */
   consumerServiceTime: DistributionSchema.default({ kind: "exponential", mean: 50 }),
   /** Publish overhead paid by the caller. */
@@ -614,8 +636,8 @@ export type QueueConfig = z.infer<typeof QueueConfigSchema>;
  */
 export const GatewayConfigSchema = z.object({
   /** Sockets ONE instance can hold. */
-  connectionCapacity: z.number().int().positive().default(10_000),
-  replicas: z.number().int().positive().default(1),
+  connectionCapacity: z.number().int().positive().max(50_000_000).default(10_000),
+  replicas: z.number().int().positive().max(MAX_REPLICAS).default(1),
   /**
    * Handshake cost: TLS, auth, session setup.
    *
@@ -634,7 +656,7 @@ export const GatewayConfigSchema = z.object({
    * makes fan-out look free: twenty thousand deliveries a second against two hundred
    * slots is nothing, and against eight it is half the machine.
    */
-  pushConcurrency: z.number().int().positive().default(4),
+  pushConcurrency: z.number().int().positive().max(MAX_CONCURRENCY).default(4),
   /** Memory per held connection, for a footprint estimate. Zero for a push-only station. */
   memoryPerConnectionKb: z.number().nonnegative().default(40),
   citation: CitationSchema.optional(),
@@ -746,9 +768,9 @@ export type CircuitBreaker = z.infer<typeof CircuitBreakerSchema>;
  */
 export const BulkheadSchema = z.object({
   enabled: z.boolean().default(false),
-  maxConcurrent: z.number().int().positive().default(16),
+  maxConcurrent: z.number().int().positive().max(MAX_CONCURRENCY).default(16),
   /** Waiters allowed for a bulkhead slot. 0 means reject immediately. */
-  queueCapacity: z.number().int().nonnegative().default(0),
+  queueCapacity: z.number().int().nonnegative().max(MAX_QUEUE_CAPACITY).default(0),
 });
 export type Bulkhead = z.infer<typeof BulkheadSchema>;
 

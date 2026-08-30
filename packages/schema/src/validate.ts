@@ -1,10 +1,10 @@
 import {
   DESIGN_SCHEMA_VERSION,
   DesignSchema,
+  MAX_EFFECTIVE_CONCURRENCY,
   classesOf,
   isTimeVarying,
   type Design,
-  type Distribution,
   type NodeKind,
   type SdsNode,
 } from "./design";
@@ -404,81 +404,38 @@ export function validateDesign(design: Design): DesignIssue[] {
     }
   }
 
-/**
- * Every distribution on a node that contributes to service demand, with a label.
- *
- * Deliberately exhaustive over the config kinds rather than just `serviceTime`: a
- * gateway's `acceptTime`, a queue's `consumerServiceTime` and a cache's lookup time are
- * all sampled by the engine and all feed the same statistics. `sessionDuration` is
- * excluded — it is a holding time, not work, and an infinite-mean session is a
- * legitimate way to say "connections never voluntarily close".
- */
-function serviceDistributions(n: SdsNode): Array<[string, Distribution]> {
-  const out: Array<[string, Distribution]> = [];
-  if (n.server) out.push(["service time", n.server.serviceTime]);
-  if (n.database) out.push(["service time", n.database.serviceTime]);
-  if (n.cache) out.push(["lookup time", n.cache.serviceTime]);
-  if (n.loadbalancer) out.push(["forwarding overhead", n.loadbalancer.serviceTime]);
-  if (n.queue) {
-    out.push(["consumer service time", n.queue.consumerServiceTime]);
-    out.push(["publish time", n.queue.publishTime]);
-  }
-  if (n.gateway) {
-    out.push(["accept time", n.gateway.acceptTime]);
-    out.push(["push time", n.gateway.pushTime]);
-  }
-  return out;
-}
-
-/**
- * Heavy-tailed service times whose moments do not exist.
- *
- * The codebase already knew about this in three places — the schema documents it,
- * `mean()` returns Infinity for alpha <= 1, and the closed-form solver withholds
- * every figure — and yet nothing stopped the engine from sampling such a design and
- * printing `p99 720ms, adequate +/-2.0%, MEETS SLO` beside the solver's "no
- * percentile exists". Sampling a distribution with no mean produces a number that is
- * purely a function of run length: double the run and it grows, with no limit to
- * converge to. An error bar on it is a claim about the precision of a quantity that
- * does not exist.
- */
-function checkHeavyTails(design: Design, issues: DesignIssue[]): void {
-  for (const n of design.nodes) {
-    for (const [label, dist] of serviceDistributions(n)) {
-      if (dist.kind !== "pareto") continue;
-      if (dist.alpha <= 1) {
-        issues.push({
-          severity: "error",
-          code: "infinite-mean-service",
-          message:
-            `${label} on "${n.label}" is Pareto with alpha ${dist.alpha}, which has no ` +
-            `finite mean. Mean service time is infinite, so no throughput, utilization or ` +
-            `percentile exists to measure — any figure would be a function of run length. ` +
-            `Use alpha > 1, or lognormal if you want a heavy tail with a defined mean.`,
-          nodeId: n.id,
-        });
-      } else if (dist.alpha <= 2) {
-        issues.push({
-          severity: "warning",
-          code: "infinite-variance-service",
-          message:
-            `${label} on "${n.label}" is Pareto with alpha ${dist.alpha}, which has a ` +
-            `finite mean but infinite variance. The mean converges; percentiles do not, ` +
-            `so p99 will drift with run length rather than settle.`,
-          nodeId: n.id,
-        });
-      }
-    }
-  }
-}
-  checkHeavyTails(design, issues);
-
   if (design.scenario.warmupSec >= design.scenario.durationSec) {
     issues.push({
       severity: "error",
       code: "warmup-too-long",
       message: "warm-up consumes the entire run, leaving no measurement window",
     });
+  }
+
+  /**
+   * Effective concurrency has to be checked here rather than in the schema, because it
+   * is a product of two independently-bounded fields and the closed-form solvers are
+   * linear in it. Bounding `concurrency` and `replicas` separately still permits
+   * `1e6 * 1e4`, which would hang the live preview on the main thread with no recovery.
+   */
+  for (const n of design.nodes) {
+    const effective =
+      n.kind === "server" && n.server
+        ? n.server.concurrency * n.server.replicas
+        : n.kind === "gateway" && n.gateway
+          ? n.gateway.pushConcurrency * n.gateway.replicas
+          : null;
+    if (effective !== null && effective > MAX_EFFECTIVE_CONCURRENCY) {
+      issues.push({
+        severity: "error",
+        code: "concurrency-intractable",
+        message:
+          `"${n.label}" has an effective concurrency of ${effective.toLocaleString()} ` +
+          `(concurrency x replicas), beyond the ${MAX_EFFECTIVE_CONCURRENCY.toLocaleString()} ` +
+          `the closed-form solver evaluates exactly. Reduce either factor.`,
+        nodeId: n.id,
+      });
+    }
   }
 
   return issues;
