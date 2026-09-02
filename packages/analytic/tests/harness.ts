@@ -1,4 +1,4 @@
-import { DesignSchema, type Design, type Distribution } from "@sds/schema";
+import { DESIGN_SCHEMA_VERSION, DesignSchema, type Design, type Distribution } from "@sds/schema";
 import { requiredSamples, runSimulation, type RunResult } from "@sds/core";
 
 /**
@@ -43,7 +43,7 @@ export interface StationSpec {
  */
 export function singleStation(opts: StationSpec): Design {
   return DesignSchema.parse({
-    version: 5,
+    version: DESIGN_SCHEMA_VERSION,
     name: "validation",
     nodes: [
       {
@@ -145,7 +145,7 @@ export function tandem(opts: TandemSpec): Design {
   });
 
   return DesignSchema.parse({
-    version: 5,
+    version: DESIGN_SCHEMA_VERSION,
     name: "tandem",
     nodes,
     edges,

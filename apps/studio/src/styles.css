@@ -55,15 +55,365 @@ body {
 
 /* ---------- shell ---------- */
 
+/*
+ * THE SHELL HAS TWO LAYOUTS, NOT FOUR.
+ *
+ * The design view is the three-rail canvas it always was. The other three views are a document with
+ * an optional side column, because they are made of prose, tables and traces rather than of a graph
+ * -- and forcing a counterexample into a 340px rail would make it unreadable, which would defeat the
+ * only purpose a counterexample has.
+ */
 .shell {
   display: grid;
   grid-template-columns: var(--rail-left) 1fr var(--rail-right);
-  grid-template-rows: var(--topbar) 1fr;
+  grid-template-rows: var(--topbar) auto 1fr;
   grid-template-areas:
     "top top top"
+    "candidates candidates candidates"
     "left canvas right";
   height: 100%;
 }
+
+.shell-correctness,
+.shell-performance,
+.shell-compare {
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    "top"
+    "candidates"
+    "canvas";
+}
+
+.banner {
+  grid-column: 1 / -1;
+  padding: 8px 14px;
+  font-size: 12px;
+}
+.banner-error {
+  background: color-mix(in srgb, var(--bad) 18%, var(--bg-2));
+  border-bottom: 1px solid var(--bad);
+  color: var(--fg);
+}
+
+/* ---------- candidate bar ---------- */
+
+.candidate-bar {
+  grid-area: candidates;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.candidate-bar-title {
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
+.candidate-chips {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.candidate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg-2);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.candidate-chip:hover { border-color: var(--line-2); color: var(--fg); }
+.candidate-chip.active { border-color: var(--accent); color: var(--fg); }
+/* Agent-authored candidates are visibly distinct everywhere they appear, never only in a tooltip. */
+.candidate-chip.agent { border-style: dashed; }
+.candidate-chip.eligible .chip-label { color: var(--ok); }
+.candidate-chip.frontier { box-shadow: inset 0 -2px 0 var(--ok); }
+.chip-mark {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: var(--line-2);
+  color: var(--bg);
+}
+.chip-promoted { background: var(--ok); }
+.chip-rev { opacity: 0.5; font-size: 10px; }
+.chip-remove { opacity: 0.4; padding: 0 2px; }
+.chip-remove:hover { opacity: 1; color: var(--bad); }
+.chip-spin {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chip-pulse 1s ease-in-out infinite;
+}
+@keyframes chip-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+.candidate-add { border-style: dotted; }
+
+/* ---------- document views ---------- */
+
+.view {
+  grid-area: canvas;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 0;
+  overflow: hidden;
+}
+.view-main { overflow-y: auto; padding: 18px 22px 60px; }
+.view-side {
+  overflow-y: auto;
+  padding: 18px 16px 60px;
+  border-left: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.view-compare { grid-template-columns: minmax(0, 1fr); }
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.section-head h2 {
+  font-size: 13px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+.row-actions { display: flex; gap: 6px; align-items: center; }
+.lede { font-size: 13px; line-height: 1.55; }
+.muted { color: var(--fg-3); font-size: 11.5px; line-height: 1.5; }
+
+.tabs { display: flex; gap: 2px; }
+.tabs button {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+.tabs button:hover { color: var(--fg); }
+.tabs button.active {
+  color: var(--fg);
+  border-color: var(--line-2);
+  background: var(--bg-3);
+}
+.tabs-small button { padding: 2px 8px; font-size: 11px; }
+
+/* ---------- verdicts ---------- */
+
+.verdict {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin: 10px 0;
+}
+.verdict-ok { border-left-color: var(--ok); }
+.verdict-warn { border-left-color: var(--warn); }
+.verdict-bad { border-left-color: var(--bad); }
+.verdict-crit { border-left-color: var(--crit); }
+.verdict-status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.verdict-headline { font-size: 13px; margin: 0 0 6px; }
+.verdict-claim { font-size: 11.5px; color: var(--fg-2); line-height: 1.55; margin: 0; }
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 14px;
+  margin: 12px 0 0;
+}
+.stat-grid dt { font-size: 10.5px; color: var(--fg-3); }
+.stat-grid dd { margin: 0; font-size: 12.5px; }
+
+.assumptions { margin-top: 12px; font-size: 11.5px; }
+.assumptions summary { cursor: pointer; color: var(--fg-3); }
+.assumptions ul { margin: 8px 0 0 16px; padding: 0; color: var(--fg-2); line-height: 1.6; }
+
+/* ---------- swimlanes ---------- */
+
+.counterexample { margin-top: 20px; }
+.scrubber { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+.scrubber input { flex: 1; }
+
+.lanes {
+  display: grid;
+  gap: 4px;
+  margin: 14px 0;
+  align-items: start;
+}
+.lane-head {
+  padding: 6px 8px;
+  border-bottom: 2px solid var(--line-2);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+.lane-request { border-bottom-color: var(--sky); }
+.lane-queue-consumer { border-bottom-color: var(--green); }
+.lane-expiry-timer { border-bottom-color: var(--yellow); }
+.lane-system { border-bottom-color: var(--bad); }
+.lane-id { font-weight: 700; letter-spacing: 0.04em; }
+.lane-label { color: var(--fg-3); font-size: 10.5px; }
+
+.lane-row { grid-row: auto; }
+/* Steps after the scrubber are dimmed rather than hidden: seeing what comes next is part of reading
+   a trace, and hiding it would turn a story into a slideshow. */
+.lane-row-future { opacity: 0.28; }
+.lane-row-current .lane-cell { border-color: var(--accent); }
+.lane-cell {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 5px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  background: var(--bg-2);
+}
+.lane-cell-fault { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, var(--bg-2)); }
+.lane-step { font-size: 9px; opacity: 0.45; }
+.lane-op { color: var(--fg); }
+.lane-saw { color: var(--fg-3); font-size: 10.5px; }
+.lane-diff { color: var(--yellow); font-size: 10.5px; }
+
+.timeline { border-top: 1px solid var(--line); padding-top: 10px; }
+.timeline h3 { font-size: 11px; color: var(--fg-3); margin: 0; }
+
+.fault-list { list-style: none; margin: 10px 0; padding: 0; font-size: 11.5px; }
+.fault-list li { margin-bottom: 4px; }
+
+/* ---------- tables ---------- */
+
+.metrics { width: 100%; border-collapse: collapse; font-size: 12px; margin: 10px 0; }
+.metrics th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 10.5px;
+  color: var(--fg-3);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.metrics td { padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.metrics .row-bad td { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+
+/* ---------- gates and the frontier ---------- */
+
+.gate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.gate-card {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 12px;
+  background: var(--bg-2);
+}
+.gate-card header { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
+.gate-card h3 { font-size: 12.5px; margin: 0; }
+.gate-eligible { border-left: 3px solid var(--ok); }
+.gate-ineligible { border-left: 3px solid var(--line-2); }
+.gate-card .intent { margin: 8px 0; }
+.badges { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.gates { list-style: none; margin: 10px 0; padding: 0; font-size: 11px; }
+.gates li { display: grid; grid-template-columns: 170px 1fr; gap: 8px; padding: 3px 0; }
+.gate-name { color: var(--fg-3); }
+.gate-pass .gate-name::before { content: "\2713 "; color: var(--ok); }
+.gate-fail .gate-name::before { content: "\2717 "; color: var(--bad); }
+.gate-reason { color: var(--fg-2); line-height: 1.45; }
+
+.axis-list { list-style: none; margin: 8px 0; padding: 0; font-size: 11.5px; line-height: 1.6; }
+
+/* ---------- invariants and the builder ---------- */
+
+.invariant-list { list-style: none; margin: 10px 0; padding: 0; }
+.invariant-list li { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.invariant-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.invariant-head strong { flex: 1; font-weight: 600; }
+
+.builder { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.builder label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--fg-3); }
+.builder input, .builder select { font-size: 12px; }
+.expr-preview {
+  font-size: 10.5px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  margin: 0;
+  color: var(--fg-2);
+}
+.fault-toggles { margin-top: 14px; }
+.fault-toggles h3 { font-size: 11px; color: var(--fg-3); margin: 0 0 4px; }
+.toggle { display: flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 2px 0; }
+
+/* ---------- guided creation and activity ---------- */
+
+.palette-wide { width: 520px; max-height: 70vh; overflow-y: auto; }
+.guided { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; }
+.guided-field { display: flex; flex-direction: column; gap: 3px; }
+.guided-question { font-size: 12px; color: var(--fg); }
+.guided-why { font-size: 10.5px; color: var(--fg-3); line-height: 1.5; }
+
+.activity { list-style: none; margin: 8px 0; padding: 0; font-size: 11px; }
+.activity li { display: grid; grid-template-columns: 70px 200px 1fr; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.activity-time { color: var(--fg-3); }
+.activity-tool { color: var(--accent); }
+.activity-summary { color: var(--fg-2); }
+.activity-rev { grid-column: 2 / -1; color: var(--fg-3); }
+
+/* ---------- badges ---------- */
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.badge-ok { background: color-mix(in srgb, var(--ok) 25%, var(--bg-3)); color: var(--ok); }
+.badge-warn { background: color-mix(in srgb, var(--warn) 25%, var(--bg-3)); color: var(--warn); }
+.badge-bad { background: color-mix(in srgb, var(--bad) 25%, var(--bg-3)); color: var(--bad); }
+.badge-info { background: color-mix(in srgb, var(--sky) 25%, var(--bg-3)); color: var(--sky); }
+.badge-muted { background: var(--bg-3); color: var(--fg-3); }
+.badge-agent { background: var(--bg-3); color: var(--fg-2); border: 1px dashed var(--line-2); }
+
+.issue-list { list-style: none; margin: 8px 0; padding: 0; font-size: 11.5px; line-height: 1.5; }
+.issue-error { color: var(--bad); }
+.issue-warning { color: var(--warn); }
+.btn-quiet { opacity: 0.7; }
 
 .topbar {
   grid-area: top;
@@ -1251,4 +1601,64 @@ body {
   white-space: nowrap;
   min-width: 62px;
   text-align: right;
+}
+
+/* ---------------------------------------------------------------------------
+   the empty study
+
+   The first screen, because the app opens on nothing. Centred and narrow: it is
+   one instruction, and a full-width panel would read as a dashboard with no data
+   rather than as a prompt to start.
+   --------------------------------------------------------------------------- */
+
+.empty-study {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 48px 24px;
+  overflow-y: auto;
+}
+
+.empty-card {
+  max-width: 520px;
+  text-align: center;
+}
+
+.empty-card h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.empty-card p {
+  margin: 0 0 18px;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.empty-agent {
+  font-size: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.empty-guided {
+  position: relative;
+  width: min(560px, 100%);
+}
+
+.empty-guided .palette {
+  position: static;
+  width: 100%;
 }

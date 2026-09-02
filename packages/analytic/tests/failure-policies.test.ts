@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runSimulation, type RunResult } from "@sds/core";
-import { DesignSchema, type Design, type SdsEdge } from "@sds/schema";
+import { DESIGN_SCHEMA_VERSION, DesignSchema, type Design, type SdsEdge } from "@sds/schema";
 import { retryStorm, retryStormContained } from "@sds/models";
 import { previewDesign, retryMath } from "../src/preview";
 import { meanOf, relError, SEEDS } from "./harness";
@@ -31,7 +31,7 @@ function design(parts: {
   warmupSec?: number;
 }): Design {
   return DesignSchema.parse({
-    version: 5,
+    version: DESIGN_SCHEMA_VERSION,
     name: "phase3",
     nodes: parts.nodes,
     edges: parts.edges,

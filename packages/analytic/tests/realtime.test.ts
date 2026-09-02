@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runSimulation } from "@sds/core";
-import { DesignSchema, type Design, type SdsEdge } from "@sds/schema";
+import { DESIGN_SCHEMA_VERSION, DesignSchema, type Design, type SdsEdge } from "@sds/schema";
 import { chat20k, chatReconnectStorm } from "@sds/models";
 import { analyse } from "@sds/analyze";
 import { previewDesign } from "../src/preview";
@@ -100,7 +100,7 @@ function chat(o: {
   ];
 
   return DesignSchema.parse({
-    version: 5,
+    version: DESIGN_SCHEMA_VERSION,
     name: "chat-test",
     nodes,
     edges,

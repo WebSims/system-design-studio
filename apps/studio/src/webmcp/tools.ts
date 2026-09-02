@@ -1,0 +1,898 @@
+import { z } from "zod";
+import {
+  DesignSchema,
+  contentHash,
+  migrateAndParse,
+  validateDesign,
+  validateStudy,
+  validateWorkflow,
+  type Candidate,
+  type CandidateEvaluation,
+  type PortfolioResult,
+  StudyContractLockedError,
+  StudyContractPatchSchema,
+  studyContractLock,
+  type Study,
+  type StudyContractPatch,
+} from "@sds/schema";
+import { toJsonSchema, type JsonSchema } from "./json-schema";
+
+/**
+ * The WebMCP tool surface.
+ *
+ * WHAT AN AGENT CAN AND CANNOT DO
+ *
+ * It can look at the study, look at the catalogue of components and patterns, create isolated
+ * candidates, validate drafts, run bounded correctness searches, run replicated performance
+ * measurements, and compare results. Every number it can report came out of the engine.
+ *
+ * It cannot delete anything, cannot promote anything, and cannot touch the promoted candidate.
+ * There is no tool for any of those, which is stronger than a permission check: an agent cannot
+ * be talked into calling a tool that does not exist. Promotion in particular is the one action
+ * with authority attached, so it stays behind a human click -- an agent may create, test and
+ * argue, but it may not decide.
+ *
+ * WHY THE TOOLS ARE IMPERATIVE AND TOP-LEVEL
+ *
+ * Because that is what the target client discovers. OpenAI's WebMCP support reads tools
+ * registered through `document.modelContext.registerTool()` on the TOP-LEVEL page; it does not
+ * walk iframes and does not pick up declarative tool markup. A declarative surface would be more
+ * elegant and would not be found.
+ *
+ * WHY DESCRIPTIONS ARE STATIC
+ *
+ * No tool description here interpolates the study's problem statement, a candidate's notes, or
+ * any other user-authored text. A description is an instruction to the model, and text that
+ * arrives from a document is data -- splicing the second into the first is prompt injection with
+ * extra steps, and the study document is exactly the kind of thing a person pastes into without
+ * reading. User text reaches the agent only as tool RESULTS, which carry
+ * `untrustedContentHint`.
+ *
+ * WHY EVERY MUTATING CALL CARRIES A REVISION
+ *
+ * `studio_replace_candidate_draft` requires the revision the caller believes it is replacing. Two
+ * agents, or an agent and a human, editing the same candidate would otherwise resolve as
+ * last-writer-wins, and the loser would never find out. The check is cheap and the failure it
+ * prevents is invisible.
+ */
+
+// ---------------------------------------------------------------------------
+// input schemas -- the single source for validation AND for the JSON Schema
+// ---------------------------------------------------------------------------
+
+const CandidateIdInput = z
+  .object({
+    candidateId: z.string().min(1).max(64).describe("Candidate id, from studio_get_study."),
+  })
+  .strict();
+
+const EvaluationInput = z
+  .object({
+    candidateId: z.string().min(1).max(64),
+    /**
+     * Deliberately two independent switches rather than one "mode" enum.
+     *
+     * An agent iterating on correctness wants the search without paying for eight simulated
+     * replications, and an agent tuning capacity wants the reverse. An enum would force it to
+     * name a combination; two booleans let it say what it wants.
+     */
+    correctness: z.boolean().default(true).describe("Run the bounded correctness search."),
+    performance: z
+      .boolean()
+      .default(true)
+      .describe("Run the replicated performance measurement."),
+  })
+  .strict();
+
+const CreateCandidateInput = z
+  .object({
+    label: z.string().min(1).max(120).describe("Short human-readable name."),
+    intent: z
+      .string()
+      .max(2000)
+      .default("")
+      .describe(
+        "Why this candidate is expected to be interesting, including whether it is expected to be broken."
+      ),
+    /**
+     * Optional, and when absent the candidate is copied from the study's active one.
+     *
+     * That default exists because the overwhelmingly common agent workflow is "take what is
+     * there and change one thing", and requiring a complete design for that would make the
+     * agent restate several hundred fields it does not intend to alter -- every one of which is
+     * an opportunity to get one wrong.
+     */
+    design: z
+      .unknown()
+      .optional()
+      .describe(
+        "A complete design document. Omit to copy the study's active candidate as a starting point. Validate with studio_validate_draft first."
+      ),
+    copyFrom: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe("Candidate id to copy, when no design is supplied."),
+  })
+  .strict();
+
+const ReplaceDraftInput = z
+  .object({
+    candidateId: z.string().min(1).max(64),
+    expectedRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "The revision you believe you are replacing, from studio_get_candidate. The call is refused if the candidate has moved on."
+      ),
+    design: z.unknown().describe("A complete, validated design document."),
+  })
+  .strict();
+
+const ValidateDraftInput = z
+  .object({
+    design: z.unknown().describe("A design document to check without storing it."),
+  })
+  .strict();
+
+const CompareInput = z
+  .object({
+    candidateIds: z
+      .array(z.string().min(1).max(64))
+      .max(64)
+      .default([])
+      .describe("Candidates to include. Empty means every candidate in the study."),
+  })
+  .strict();
+
+const EmptyInput = z.object({}).strict();
+
+// ---------------------------------------------------------------------------
+// tool declarations
+// ---------------------------------------------------------------------------
+
+/**
+ * The host's side of the contract: what the tools need from the application.
+ *
+ * An interface rather than a direct dependency on the store, so the registration and the tools
+ * can be tested against a fake without a browser, a worker or a React tree. This is also what
+ * keeps the WebMCP layer an ADAPTER rather than a second implementation path: every method here
+ * corresponds to something the manual UI already does.
+ */
+export interface ToolHost {
+  getStudy(): Study;
+  getCatalog(): Catalog;
+  /** Start a new, empty study and open it. */
+  createStudy(input: { name?: string; problem?: string }): Promise<Study>;
+  /** Patch the executable contract. Rejects once results exist. */
+  updateStudyContract(patch: StudyContractPatch): Promise<Study>;
+  /** Saved studies and worked examples, for switching. */
+  listStudies(): Promise<{
+    saved: Array<{ id: string; name: string; candidates: number; updatedAt: number }>;
+    examples: Array<{ id: string; label: string; summary: string; teaches: string }>;
+  }>;
+  /** Open a saved study, or a worked example. */
+  openStudy(input: { studyId?: string; exampleId?: string }): Promise<Study>;
+  /** Create an isolated, visibly-marked agent candidate. Returns the new candidate. */
+  createCandidate(input: {
+    label: string;
+    intent: string;
+    design: unknown;
+    copyFrom?: string;
+  }): Promise<Candidate>;
+  /** Replace a candidate's design, refusing if the revision has moved on. */
+  replaceCandidateDraft(input: {
+    candidateId: string;
+    expectedRevision: number;
+    design: unknown;
+  }): Promise<Candidate>;
+  /** Run an evaluation. Must honour the abort signal. */
+  runEvaluation(input: {
+    candidateId: string;
+    correctness: boolean;
+    performance: boolean;
+    signal?: AbortSignal;
+  }): Promise<CandidateEvaluation>;
+  getEvaluation(candidateId: string): CandidateEvaluation | null;
+  comparePortfolio(candidateIds: readonly string[]): Promise<PortfolioResult>;
+  /** Record every call in the local activity log. */
+  log(entry: ActivityEntry): void;
+}
+
+export interface ActivityEntry {
+  tool: string;
+  at: number;
+  ok: boolean;
+  summary: string;
+  candidateId?: string;
+  revision?: number;
+}
+
+export interface Catalog {
+  componentKinds: Array<{ kind: string; whatItModels: string; capabilities: string[] }>;
+  operations: Array<{ op: string; indivisible: boolean; whatItDoes: string }>;
+  patterns: Array<{ id: string; label: string; expectation: string }>;
+  faults: Array<{ kind: string; whatItModels: string }>;
+  notes: string[];
+}
+
+/**
+ * A tool, in the shape `document.modelContext.registerTool` wants.
+ *
+ * `readOnlyHint` and `untrustedContentHint` are the two annotations that matter here.
+ *
+ * `readOnlyHint` on the inspection and testing tools tells a client it may call them freely --
+ * which is what makes a sensible agent loop possible, because the loop is mostly inspection.
+ *
+ * `untrustedContentHint` goes on anything that can return text a user wrote: the study's problem
+ * statement, a candidate's notes, an invariant's message. That text is data, and a client that
+ * treats it as instruction is one paste away from doing what the document says instead of what
+ * the user says.
+ */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: JsonSchema;
+  annotations: {
+    readOnlyHint?: boolean;
+    untrustedContentHint?: boolean;
+    destructiveHint?: boolean;
+  };
+  /** Parse-and-run. Throws on invalid input, with the validator's own message. */
+  execute(input: unknown, ctx: { signal?: AbortSignal }): Promise<ToolResult>;
+}
+
+export interface ToolResult {
+  /** Compact structured payload. Large traces are fetched separately. */
+  content: unknown;
+  isError?: boolean;
+}
+
+interface ToolSpec<S extends z.ZodTypeAny> {
+  name: string;
+  description: string;
+  input: S;
+  annotations: ToolDefinition["annotations"];
+  run(args: z.infer<S>, ctx: { signal?: AbortSignal }): Promise<unknown>;
+}
+
+function define<S extends z.ZodTypeAny>(spec: ToolSpec<S>, host: ToolHost): ToolDefinition {
+  return {
+    name: spec.name,
+    description: spec.description,
+    inputSchema: toJsonSchema(spec.input),
+    annotations: spec.annotations,
+    async execute(input, ctx) {
+      const parsed = spec.input.safeParse(input ?? {});
+      if (!parsed.success) {
+        // The validator's own messages, verbatim. An agent's feedback loop is only as good as
+        // the error it gets back, and a generic "invalid input" turns a one-call correction into
+        // a guessing game.
+        const detail = parsed.error.issues
+          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ");
+        host.log({ tool: spec.name, at: Date.now(), ok: false, summary: `refused: ${detail}` });
+        return { content: { error: "invalid input", detail }, isError: true };
+      }
+      try {
+        const content = await spec.run(parsed.data, ctx);
+        return { content };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        host.log({ tool: spec.name, at: Date.now(), ok: false, summary: message });
+        return { content: { error: message }, isError: true };
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// the tools
+// ---------------------------------------------------------------------------
+
+export function buildTools(host: ToolHost): ToolDefinition[] {
+  return [
+    define(
+      {
+        name: "studio_create_study",
+        description:
+                    "Start a new, empty study. Set the yardstick with studio_update_study, then add candidates. " +
+          "Replaces whatever is open.",
+        input: z
+          .object({
+            name: z.string().min(1).max(120),
+            problem: z.string().max(4000).default(""),
+          })
+          .strict(),
+        annotations: {},
+        async run(args) {
+          const study = await host.createStudy(args);
+          host.log({
+            tool: "studio_create_study",
+            at: Date.now(),
+            ok: true,
+            summary: `created study "${study.name}"`,
+          });
+          return { studyId: study.id, name: study.name, contractLocked: false };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_update_study",
+        description:
+                    "Set the shared yardstick: workload, SLOs, business goals, invariants, faults and exploration bounds. " +
+          "Every candidate is judged against these. Set the invariants BEFORE running anything: a study with " +
+          "none fails the correctness gate rather than passing it. Refused once any evaluation exists or a " +
+          "candidate is promoted.",
+        input: z
+          .object({
+            name: z.string().min(1).max(120).optional(),
+            problem: z.string().max(4000).optional(),
+            /*
+             * `unknown` here, validated by `StudyContractPatchSchema` inside `run`.
+             *
+             * Not laziness: an invariant contains an expression, expressions nest without limit,
+             * and a recursive validator has no finite JSON Schema. Publishing a truncated one
+             * would describe a shape the tool does not actually accept, which is worse than
+             * publishing none. Same treatment as `design`, for the same reason, and the
+             * validator's own messages come back on a bad call.
+             */
+            contract: z
+              .unknown()
+              .optional()
+              .describe(
+                "Patch for the study contract: { workload?, targets?, contract?, correctness? }. " +
+                  "correctness holds invariants, faults, bounds, identityDomains and stateOverrides. " +
+                  "See studio_get_study for the current shape and studio_get_catalog for the vocabulary."
+              ),
+          })
+          .strict(),
+        annotations: {},
+        async run(args) {
+          let contract: StudyContractPatch = {};
+          if (args.contract !== undefined) {
+            // Lock checked BEFORE the patch is validated. When the yardstick is frozen no patch
+            // will be accepted, so complaining about a typo would send an agent off to fix
+            // something that was never the reason for the refusal.
+            const lock = studyContractLock(host.getStudy());
+            if (lock.locked) throw new StudyContractLockedError(lock.reason);
+
+            const parsed = StudyContractPatchSchema.safeParse(args.contract);
+            if (!parsed.success) {
+              throw new Error(
+                `the contract patch is not valid: ${parsed.error.issues
+                  .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+                  .join("; ")}`
+              );
+            }
+            contract = parsed.data;
+          }
+          const study = await host.updateStudyContract({
+            ...contract,
+            ...(args.name !== undefined ? { name: args.name } : {}),
+            ...(args.problem !== undefined ? { problem: args.problem } : {}),
+          } as StudyContractPatch);
+          host.log({
+            tool: "studio_update_study",
+            at: Date.now(),
+            ok: true,
+            summary: `updated the study contract`,
+          });
+          return summariseStudy(study);
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_list_studies",
+        description:
+                    "List saved studies and worked examples. An example shows how a study is put together.",
+        input: EmptyInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run() {
+          const listed = await host.listStudies();
+          host.log({
+            tool: "studio_list_studies",
+            at: Date.now(),
+            ok: true,
+            summary: `${listed.saved.length} saved, ${listed.examples.length} examples`,
+          });
+          return listed;
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_open_study",
+        description:
+                    "Open a saved study by studyId, or a worked example by exampleId. Replaces what is open; nothing is deleted.",
+        /*
+         * The "exactly one of" rule is checked in `run`, not with `.refine`.
+         *
+         * A refinement is a ZodEffects, which has no faithful JSON Schema, and the converter
+         * refuses rather than emitting a shape that omits the constraint. Cross-field rules are
+         * not expressible in JSON Schema anyway, so the honest arrangement is a schema that
+         * describes the fields and a runtime check that names the rule.
+         */
+        input: z
+          .object({
+            studyId: z.string().min(1).max(64).optional(),
+            exampleId: z.string().min(1).max(64).optional(),
+          })
+          .strict(),
+        annotations: { untrustedContentHint: true },
+        async run(args) {
+          if (!args.studyId === !args.exampleId) {
+            throw new Error("give exactly one of studyId or exampleId");
+          }
+          const study = await host.openStudy(args);
+          host.log({
+            tool: "studio_open_study",
+            at: Date.now(),
+            ok: true,
+            summary: `opened "${study.name}"`,
+          });
+          return summariseStudy(study);
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_get_study",
+        description:
+                    "Read the current study: problem, workload, SLOs, business goals, invariants, bounds, and the candidates " +
+          "with their revisions. Start here. Workload, SLOs, invariants and bounds are study-level; a candidate " +
+          "cannot change them. Contains user-authored text.",
+        input: EmptyInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run() {
+          const study = host.getStudy();
+          host.log({ tool: "studio_get_study", at: Date.now(), ok: true, summary: "read the study" });
+          return summariseStudy(study);
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_get_catalog",
+        description:
+                    "Read the modelling vocabulary: component kinds, workflow operations and which are indivisible, the shipped " +
+          "patterns and whether each is expected to be sound, and the injectable faults. Read this before writing a " +
+          "design. The operations are a closed set, and the indivisible ones are what make a design safe.",
+        input: EmptyInput,
+        annotations: { readOnlyHint: true },
+        async run() {
+          host.log({ tool: "studio_get_catalog", at: Date.now(), ok: true, summary: "read the catalog" });
+          return host.getCatalog();
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_get_candidate",
+        description:
+                    "Read one candidate: its design, workflow, revision and stated intent. The revision is required by " +
+          "studio_replace_candidate_draft. Contains user-authored text.",
+        input: CandidateIdInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run({ candidateId }) {
+          const candidate = requireCandidate(host.getStudy(), candidateId);
+          host.log({
+            tool: "studio_get_candidate",
+            at: Date.now(),
+            ok: true,
+            summary: `read ${candidate.label}`,
+            candidateId,
+            revision: candidate.revision,
+          });
+          return {
+            id: candidate.id,
+            label: candidate.label,
+            pattern: candidate.pattern,
+            origin: candidate.origin,
+            revision: candidate.revision,
+            intent: candidate.intent,
+            notes: candidate.notes,
+            isPromoted: host.getStudy().promotedCandidateId === candidate.id,
+            design: candidate.design,
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_validate_draft",
+        description:
+                    "Check a design without storing it. Returns schema, topology and workflow errors naming the field and what " +
+          "is wrong, plus warnings. Call this before creating or replacing a candidate.",
+        input: ValidateDraftInput,
+        annotations: { readOnlyHint: true },
+        async run({ design }) {
+          const result = validateDraft(design);
+          host.log({
+            tool: "studio_validate_draft",
+            at: Date.now(),
+            ok: result.valid,
+            summary: result.valid ? "draft is valid" : `${result.errors.length} errors`,
+          });
+          return result;
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_create_candidate",
+        description:
+                    "Create a new candidate architecture: isolated, marked agent-authored, revision 0. Omit the design to copy " +
+          "the active candidate, which is what you want when changing one aspect of it. Never modifies an existing " +
+          "candidate.",
+        input: CreateCandidateInput,
+        annotations: { readOnlyHint: false },
+        async run(args) {
+          const candidate = await host.createCandidate({
+            label: args.label,
+            intent: args.intent,
+            design: args.design,
+            ...(args.copyFrom ? { copyFrom: args.copyFrom } : {}),
+          });
+          host.log({
+            tool: "studio_create_candidate",
+            at: Date.now(),
+            ok: true,
+            summary: `created "${candidate.label}"`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
+          });
+          return {
+            candidateId: candidate.id,
+            revision: candidate.revision,
+            origin: candidate.origin,
+            designHash: contentHash(candidate.design),
+            note:
+              "This candidate is isolated and marked as agent-authored in the interface. Promoting it is a human-only action.",
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_replace_candidate_draft",
+        description:
+                    "Replace a candidate's design with a complete, validated document. Requires the revision you read, and is " +
+          "refused if the candidate changed since, so two editors cannot silently overwrite each other. Refused for " +
+          "the promoted candidate.",
+        input: ReplaceDraftInput,
+        annotations: { readOnlyHint: false },
+        async run(args) {
+          // `z.unknown()` makes a property optional in the inferred type even when a caller is
+          // expected to supply it, so the presence check is explicit. An agent that omitted the
+          // design entirely gets told so, rather than having `undefined` reach the migrator and
+          // come back as "design document must be an object".
+          if (args.design === undefined) {
+            throw new Error(
+              "design is required. Supply a complete design document, or use studio_get_candidate to read the current one first."
+            );
+          }
+          const candidate = await host.replaceCandidateDraft({
+            candidateId: args.candidateId,
+            expectedRevision: args.expectedRevision,
+            design: args.design,
+          });
+          host.log({
+            tool: "studio_replace_candidate_draft",
+            at: Date.now(),
+            ok: true,
+            summary: `replaced "${candidate.label}" draft`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
+          });
+          return {
+            candidateId: candidate.id,
+            revision: candidate.revision,
+            designHash: contentHash(candidate.design),
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_run_evaluation",
+        description:
+                    "Run the bounded correctness search and/or the replicated performance measurement for one candidate. " +
+          "Verdicts: VIOLATED, NO_VIOLATION_WITHIN_BOUNDS, INCONCLUSIVE_BOUND_REACHED, INVALID_MODEL. " +
+          "NO_VIOLATION_WITHIN_BOUNDS is not proof of safety, and INCONCLUSIVE_BOUND_REACHED establishes nothing " +
+          "either way. Fetch the counterexample with studio_get_evaluation.",
+        input: EvaluationInput,
+        annotations: { readOnlyHint: true },
+        async run(args, ctx) {
+          const evaluation = await host.runEvaluation({
+            candidateId: args.candidateId,
+            correctness: args.correctness,
+            performance: args.performance,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          host.log({
+            tool: "studio_run_evaluation",
+            at: Date.now(),
+            ok: true,
+            summary: `evaluated ${args.candidateId}: ${evaluation.correctness?.status ?? "performance only"}`,
+            candidateId: args.candidateId,
+          });
+          return compactEvaluation(evaluation);
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_get_evaluation",
+        description:
+                    "Read a candidate's cached evaluation, including the full counterexample trace when an invariant was " +
+          "violated: actor lanes, operation order, state changes and the faults injected. Null when the candidate " +
+          "has not been evaluated at the current design, seeds and bounds.",
+        input: CandidateIdInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run({ candidateId }) {
+          const evaluation = host.getEvaluation(candidateId);
+          host.log({
+            tool: "studio_get_evaluation",
+            at: Date.now(),
+            ok: true,
+            summary: evaluation ? "read evaluation" : "no cached evaluation",
+            candidateId,
+          });
+          if (!evaluation) {
+            return {
+              evaluation: null,
+              reason:
+                "No evaluation is cached for this candidate at the study's current design, seeds and bounds. Run studio_run_evaluation.",
+            };
+          }
+          return { evaluation };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_compare_candidates",
+        description:
+                    "Compare candidates. Returns each eligibility decision with the reason every gate opened or did not, and " +
+          "the Pareto frontier among the ELIGIBLE ones. Eligible means the correctness search ran to exhaustion " +
+          "without a violation AND the conservative end of the performance interval meets every SLO and goal. " +
+          "The frontier is Pareto-optimal among the candidates tested: not globally best, and not ranked. " +
+          "Differences within the measured intervals are ties, not wins.",
+        input: CompareInput,
+        annotations: { readOnlyHint: true },
+        async run({ candidateIds }) {
+          const portfolio = await host.comparePortfolio(candidateIds);
+          host.log({
+            tool: "studio_compare_candidates",
+            at: Date.now(),
+            ok: true,
+            summary: `compared ${portfolio.decisions.length}, frontier of ${portfolio.frontier.length}`,
+          });
+          return portfolio;
+        },
+      },
+      host
+    ),
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// payload shaping
+// ---------------------------------------------------------------------------
+
+function requireCandidate(study: Study, id: string): Candidate {
+  const candidate = study.candidates.find((c) => c.id === id);
+  if (!candidate) {
+    throw new Error(
+      `no candidate "${id}". Available: ${study.candidates.map((c) => c.id).join(", ")}`
+    );
+  }
+  return candidate;
+}
+
+/**
+ * The study, minus every candidate's full design.
+ *
+ * A study with seven candidates is hundreds of kilobytes of design document, and an agent
+ * reading the study wants to know what candidates EXIST, not what they contain. Sending
+ * everything would fill a context window with fields nobody asked for and would push the actual
+ * problem statement past the point where it gets read. Individual designs come from
+ * `studio_get_candidate`.
+ */
+export function summariseStudy(study: Study) {
+  return {
+    id: study.id,
+    name: study.name,
+    problem: study.problem,
+    contract: study.contract,
+    workload: study.workload,
+    targets: study.targets,
+    correctness: {
+      invariants: study.correctness.invariants,
+      faults: study.correctness.faults,
+      bounds: study.correctness.bounds,
+      identityDomains: study.correctness.identityDomains,
+      stateOverrides: study.correctness.stateOverrides,
+    },
+    candidates: study.candidates.map((c) => ({
+      id: c.id,
+      label: c.label,
+      pattern: c.pattern,
+      origin: c.origin,
+      revision: c.revision,
+      intent: c.intent,
+      nodeCount: c.design.nodes.length,
+      hasWorkflow: c.design.workflow !== null,
+      isPromoted: study.promotedCandidateId === c.id,
+      isActive: study.activeCandidateId === c.id,
+    })),
+    promotedCandidateId: study.promotedCandidateId,
+    notes: [
+      "The workload, SLOs, invariants and exploration bounds are study-level. A candidate's local copies are overwritten from the study before every evaluation, so a candidate cannot improve its results by changing the workload.",
+      "There is no tool to delete or promote a candidate. Promotion is a human-only action in the interface.",
+      "Every numeric and correctness claim you make must come from a studio result. Nothing here should be estimated.",
+    ],
+  };
+}
+
+/**
+ * The evaluation, minus the counterexample trace.
+ *
+ * The trace is the largest part of an evaluation and is only wanted when a violation was found,
+ * so `studio_run_evaluation` returns the verdict and the numbers, and the trace is a separate
+ * fetch. What is kept is everything needed to decide whether to fetch it.
+ */
+export function compactEvaluation(evaluation: CandidateEvaluation) {
+  const c = evaluation.correctness;
+  const p = evaluation.performance;
+  return {
+    evaluationId: evaluation.evaluationId,
+    candidateId: evaluation.candidateId,
+    candidateRevision: evaluation.candidateRevision,
+    candidateHash: evaluation.candidateHash,
+    engineVersion: evaluation.engineVersion,
+    seeds: evaluation.seeds,
+    correctness: c
+      ? {
+          status: c.status,
+          claim: c.claim,
+          bounds: c.bounds,
+          faults: c.faults,
+          invariantsChecked: c.invariantsChecked,
+          stats: c.stats,
+          modelErrors: c.modelErrors,
+          violatedInvariant: c.counterexample?.invariantId ?? null,
+          counterexampleLength: c.counterexample?.steps.length ?? null,
+          faultsUsed: c.counterexample?.faultsUsed ?? [],
+          traceAvailableVia: c.counterexample ? "studio_get_evaluation" : null,
+        }
+      : null,
+    performance: p,
+    business: evaluation.business,
+    resources: evaluation.resources,
+    assumptions: evaluation.assumptions,
+    warnings: evaluation.warnings,
+    wallMs: evaluation.wallMs,
+  };
+}
+
+/**
+ * Validate a draft the way the studio validates it, and say so in the same words.
+ *
+ * Three layers, reported separately because the fixes are different: Zod shape errors mean a
+ * field is the wrong type, topology errors mean the graph does not make sense, and workflow
+ * errors mean the state model does not match the topology. An agent that gets one list cannot
+ * tell which kind of mistake it made.
+ */
+export function validateDraft(design: unknown): {
+  valid: boolean;
+  errors: Array<{ layer: string; code: string; message: string; where?: string }>;
+  warnings: Array<{ layer: string; code: string; message: string; where?: string }>;
+  designHash: string | null;
+} {
+  const errors: Array<{ layer: string; code: string; message: string; where?: string }> = [];
+  const warnings: Array<{ layer: string; code: string; message: string; where?: string }> = [];
+
+  let parsed;
+  try {
+    // Through the migrator, so an agent may legitimately submit an older schema version -- and so
+    // it gets the same treatment a saved file gets rather than a stricter one.
+    parsed = migrateAndParse(design);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      for (const issue of err.issues) {
+        errors.push({
+          layer: "schema",
+          code: issue.code,
+          message: issue.message,
+          where: issue.path.join("."),
+        });
+      }
+    } else {
+      errors.push({
+        layer: "schema",
+        code: "parse",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return { valid: false, errors, warnings, designHash: null };
+  }
+
+  for (const issue of validateDesign(parsed)) {
+    const entry = {
+      layer: "topology",
+      code: issue.code,
+      message: issue.message,
+      ...(issue.nodeId ? { where: issue.nodeId } : issue.edgeId ? { where: issue.edgeId } : {}),
+    };
+    (issue.severity === "error" ? errors : warnings).push(entry);
+  }
+
+  for (const issue of validateWorkflow(parsed)) {
+    const entry = {
+      layer: "workflow",
+      code: issue.code,
+      message: issue.message,
+      ...(issue.opId ? { where: issue.opId } : issue.handlerId ? { where: issue.handlerId } : {}),
+    };
+    (issue.severity === "error" ? errors : warnings).push(entry);
+  }
+
+  if (parsed.workflow === null) {
+    warnings.push({
+      layer: "workflow",
+      code: "no-workflow",
+      message:
+        "This design declares no workflow, so it has no state and no correctness contract. It can be measured for capacity but it cannot pass the correctness gate, and a verdict about it would be vacuous.",
+    });
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    designHash: errors.length === 0 ? contentHash(DesignSchema.parse(parsed)) : null,
+  };
+}
+
+/**
+ * Study-level errors attributable to a candidate, for the create/replace path.
+ *
+ * Checked in addition to the design's own validation, because an invariant that cannot be
+ * evaluated against a candidate is a problem with that candidate rather than with the study --
+ * and silently skipping it would let the candidate pass a gate it was never tested against.
+ */
+export function candidateStudyErrors(study: Study, candidateId: string): string[] {
+  return validateStudy(study)
+    .filter((i) => i.severity === "error" && i.candidateId === candidateId)
+    .map((i) => i.message);
+}

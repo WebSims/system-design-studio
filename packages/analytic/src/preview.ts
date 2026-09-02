@@ -331,6 +331,7 @@ function attemptFailureProbability(
 function stationFailureProbability(node: SdsNode): number {
   if (node.kind === "server") return node.server!.failureProbability;
   if (node.kind === "database") return node.database!.failureProbability;
+  if (node.kind === "lock") return node.lock!.failureProbability;
   return 0;
 }
 
@@ -1041,6 +1042,17 @@ function solveStation(
     case "gateway":
       c = node.gateway!.pushConcurrency * node.gateway!.replicas;
       break;
+    case "lock": {
+      // A lock service is a plain station in the closed form. Its interesting
+      // behaviour -- leases expiring under a holder still working -- is a state
+      // property, and no queueing formula can see it. The preview therefore models
+      // only its cost, and the correctness explorer answers the other question.
+      const cfg = node.lock!;
+      c = cfg.concurrency;
+      queueCapacity = cfg.queueCapacity;
+      admission = cfg.admissionPolicy;
+      break;
+    }
     case "database": {
       const cfg = node.database!;
       // You cannot execute more queries at once than you have connections, nor
@@ -1168,6 +1180,8 @@ function ownServiceMs(node: SdsNode): number {
       return distMean(node.database!.serviceTime);
     case "queue":
       return distMean(node.queue!.publishTime);
+    case "lock":
+      return distMean(node.lock!.serviceTime);
     default:
       return 0;
   }
@@ -1187,6 +1201,8 @@ function scvOf(node: SdsNode): number {
       return distScv(node.database!.serviceTime);
     case "queue":
       return distScv(node.queue!.consumerServiceTime);
+    case "lock":
+      return distScv(node.lock!.serviceTime);
     default:
       return 1;
   }

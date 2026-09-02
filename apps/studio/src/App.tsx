@@ -1,10 +1,21 @@
-import { useCallback, useRef, useState } from "react";
-import { PRESETS, EXAMPLES } from "@sds/models";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PRESETS, EXAMPLES, STUDY_EXAMPLES } from "@sds/models";
 import { FlowCanvas } from "./canvas/FlowCanvas";
 import { Inspector } from "./panels/Inspector";
 import { ResultsRail } from "./panels/ResultsRail";
 import { nextNodeId } from "./ids";
 import { useStudio } from "./store";
+import { restoreStudy, useStudyStore, type ViewId } from "./study/store";
+import { CorrectnessView } from "./views/CorrectnessView";
+import { PerformanceView } from "./views/PerformanceView";
+import { CompareView } from "./views/CompareView";
+import { CandidateBar } from "./panels/CandidateBar";
+import { ActivityLog } from "./panels/ActivityLog";
+import { studyFilename } from "./persist";
+import { registerWebmcpTools } from "./webmcp/register";
+import { buildCatalog } from "./webmcp/catalog";
+import type { ToolHost } from "./webmcp/tools";
+import { cancelWorker, portfolioInWorker } from "./engine/client";
 
 /**
  * The component palette.
@@ -79,22 +90,172 @@ function ExampleMenu({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Saved studies and worked examples.
+ *
+ * Separated on purpose. A saved study is the user's own work and is what they came back for; an
+ * example is a teaching aid, and each says what it teaches rather than what it contains, because
+ * "seven architectures, four broken" is a reason to open something and "a pizza study" is not.
+ */
+function StudyMenu({ onClose }: { onClose: () => void }) {
+  const openStudy = useStudyStore((s) => s.openStudy);
+  const openExample = useStudyStore((s) => s.openExample);
+  const storedStudies = useStudyStore((s) => s.storedStudies);
+  const currentId = useStudyStore((s) => s.study.id);
+  const [saved, setSaved] = useState<Array<{ id: string; name: string; candidateCount: number }> | null>(null);
+
+  useEffect(() => {
+    void storedStudies().then((list) =>
+      setSaved(list.map((l) => ({ id: l.id, name: l.name, candidateCount: l.candidateCount })))
+    );
+  }, [storedStudies]);
+
+  return (
+    <div className="palette palette-wide" onClick={(e) => e.stopPropagation()}>
+      <div className="palette-title">studies</div>
+      {saved && saved.length > 0 && (
+        <>
+          <div className="palette-title">saved</div>
+          {saved.map((st) => (
+            <button
+              key={st.id}
+              className="palette-item"
+              disabled={st.id === currentId}
+              onClick={() => {
+                void openStudy(st.id);
+                onClose();
+              }}
+            >
+              <span className="palette-body">
+                <span className="palette-label">
+                  {st.name}
+                  {st.id === currentId && <span className="muted"> &middot; open</span>}
+                </span>
+                <span className="palette-blurb">
+                  {st.candidateCount} candidate{st.candidateCount === 1 ? "" : "s"}
+                </span>
+              </span>
+            </button>
+          ))}
+        </>
+      )}
+
+      <div className="palette-title">worked examples</div>
+      {STUDY_EXAMPLES.map((e) => (
+        <button
+          key={e.id}
+          className="palette-item"
+          onClick={() => {
+            openExample(e.id);
+            onClose();
+          }}
+        >
+          <span className="palette-body">
+            <span className="palette-label">{e.label}</span>
+            <span className="palette-blurb">{e.teaches}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * What the studio shows before there is anything to show.
+ *
+ * The app opens empty, so this is the first screen and it has one job: say what to do next. Three
+ * routes, in the order they are likely to be wanted -- describe the problem, hand it to an agent,
+ * or read an example first. It is not a marketing panel; every line is an action or the reason to
+ * take it.
+ */
+function EmptyStudy() {
+  const webmcp = useStudyStore((s) => s.webmcp);
+  const openExample = useStudyStore((s) => s.openExample);
+  const example = STUDY_EXAMPLES[0];
+
+  return (
+    <div className="empty-study">
+      <div className="empty-card">
+        <h2>Start with Codex</h2>
+        <p>Ask Codex to design and test a system. It uses this page through WebMCP.</p>
+
+        <pre className="expr-preview">
+          Design three systems for my problem. Simulate races and bottlenecks, compare them, and show me the evidence.
+        </pre>
+
+        <div className="empty-actions">
+          {example && (
+            <button className="btn" onClick={() => openExample(example.id)}>
+              view pizza demo
+            </button>
+          )}
+        </div>
+
+        <p className="muted empty-agent">
+          {webmcp.status.includes("tools")
+            ? `Ready: ${webmcp.status}. You review the result and choose what to promote.`
+            : "Open this page in Codex's browser to enable WebMCP."}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const VIEWS: Array<{ id: ViewId; label: string; hint: string }> = [
+  { id: "design", label: "design", hint: "draw the architecture and its stateful behaviour" },
+  { id: "correctness", label: "correctness", hint: "explore every interleaving within explicit bounds" },
+  { id: "performance", label: "performance", hint: "measure over independent seeds" },
+  { id: "compare", label: "compare", hint: "gates, trade-offs and the Pareto frontier" },
+];
+
+/**
+ * The view switcher.
+ *
+ * Four views over ONE study document. Not four modes with their own state: a correctness verdict and
+ * a latency figure that described slightly different documents would be the incoherence the whole
+ * study format exists to prevent, and separate stores is how that happens.
+ */
+function ViewTabs() {
+  const view = useStudyStore((s) => s.view);
+  const setView = useStudyStore((s) => s.setView);
+  return (
+    <nav className="tabs">
+      {VIEWS.map((v) => (
+        <button
+          key={v.id}
+          className={view === v.id ? "active" : ""}
+          title={v.hint}
+          onClick={() => setView(v.id)}
+        >
+          {v.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function Topbar() {
   const design = useStudio((s) => s.design);
-  const exportDesign = useStudio((s) => s.exportDesign);
-  const importDesign = useStudio((s) => s.importDesign);
+  const study = useStudyStore((s) => s.study);
+  const exportStudyJson = useStudyStore((s) => s.exportStudyJson);
+  const importStudyJson = useStudyStore((s) => s.importStudyJson);
+  const persistence = useStudyStore((s) => s.persistence);
+  const webmcp = useStudyStore((s) => s.webmcp);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [menu, setMenu] = useState<"palette" | "examples" | null>(null);
+  const [menu, setMenu] = useState<"palette" | "examples" | "studies" | "activity" | null>(null);
 
   const download = useCallback(() => {
-    const blob = new Blob([exportDesign()], { type: "application/json" });
+    // A STUDY, not a design. The design alone would lose the invariants, the bounds and every
+    // other candidate -- which is to say it would lose the argument and keep only one of its
+    // conclusions.
+    const blob = new Blob([exportStudyJson()], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${design.name.replace(/\s+/g, "-")}.sds.json`;
+    a.download = studyFilename(study);
     a.click();
     URL.revokeObjectURL(url);
-  }, [exportDesign, design.name]);
+  }, [exportStudyJson, study]);
 
   return (
     <header className="topbar" onClick={() => setMenu(null)}>
@@ -104,36 +265,54 @@ function Topbar() {
           <div className="brand-name">
             system design <b>studio</b>
           </div>
-          <div className="brand-sub">validated queueing simulator</div>
+          <div className="brand-sub">design · test · compare</div>
         </div>
       </div>
 
       <div className="tb-group">
+        {study.candidates.length > 0 && (
+          <>
+            <div className="menu-anchor">
+              <button
+                className="btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenu(menu === "palette" ? null : "palette");
+                }}
+              >
+                add component
+              </button>
+              {menu === "palette" && <Palette onClose={() => setMenu(null)} />}
+            </div>
+            <div className="menu-anchor">
+              <button
+                className="btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenu(menu === "examples" ? null : "examples");
+                }}
+              >
+                design examples
+              </button>
+              {menu === "examples" && <ExampleMenu onClose={() => setMenu(null)} />}
+            </div>
+          </>
+        )}
         <div className="menu-anchor">
           <button
             className="btn"
             onClick={(e) => {
               e.stopPropagation();
-              setMenu(menu === "palette" ? null : "palette");
+              setMenu(menu === "studies" ? null : "studies");
             }}
           >
-            add component
+            studies
           </button>
-          {menu === "palette" && <Palette onClose={() => setMenu(null)} />}
-        </div>
-        <div className="menu-anchor">
-          <button
-            className="btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenu(menu === "examples" ? null : "examples");
-            }}
-          >
-            examples
-          </button>
-          {menu === "examples" && <ExampleMenu onClose={() => setMenu(null)} />}
+          {menu === "studies" && <StudyMenu onClose={() => setMenu(null)} />}
         </div>
       </div>
+
+      <ViewTabs />
 
       <div className="tb-spacer" />
 
@@ -141,6 +320,25 @@ function Topbar() {
         <span className="tb-meta tnum">
           {design.nodes.length} nodes &middot; {design.edges.length} links
         </span>
+        <span
+          className={`tb-meta ${persistence.status === "failed" ? "issue-error" : "muted"}`}
+          title={persistence.detail}
+        >
+          {persistence.status === "failed" ? "not saved" : persistence.status}
+        </span>
+        <div className="menu-anchor">
+          <button
+            className="btn"
+            title={webmcp.detail}
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenu(menu === "activity" ? null : "activity");
+            }}
+          >
+            agent: {webmcp.status}
+          </button>
+          {menu === "activity" && <ActivityLog onClose={() => setMenu(null)} />}
+        </div>
         <button className="btn" onClick={download}>
           export
         </button>
@@ -155,11 +353,10 @@ function Topbar() {
           onChange={async (e) => {
             const file = e.target.files?.[0];
             if (!file) return;
-            try {
-              importDesign(await file.text());
-            } catch (err) {
-              alert(err instanceof Error ? err.message : String(err));
-            }
+            // Accepts a study OR a bare design; a design becomes a one-candidate study with no
+            // correctness contract, which is the honest treatment of a document that has no
+            // invariants.
+            importStudyJson(await file.text());
             e.target.value = "";
           }}
         />
@@ -168,13 +365,150 @@ function Topbar() {
   );
 }
 
-export function App() {
+function DesignView() {
+  const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
+  if (!hasCandidates) return <EmptyStudy />;
   return (
-    <div className="shell">
-      <Topbar />
+    <>
       <ResultsRail />
       <FlowCanvas />
       <Inspector />
+    </>
+  );
+}
+
+/**
+ * Register the agent tool surface once, against the live store.
+ *
+ * The host is an adapter over commands the manual UI already issues -- there is no capability here
+ * that a person does not have, and there are two the agent does not: promotion and deletion have no
+ * tool at all.
+ */
+function useWebmcp() {
+  const setWebmcp = useStudyStore((s) => s.setWebmcp);
+
+  useEffect(() => {
+    const host: ToolHost = {
+      getStudy: () => useStudyStore.getState().study,
+      getCatalog: () => buildCatalog(),
+      createStudy: async (input) => useStudyStore.getState().createStudy(input),
+      updateStudyContract: async (patch) => {
+        const { name, problem, ...contract } = patch as typeof patch & { name?: string; problem?: string };
+        const store = useStudyStore.getState();
+        // Prose and contract go through different doors on purpose: the prose is always writable,
+        // the executable half throws once results exist. Applying the contract FIRST means a
+        // refusal cannot leave the name changed and the yardstick not.
+        if (Object.keys(contract).length > 0) {
+          store.updateContract(contract);
+          const err = useStudyStore.getState().error;
+          if (err) throw new Error(err);
+        }
+        if (name !== undefined || problem !== undefined) {
+          useStudyStore.getState().updateStudy((study) => ({
+            ...study,
+            ...(name !== undefined ? { name } : {}),
+            ...(problem !== undefined ? { problem } : {}),
+          }));
+        }
+        return useStudyStore.getState().study;
+      },
+      listStudies: async () => ({
+        saved: (await useStudyStore.getState().storedStudies()).map((s) => ({
+          id: s.id,
+          name: s.name,
+          candidates: s.candidateCount,
+          updatedAt: s.updatedAt,
+        })),
+        examples: STUDY_EXAMPLES.map((e) => ({
+          id: e.id,
+          label: e.label,
+          summary: e.summary,
+          teaches: e.teaches,
+        })),
+      }),
+      openStudy: async (input) => {
+        const store = useStudyStore.getState();
+        if (input.exampleId) store.openExample(input.exampleId);
+        else if (input.studyId) await store.openStudy(input.studyId);
+        const err = useStudyStore.getState().error;
+        if (err) throw new Error(err);
+        return useStudyStore.getState().study;
+      },
+      createCandidate: async (input) =>
+        useStudyStore.getState().addCandidate({
+          label: input.label,
+          intent: input.intent,
+          ...(input.design !== undefined ? { design: input.design } : {}),
+          ...(input.copyFrom ? { copyFrom: input.copyFrom } : {}),
+          // Set here, not accepted as a parameter. An agent cannot mark its own work as a human's.
+          origin: "agent",
+        }),
+      replaceCandidateDraft: async (input) =>
+        useStudyStore.getState().replaceDraft({ ...input, by: "agent" }),
+      runEvaluation: async (input) => {
+        if (input.signal?.aborted) throw new Error("evaluation aborted before it began");
+        const abort = () => cancelWorker();
+        input.signal?.addEventListener("abort", abort, { once: true });
+        try {
+          const evaluation = await useStudyStore.getState().evaluate(input.candidateId, {
+            correctness: input.correctness,
+            performance: input.performance,
+          });
+          if (!evaluation) {
+            throw new Error(useStudyStore.getState().error ?? "evaluation failed");
+          }
+          return evaluation;
+        } finally {
+          input.signal?.removeEventListener("abort", abort);
+        }
+      },
+      getEvaluation: (candidateId) => useStudyStore.getState().evaluationFor(candidateId),
+      comparePortfolio: async (candidateIds) => {
+        const study = useStudyStore.getState().study;
+        const wanted = new Set(candidateIds);
+        const missing = candidateIds.filter((id) => !study.candidates.some((candidate) => candidate.id === id));
+        if (missing.length > 0) throw new Error(`unknown candidate: ${missing.join(", ")}`);
+        return portfolioInWorker(
+          candidateIds.length === 0
+            ? study
+            : {
+                ...study,
+                candidates: study.candidates.filter((candidate) => wanted.has(candidate.id)),
+              }
+        );
+      },
+      log: (entry) => useStudyStore.getState().logActivity(entry),
+    };
+
+    const registration = registerWebmcpTools({ host });
+    setWebmcp(
+      registration.state.status === "registered" ? `${registration.state.tools.length} tools` : registration.state.status,
+      registration.state.status === "registered"
+        ? `registered: ${registration.state.tools.join(", ")}`
+        : registration.state.reason
+    );
+    return () => registration.unregister();
+  }, [setWebmcp]);
+}
+
+export function App() {
+  const view = useStudyStore((s) => s.view);
+  const error = useStudyStore((s) => s.error);
+  useWebmcp();
+
+  useEffect(() => {
+    void restoreStudy();
+  }, []);
+
+  return (
+    <div className={`shell shell-${view}`}>
+      <Topbar />
+      <CandidateBar />
+      {error && <div className="banner banner-error">{error}</div>}
+      {view === "design" && <DesignView />}
+      {view === "correctness" && <CorrectnessView />}
+      {view === "performance" && <PerformanceView />}
+      {view === "compare" && <CompareView />}
     </div>
   );
 }

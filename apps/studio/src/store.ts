@@ -10,7 +10,7 @@ import {
   type DesignIssue,
   type SdsNode,
 } from "@sds/schema";
-import { defaultDesign } from "@sds/models";
+import { useStudyStore } from "./study/store";
 import {
   analyzeInWorker,
   compareInWorker,
@@ -21,7 +21,22 @@ import {
   type ReplicationSummary,
 } from "./engine/client";
 
-const LS_KEY = "sds.design.v1";
+/**
+ * The DESIGN store: everything about editing and measuring one architecture.
+ *
+ * IT NO LONGER OWNS THE DESIGN.
+ *
+ * The study store does. This one holds a mirror of the ACTIVE candidate's design plus all the
+ * per-design derived state -- validation, the closed-form preview, the last run, the analysis, the
+ * baseline comparison -- and forwards every edit to the study store, which is the single writer.
+ *
+ * The alternative was two stores that each owned a design and synchronised, which is a two-way
+ * binding, and a two-way binding between a canvas and a document is how a studio ends up with a
+ * node the inspector shows and the engine does not. One writer, one subscription, one direction.
+ *
+ * The practical benefit is that the canvas, the inspector and the results rail are untouched:
+ * they read `design`, call `edit`, and neither knows a study exists.
+ */
 
 export type Selection = { kind: "node"; id: string } | { kind: "edge"; id: string } | null;
 
@@ -113,27 +128,26 @@ function recompute(design: Design): { preview: DesignPreview; issues: DesignIssu
   return { preview, issues };
 }
 
-function load(): Design {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw) return migrateAndParse(JSON.parse(raw));
-  } catch {
-    // A saved design from an incompatible build must not brick the app. The
-    // migration path exists precisely so this is recoverable; falling back to the
-    // default is the safe outcome when it is not.
-  }
-  return defaultDesign();
+/** The active candidate's design, or an empty one while a study is still loading. */
+function activeDesign(): Design {
+  const study = useStudyStore.getState().study;
+  const active =
+    study.candidates.find((c) => c.id === study.activeCandidateId) ?? study.candidates[0];
+  return active ? active.design : DesignSchema.parse({ version: 6, nodes: [], edges: [], scenario: {}, slo: {} });
 }
 
-function persist(design: Design): void {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(design));
-  } catch {
-    // Storage full or blocked; not worth interrupting the user over.
-  }
+/**
+ * Forward an edit to the study store.
+ *
+ * Immer is applied here rather than there because `edit` takes a mutating recipe -- which is what
+ * every call site in the inspector is written against -- while the study store takes a pure
+ * function. Converting at the boundary keeps two thousand lines of inspector code unchanged.
+ */
+function forwardEdit(fn: (d: Design) => void): void {
+  useStudyStore.getState().editActive((design) => produce(design, fn));
 }
 
-const initial = load();
+const initial = activeDesign();
 
 export const useStudio = create<StudioState>((set, get) => ({
   design: initial,
@@ -154,43 +168,36 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   select: (selection) => set({ selection }),
 
-  edit: (fn) =>
-    set((state) => {
-      const next = produce(state.design, fn);
-      persist(next);
-      return {
-        design: next,
-        ...recompute(next),
-        // Any edit invalidates the displayed run. Saying so is better than
-        // silently showing measurements of a system that no longer exists.
-        runStale: state.run !== null,
-        analysisStale: state.analysis !== null,
-        // Intervals and comparisons describe a design that no longer exists.
-        replication: null,
-        comparison: null,
-      };
-    }),
+  edit: (fn) => {
+    forwardEdit(fn);
+    // The subscription below writes `design` and the derived state. What is set here is only the
+    // staleness, because that is knowledge this store has and the study store does not: it is the
+    // one holding the run that just became a measurement of a system that no longer exists.
+    set((state) => ({
+      runStale: state.run !== null,
+      analysisStale: state.analysis !== null,
+      replication: null,
+      comparison: null,
+    }));
+  },
 
   /**
    * Position changes are stored but deliberately do NOT mark the run stale or
    * recompute the preview: geometry has no effect on the model, and treating a
    * drag as a model change would flash "stale" over a perfectly valid result.
    */
-  moveNode: (id, x, y) =>
-    set((state) => {
-      const next = produce(state.design, (d: Design) => {
-        const n = d.nodes.find((m: SdsNode) => m.id === id);
-        if (n) {
-          n.x = Math.round(x);
-          n.y = Math.round(y);
-        }
-      });
-      persist(next);
-      return { design: next };
-    }),
+  moveNode: (id, x, y) => {
+    forwardEdit((d: Design) => {
+      const n = d.nodes.find((m: SdsNode) => m.id === id);
+      if (n) {
+        n.x = Math.round(x);
+        n.y = Math.round(y);
+      }
+    });
+  },
 
   loadDesign: (d) => {
-    persist(d);
+    useStudyStore.getState().editActive(() => d);
     set({
       design: d,
       ...recompute(d),
@@ -261,7 +268,7 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   importDesign: (json) => {
     const d = migrateAndParse(JSON.parse(json));
-    persist(d);
+    useStudyStore.getState().editActive(() => d);
     set({
       design: d,
       ...recompute(d),
@@ -276,3 +283,35 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   exportDesign: () => JSON.stringify(DesignSchema.parse(get().design), null, 2),
 }));
+
+/**
+ * Mirror the active candidate's design into this store.
+ *
+ * A single subscription, running in one direction. `moveNode` deliberately reaches here too even
+ * though geometry has no model effect: recomputing a preview on a drag costs microseconds, and the
+ * alternative -- a second path that skips it -- is how a mirror drifts from its source.
+ */
+useStudyStore.subscribe((state, previous) => {
+  const study = state.study;
+  const active =
+    study.candidates.find((c) => c.id === study.activeCandidateId) ?? study.candidates[0];
+  if (!active) return;
+
+  const previousActive =
+    previous.study.candidates.find((c) => c.id === previous.study.activeCandidateId) ??
+    previous.study.candidates[0];
+
+  if (previousActive && previousActive.design === active.design) return;
+
+  const switchedCandidate = previousActive?.id !== active.id;
+  useStudio.setState({
+    design: active.design,
+    ...recompute(active.design),
+    // Switching candidate is not an edit; it is a different subject. Carrying the previous
+    // candidate's run forward and labelling it stale would be worse than clearing it, because a
+    // greyed-out number still anchors a reader.
+    ...(switchedCandidate
+      ? { run: null, runStale: false, analysis: null, analysisStale: false, replication: null, comparison: null, selection: null }
+      : {}),
+  });
+});

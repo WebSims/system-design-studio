@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@sds/schema": "workspace:*",
-    "@sds/models": "workspace:*"
+    "@sds/models": "workspace:*",
+    "@sds/kernel": "workspace:*"
   }
 }

@@ -1,0 +1,532 @@
+import { create } from "zustand";
+import {
+  contentHash,
+  evaluationKey,
+  syncCandidateToStudy,
+  studyBoundsHash,
+  validateDesign,
+  validateStudy,
+  validateWorkflow,
+  applyStudyContract,
+  blankStudy,
+  clearStudyResults,
+  studyContractLock,
+  type Candidate,
+  type CandidateEvaluation,
+  type Design,
+  type DesignIssue,
+  type PortfolioResult,
+  type Study,
+  type StudyContractPatch,
+  type StudyIssue,
+  type StudyLock,
+} from "@sds/schema";
+import { STUDY_ENGINE_VERSION } from "@sds/study";
+import { previewDesign, type DesignPreview } from "@sds/analytic";
+import { IntractableError } from "@sds/analytic";
+import { STUDY_EXAMPLES } from "@sds/models";
+import {
+  evaluateInWorker,
+  cancelWorker,
+  portfolioInWorker,
+} from "../engine/client";
+import {
+  loadStudy,
+  listStudies,
+  readActiveStudyId,
+  saveStudy,
+  writeActiveStudyId,
+  importStudy,
+  exportStudy,
+  type StoredStudy,
+} from "../persist";
+import {
+  MutationRefused,
+  createCandidate,
+  deleteCandidate,
+  editActiveDesign,
+  promoteCandidate,
+  replaceCandidateDraft,
+  setActiveCandidate,
+} from "./mutations";
+import type { ActivityEntry } from "../webmcp/tools";
+
+/**
+ * The study store.
+ *
+ * ONE DOCUMENT, FOUR VIEWS
+ *
+ * Design, Correctness, Performance and Compare are views over the same study, not four modes with
+ * their own state. That is the entire architectural content of "both learner and expert": there is
+ * one canonical model and the views differ in what they show of it, so a guided invariant builder
+ * and a raw JSON editor cannot produce documents that disagree.
+ *
+ * WHY EVALUATIONS ARE CACHED IN THE DOCUMENT
+ *
+ * Because the alternative is losing them. A correctness search over seven candidates is seconds
+ * and a replicated performance run is minutes, and a store that dropped them on navigation would
+ * make the compare view useless. They are keyed by content, so a cached number can only ever be
+ * shown next to the design that produced it -- see `evaluationKey`.
+ */
+
+export type ViewId = "design" | "correctness" | "performance" | "compare";
+
+export interface StudioState {
+  study: Study;
+  view: ViewId;
+
+  /** Validation of the whole study, recomputed on every edit. */
+  issues: StudyIssue[];
+  /** Validation and closed-form preview of the ACTIVE candidate only. */
+  designIssues: DesignIssue[];
+  workflowIssues: DesignIssue[];
+  preview: DesignPreview | null;
+  previewError: string | null;
+
+  portfolio: PortfolioResult | null;
+  /** Candidate ids currently being evaluated. */
+  running: Set<string>;
+  error: string | null;
+  /** Local log of every agent call, newest last. */
+  activity: ActivityEntry[];
+  webmcp: { status: string; detail: string };
+  persistence: { status: "idle" | "saving" | "saved" | "failed"; detail: string };
+
+  // ---- navigation ----
+  setView(view: ViewId): void;
+  selectCandidate(id: string): void;
+
+  // ---- document ----
+  loadStudyDocument(study: Study): void;
+  /** Start a new, empty study and open it. */
+  createStudy(input: { name?: string; problem?: string }): Study;
+  /** Edit the executable contract. Refused, with a reason, once results exist. */
+  updateContract(patch: StudyContractPatch): void;
+  /** Discard every result, which is the only way to unfreeze the contract. */
+  clearResults(): void;
+  /** Open a saved study by id. */
+  openStudy(id: string): Promise<void>;
+  /** Open one of the worked examples. */
+  openExample(id: string): void;
+  /** Saved studies, for the switcher. */
+  storedStudies(): Promise<StoredStudy[]>;
+  /** Whether the yardstick is frozen, and why. */
+  contractLock(): StudyLock;
+  importStudyJson(json: string): void;
+  exportStudyJson(): string;
+  updateStudy(mutate: (study: Study) => Study): void;
+  editActive(mutate: (design: Design) => Design): void;
+
+  // ---- candidates ----
+  addCandidate(input: { label: string; intent?: string; copyFrom?: string; design?: unknown; origin: "human" | "agent" }): Candidate;
+  replaceDraft(input: { candidateId: string; expectedRevision: number; design: unknown; by: "human" | "agent" }): Candidate;
+  removeCandidate(id: string): void;
+  promote(id: string): void;
+
+  // ---- evaluation ----
+  evaluate(candidateId: string, opts?: { correctness?: boolean; performance?: boolean }): Promise<CandidateEvaluation | null>;
+  evaluateAll(opts?: { correctness?: boolean; performance?: boolean }): Promise<void>;
+  checkOnly(candidateId: string): Promise<void>;
+  refreshPortfolio(): Promise<void>;
+  cancel(): void;
+
+  // ---- reads ----
+  activeCandidate(): Candidate | null;
+  evaluationFor(candidateId: string): CandidateEvaluation | null;
+
+  logActivity(entry: ActivityEntry): void;
+  setWebmcp(status: string, detail: string): void;
+}
+
+/**
+ * Recompute everything cheap on every edit.
+ *
+ * Validation and the closed-form preview are microseconds and are recomputed synchronously, which
+ * is what makes the inspector feel like a form rather than like a build step. Anything expensive
+ * -- a simulation, a correctness search -- is explicit and goes to the worker.
+ *
+ * `previewDesign` can throw `IntractableError` on absurd inputs. Caught rather than allowed to
+ * propagate, because the design being edited is by definition mid-edit and a store that threw on
+ * an in-progress value would leave the UI unrecoverable. That bug shipped once.
+ */
+function derive(study: Study): Pick<
+  StudioState,
+  "issues" | "designIssues" | "workflowIssues" | "preview" | "previewError"
+> {
+  const active = study.candidates.find((c) => c.id === study.activeCandidateId) ?? study.candidates[0];
+  if (!active) {
+    return { issues: validateStudy(study), designIssues: [], workflowIssues: [], preview: null, previewError: null };
+  }
+
+  let preview: DesignPreview | null = null;
+  let previewError: string | null = null;
+  try {
+    preview = previewDesign(active.design);
+  } catch (err) {
+    preview = null;
+    previewError =
+      err instanceof IntractableError
+        ? err.message
+        : `the closed-form estimate could not be computed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  return {
+    issues: validateStudy(study),
+    designIssues: validateDesign(active.design),
+    workflowIssues: validateWorkflow(active.design),
+    preview,
+    previewError,
+  };
+}
+
+function mergeEvaluation(
+  previous: CandidateEvaluation | undefined,
+  next: CandidateEvaluation,
+  phases: { correctness: boolean; performance: boolean }
+): CandidateEvaluation {
+  if (!previous) return next;
+  return {
+    ...next,
+    correctness: phases.correctness ? next.correctness : previous.correctness,
+    performance: phases.performance ? next.performance : previous.performance,
+    business: phases.performance ? next.business : previous.business,
+    resources: phases.performance ? next.resources : previous.resources,
+    assumptions: [...new Set([...previous.assumptions, ...next.assumptions])],
+    warnings: [...new Set([...previous.warnings, ...next.warnings])],
+    wallMs: previous.wallMs + next.wallMs,
+  };
+}
+
+/**
+ * Persistence, debounced for typing and immediate for decisions.
+ *
+ * WHY BOTH, AND WHY THIS DISTINCTION IS NOT A MICRO-OPTIMISATION
+ *
+ * Dragging a node fires an edit per animation frame, and a study with cached evaluations is megabytes,
+ * so writing on every edit would write megabytes per frame. Hence the debounce.
+ *
+ * But a debounce is a window in which work exists only in memory, and a browser test caught exactly
+ * that: promote a candidate, reload within the window, and the promotion is gone. A user who clicks
+ * promote and then closes the tab has made a decision the product then forgets, which is worse than
+ * anything the debounce was saving.
+ *
+ * So high-frequency edits debounce and DECISIONS do not: promotion, adding or removing a candidate,
+ * loading a study, and merging an evaluation all write immediately. There is also a flush on
+ * `pagehide`, which is best-effort by nature -- a browser is not obliged to finish an IndexedDB write
+ * during teardown -- and the reason it is only best-effort is precisely why the immediate path exists
+ * rather than relying on it.
+ */
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingStudy: Study | null = null;
+
+export const useStudyStore = create<StudioState>((set, get) => {
+  const write = (study: Study) =>
+    saveStudy(study)
+      .then(() => {
+        writeActiveStudyId(study.id);
+        set({ persistence: { status: "saved", detail: `saved ${new Date().toLocaleTimeString()}` } });
+      })
+      .catch((err: unknown) => {
+        // Surfaced, not swallowed. A study that is silently failing to save is an afternoon of work
+        // about to be lost, and the user is the only one who can do anything about it.
+        set({
+          persistence: {
+            status: "failed",
+            detail: `could not save: ${err instanceof Error ? err.message : String(err)}. Export the study to keep it.`,
+          },
+        });
+      });
+
+  const persist = (study: Study, immediate: boolean) => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    pendingStudy = study;
+    set({ persistence: { status: "saving", detail: "" } });
+    if (immediate) {
+      pendingStudy = null;
+      void write(study);
+      return;
+    }
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      const target = pendingStudy;
+      pendingStudy = null;
+      if (target) void write(target);
+    }, 600);
+  };
+
+  const commit = (study: Study, immediate = false) => {
+    set({ study, ...derive(study), error: null });
+    persist(study, immediate);
+  };
+
+  /**
+   * An empty study, not an example.
+   *
+   * The tool is for the user's problem. Booting into a pizza giveaway would teach that the
+   * problem ships with the product, and the examples menu covers the demo case in one click.
+   */
+  const initial = blankStudy({ id: `study-${Date.now().toString(36)}` });
+
+  return {
+    study: initial,
+    view: "design",
+    ...derive(initial),
+    portfolio: null,
+    running: new Set<string>(),
+    error: null,
+    activity: [],
+    webmcp: { status: "unknown", detail: "" },
+    persistence: { status: "idle", detail: "" },
+
+    setView: (view) => set({ view }),
+
+    selectCandidate: (id) => {
+      try {
+        commit(setActiveCandidate(get().study, id));
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    loadStudyDocument: (study) => {
+      commit(study, true);
+      set({ portfolio: null, view: "design" });
+      void get().refreshPortfolio();
+    },
+
+    importStudyJson: (json) => {
+      try {
+        get().loadStudyDocument(importStudy(json));
+      } catch (err) {
+        set({ error: `that file could not be read as a study or a design: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    },
+
+    exportStudyJson: () => exportStudy(get().study),
+
+    createStudy: (input) => {
+      const study = blankStudy({ id: `study-${Date.now().toString(36)}`, ...input });
+      get().loadStudyDocument(study);
+      return study;
+    },
+
+    updateContract: (patch) => {
+      try {
+        commit(applyStudyContract(get().study, patch), true);
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    clearResults: () => {
+      commit(clearStudyResults(get().study), true);
+      set({ portfolio: null });
+    },
+
+    openStudy: async (id) => {
+      const result = await loadStudy(id);
+      if (result.status === "ok") {
+        get().loadStudyDocument(result.study);
+      } else {
+        set({
+          error:
+            result.status === "missing"
+              ? `there is no saved study "${id}".`
+              : `the study "${id}" could not be read: ${result.reason}. It has not been overwritten.`,
+        });
+      }
+    },
+
+    openExample: (id) => {
+      const found = STUDY_EXAMPLES.find((e) => e.id === id);
+      if (!found) {
+        set({ error: `there is no example "${id}".` });
+        return;
+      }
+      get().loadStudyDocument(found.build());
+    },
+
+    storedStudies: () => listStudies(),
+
+    contractLock: () => studyContractLock(get().study),
+
+    updateStudy: (mutate) => {
+      try {
+        commit(mutate(get().study));
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    editActive: (mutate) => {
+      commit(
+        editActiveDesign(get().study, (candidate) => ({ ...candidate, design: mutate(candidate.design) }))
+      );
+    },
+
+    addCandidate: (input) => {
+      const { study, candidate } = createCandidate(get().study, input);
+      commit(study, true);
+      return candidate;
+    },
+
+    replaceDraft: (input) => {
+      const { study, candidate } = replaceCandidateDraft(get().study, input);
+      commit(study, true);
+      return candidate;
+    },
+
+    removeCandidate: (id) => {
+      try {
+        commit(deleteCandidate(get().study, id), true);
+        void get().refreshPortfolio();
+      } catch (err) {
+        set({ error: err instanceof MutationRefused ? err.message : String(err) });
+      }
+    },
+
+    promote: (id) => {
+      try {
+        // Immediate. Promotion is THE decision in the product, and a debounce window in which it
+        // exists only in memory is a window in which closing the tab undoes it.
+        commit(promoteCandidate(get().study, id), true);
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    evaluate: async (candidateId, opts) => {
+      const correctness = opts?.correctness ?? true;
+      const performance = opts?.performance ?? true;
+      set((s) => ({ running: new Set(s.running).add(candidateId), error: null }));
+      try {
+        const evaluation = await evaluateInWorker(get().study, candidateId, { correctness, performance });
+        const study = get().study;
+        const candidate = study.candidates.find((c) => c.id === candidateId);
+        if (!candidate) return null;
+        const key = evaluationKey({
+          candidateHash: evaluation.candidateHash,
+          engineVersion: STUDY_ENGINE_VERSION,
+          seeds: study.workload.seeds,
+          boundsHash: studyBoundsHash(study),
+        });
+        const merged = mergeEvaluation(study.evaluations[key], evaluation, { correctness, performance });
+        // Immediate: an evaluation is minutes of work, and losing it to a reload would send the
+        // user back to the beginning of the slowest thing the product does.
+        commit({ ...study, evaluations: { ...study.evaluations, [key]: merged } }, true);
+        await get().refreshPortfolio();
+        return merged;
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+        return null;
+      } finally {
+        set((s) => {
+          const running = new Set(s.running);
+          running.delete(candidateId);
+          return { running };
+        });
+      }
+    },
+
+    evaluateAll: async (opts) => {
+      // Sequential, not parallel, and for the same reason `checkStudy` is: the bounds include a
+      // wall-clock budget, and running several searches at once would make each one's budget mean
+      // something different. A verdict that depends on how many other candidates happened to be
+      // running is not a verdict.
+      for (const candidate of get().study.candidates) {
+        await get().evaluate(candidate.id, opts);
+      }
+    },
+
+    checkOnly: async (candidateId) => {
+      await get().evaluate(candidateId, { correctness: true, performance: false });
+    },
+
+    refreshPortfolio: async () => {
+      try {
+        set({ portfolio: await portfolioInWorker(get().study) });
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    cancel: () => {
+      cancelWorker();
+      set({ running: new Set<string>(), error: "cancelled" });
+    },
+
+    activeCandidate: () => {
+      const study = get().study;
+      return study.candidates.find((c) => c.id === study.activeCandidateId) ?? study.candidates[0] ?? null;
+    },
+
+    evaluationFor: (candidateId) => {
+      const study = get().study;
+      const candidate = study.candidates.find((c) => c.id === candidateId);
+      if (!candidate) return null;
+      // The hash is recomputed from the CURRENT design, so an evaluation is only returned if it
+      // was produced by exactly this design at exactly these settings. That is the mechanism by
+      // which a stale number cannot reach the screen.
+      const key = evaluationKey({
+        candidateHash: contentHash(syncedDesignHashInput(study, candidate)),
+        engineVersion: STUDY_ENGINE_VERSION,
+        seeds: study.workload.seeds,
+        boundsHash: studyBoundsHash(study),
+      });
+      return study.evaluations[key] ?? null;
+    },
+
+    logActivity: (entry) => set((s) => ({ activity: [...s.activity.slice(-199), entry] })),
+    setWebmcp: (status, detail) => set({ webmcp: { status, detail } }),
+  };
+});
+
+/**
+ * The design a candidate is evaluated as, for hashing.
+ *
+ * Must go through the SAME synchronisation the worker applies, or the store would look up a key
+ * the worker never wrote and every result would appear stale the instant it was produced. Shared
+ * from @sds/schema rather than reimplemented for exactly that reason.
+ */
+function syncedDesignHashInput(study: Study, candidate: Candidate): Design {
+  return syncCandidateToStudy(study, candidate).design;
+}
+
+/**
+ * Best-effort flush when the page goes away.
+ *
+ * `pagehide` rather than `beforeunload`, because the latter does not fire on mobile and is
+ * increasingly ignored. Neither guarantees an IndexedDB write completes during teardown, which is
+ * exactly why every decision writes immediately rather than relying on this.
+ */
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    const study = pendingStudy;
+    if (!study) return;
+    pendingStudy = null;
+    if (saveTimer) clearTimeout(saveTimer);
+    void saveStudy(study).catch(() => {
+      // Nothing useful can be done during teardown, and throwing here would surface as an unhandled
+      // rejection in the console of the page the user has already left.
+    });
+  });
+}
+
+/** Restore whichever study was open. With nothing saved, the empty study stands. */
+export async function restoreStudy(): Promise<void> {
+  const id = readActiveStudyId();
+  if (!id) return;
+  const result = await loadStudy(id);
+  if (result.status === "ok") {
+    useStudyStore.getState().loadStudyDocument(result.study);
+  } else if (result.status === "unreadable") {
+    // Named rather than silently replaced. "Your study could not be read" needs a different
+    // reaction from the user than "no study found", and conflating them loses work quietly.
+    useStudyStore.setState({
+      error: `the study "${id}" could not be read: ${result.reason}. An empty study is open instead; your saved study has not been overwritten.`,
+    });
+  }
+}

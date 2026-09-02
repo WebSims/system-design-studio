@@ -22,6 +22,7 @@ const KIND_ACCENT: Record<NodeKind, string> = {
   database: "var(--purple)",
   queue: "var(--green)",
   gateway: "var(--yellow)",
+  lock: "var(--bad)",
 };
 
 const KIND_LABEL: Record<NodeKind, string> = {
@@ -32,6 +33,7 @@ const KIND_LABEL: Record<NodeKind, string> = {
   database: "database",
   queue: "queue",
   gateway: "gateway",
+  lock: "lease",
 };
 
 /** One-line summary of an arrival profile, including the time-varying shapes. */
@@ -93,7 +95,15 @@ function summaryOf(node: SdsNode): string {
     }
     case "queue": {
       const q = node.queue!;
-      return `${q.consumers} consumers \u00b7 ${describe(q.consumerServiceTime)}`;
+      const ack = q.delivery === "at-least-once" ? "at-least-once" : "at-most-once";
+      return `${q.consumers} consumers \u00b7 ${ack}`;
+    }
+    case "lock": {
+      const l = node.lock!;
+      // Fencing leads, because it is the difference between mutual exclusion and a
+      // strong suggestion, and a reader scanning the canvas should see which one
+      // this is without opening the inspector.
+      return `${l.fencingTokens ? "fenced" : "unfenced"} \u00b7 ${l.defaultTtlMs}ms ttl`;
     }
   }
 }
@@ -128,6 +138,16 @@ function detailOf(kind: NodeKind, measured: ReturnType<typeof useMeasured>): str
     case "loadbalancer":
       return measured.loadbalancer
         ? `\u00b1${measured.loadbalancer.worstImbalancePct.toFixed(1)}pp spread`
+        : null;
+    case "lock":
+      return measured.lock
+        ? `${measured.lock.acquired.toLocaleString()} granted` +
+            (measured.lock.expired > 0
+              ? ` \u00b7 ${measured.lock.expired.toLocaleString()} expired`
+              : "") +
+            (measured.lock.staleOwnerRejections > 0
+              ? ` \u00b7 ${measured.lock.staleOwnerRejections.toLocaleString()} fenced off`
+              : "")
         : null;
     case "gateway":
       return measured.connections
@@ -274,4 +294,5 @@ export const nodeTypes: Record<NodeKind, typeof StudioNode> = {
   database: StudioNode,
   queue: StudioNode,
   gateway: StudioNode,
+  lock: StudioNode,
 };

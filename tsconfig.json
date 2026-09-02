@@ -5,6 +5,12 @@
       "path": "./packages/schema"
     },
     {
+      "path": "./packages/kernel"
+    },
+    {
+      "path": "./packages/explore"
+    },
+    {
       "path": "./packages/models"
     },
     {
@@ -15,6 +21,9 @@
     },
     {
       "path": "./packages/analyze"
+    },
+    {
+      "path": "./packages/study"
     }
   ]
 }

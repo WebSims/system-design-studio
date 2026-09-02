@@ -13,14 +13,20 @@
  *   pnpm sim --ramp             one ramping run: where does the SLO first break
  *   pnpm sim --spike            a burst, and how long recovery takes
  *                               (--multiple N, --spike-sec N)
+ *   pnpm sim --check            bounded correctness search over a study's candidates
+ *                               (--study FILE, --study-example ID, --candidate ID)
+ *   pnpm sim --portfolio        evaluate every candidate and print the Pareto frontier
+ *                               (--replications N, --out FILE)
  *
  * The sweep is included deliberately: it is the clearest demonstration of why the
  * engine had to be headless. It runs dozens of full simulations in a couple of
  * seconds, which was structurally impossible when the model was driven by
  * requestAnimationFrame.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { previewDesign, solveMMc } from "@sds/analytic";
+import { checkCandidate, studyModelErrors } from "@sds/explore";
+import { cachedEvaluation, evaluateStudy } from "@sds/study";
 import {
   analyse,
   checkErrorModel,
@@ -41,8 +47,12 @@ import {
   scaleArrival,
   validateDesign,
   type Design,
+  migrateAndParseStudy,
+  studyFromDesign,
+  type CorrectnessResult,
+  type Study,
 } from "@sds/schema";
-import { EXAMPLES, defaultDesign } from "@sds/models";
+import { EXAMPLES, STUDY_EXAMPLES, defaultDesign } from "@sds/models";
 
 const args = process.argv.slice(2);
 const flag = (name: string): boolean => args.includes(`--${name}`);
@@ -970,6 +980,284 @@ function resolveDesign(): Design {
       ...(seed === undefined ? {} : { seed }),
     },
   });
+}
+
+
+// ---------------------------------------------------------------------------
+// study modes: correctness and portfolio
+// ---------------------------------------------------------------------------
+
+/**
+ * Load a study, from a file, from the shipped library, or by wrapping a design.
+ *
+ * A plain design file is accepted and becomes a one-candidate study with NO correctness
+ * contract, which is the honest treatment: an imported design has no invariants, so the only
+ * defensible verdict for it is "nothing was checked".
+ */
+function loadStudy(): Study {
+  const file = value("study");
+  if (file) return migrateAndParseStudy(JSON.parse(readFileSync(file, "utf8")));
+
+  const named = value("study-example");
+  if (named) {
+    const found = STUDY_EXAMPLES.find((s) => s.id === named);
+    if (!found) {
+      console.log(`${RED}unknown study "${named}"${OFF}. available:`);
+      for (const s of STUDY_EXAMPLES) console.log(`  ${pad(s.id, 24)} ${DIM}${s.label}${OFF}`);
+      process.exit(1);
+    }
+    return found.build();
+  }
+
+  if (value("file")) return migrateAndParseStudy(JSON.parse(readFileSync(value("file")!, "utf8")));
+  return studyFromDesign(loadDesign());
+}
+
+function statusColour(status: CorrectnessResult["status"]): string {
+  switch (status) {
+    case "VIOLATED":
+      return RED;
+    case "NO_VIOLATION_WITHIN_BOUNDS":
+      return GREEN;
+    case "INCONCLUSIVE_BOUND_REACHED":
+      return YELLOW;
+    case "INVALID_MODEL":
+      return RED;
+  }
+}
+
+/**
+ * Print a counterexample as swimlanes.
+ *
+ * One column per actor, one row per transition. The layout is the argument: a race is only
+ * legible when you can see two lanes reaching the same value before either writes, and a flat
+ * list of operations hides exactly that.
+ */
+function printCounterexample(ce: NonNullable<CorrectnessResult["counterexample"]>): void {
+  const laneIds = [...new Set([...ce.lanes.map((l) => l.id), ...ce.steps.map((s) => s.laneId)])];
+  const width = 34;
+
+  console.log(`\n  ${BOLD}${RED}${ce.invariantLabel}${OFF}`);
+  console.log(`  ${ce.message}`);
+  console.log(
+    `  ${DIM}${ce.steps.length} transitions, minimal in transition count${
+      ce.faultsUsed.length > 0 ? `, using ${ce.faultsUsed.join(" + ")}` : ", with no injected fault"
+    }${OFF}\n`
+  );
+
+  for (const lane of ce.lanes) {
+    console.log(`  ${DIM}${lane.id}${OFF} ${lane.label}`);
+  }
+  console.log();
+
+  console.log("  " + laneIds.map((id) => CYAN + pad(id, width) + OFF).join(""));
+  console.log("  " + laneIds.map(() => DIM + "-".repeat(width - 1) + " " + OFF).join(""));
+
+  for (const step of ce.steps) {
+    const column = laneIds.indexOf(step.laneId);
+    const cells = laneIds.map((_, i) => (i === column ? cellFor(step, width) : pad("", width)));
+    console.log("  " + cells.join(""));
+    // Diffs and observations go under the lane they happened in, indented, so a reader follows
+    // one column downwards rather than reading across.
+    const indent = "  " + " ".repeat(Math.max(0, column) * width) + "  ";
+    for (const [name, v] of Object.entries(step.observed)) {
+      console.log(`${indent}${DIM}saw ${name} = ${JSON.stringify(v)}${OFF}`);
+    }
+    for (const d of step.diffs) {
+      const where = d.key === null ? d.collection : `${d.collection}[${d.key}]${d.field ? "." + d.field : ""}`;
+      console.log(
+        `${indent}${YELLOW}${where}: ${JSON.stringify(d.before)} -> ${JSON.stringify(d.after)}${OFF}`
+      );
+    }
+  }
+}
+
+function cellFor(step: NonNullable<CorrectnessResult["counterexample"]>["steps"][number], width: number): string {
+  const text = step.label.length > width - 2 ? step.label.slice(0, width - 3) + "\u2026" : step.label;
+  return (step.fault ? RED : "") + pad(text, width) + (step.fault ? OFF : "");
+}
+
+/** `--check`: run the bounded correctness search over a study. */
+function checkMode(study: Study): void {
+  heading("study");
+  console.log(`  ${study.name}`);
+  if (study.problem) console.log(`  ${DIM}${wrap(study.problem, 96, "  ")}${OFF}`);
+
+  const errors = studyModelErrors(study);
+  if (errors.length > 0) {
+    console.log(`\n${RED}the study does not validate:${OFF}`);
+    for (const e of errors) console.log(`  ${e}`);
+    process.exit(1);
+  }
+
+  const only = value("candidate");
+  const targets = only ? study.candidates.filter((c) => c.id === only) : study.candidates;
+  if (targets.length === 0) {
+    console.log(`${RED}no candidate "${only}"${OFF}. available:`);
+    for (const c of study.candidates) console.log(`  ${pad(c.id, 36)} ${DIM}${c.label}${OFF}`);
+    process.exit(1);
+  }
+
+  const b = study.correctness.bounds;
+  heading("bounds");
+  console.log(
+    `  ${b.actors} actors, at most ${b.faults} injected fault${b.faults === 1 ? "" : "s"} per execution, ` +
+      `${b.transitions} transitions, ${b.states.toLocaleString()} states, ${b.timeMs}ms`
+  );
+  const faults = Object.entries(study.correctness.faults).filter(([, on]) => on).map(([k]) => k);
+  console.log(`  faults in scope: ${faults.length > 0 ? faults.join(", ") : "none"}`);
+  if (Object.keys(study.correctness.stateOverrides).length > 0) {
+    console.log(
+      `  ${YELLOW}exploration state: ${Object.entries(study.correctness.stateOverrides)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ")}${OFF}`
+    );
+  }
+
+  heading("verdicts");
+  let violations = 0;
+  let inconclusive = 0;
+
+  for (const candidate of targets) {
+    const result = checkCandidate(study, candidate);
+    const colour = statusColour(result.status);
+    console.log(
+      `\n  ${BOLD}${candidate.label}${OFF} ${DIM}(${candidate.id})${OFF}\n` +
+        `  ${colour}${result.status}${OFF} ${DIM}${result.stats.statesVisited.toLocaleString()} states, ` +
+        `${result.stats.transitionsApplied.toLocaleString()} transitions, ${Math.round(result.stats.wallMs)}ms${OFF}`
+    );
+    if (candidate.intent) console.log(`  ${DIM}intent: ${wrap(candidate.intent, 92, "  ")}${OFF}`);
+
+    if (result.status === "INVALID_MODEL") {
+      for (const e of result.modelErrors) console.log(`  ${RED}${e}${OFF}`);
+      violations++;
+      continue;
+    }
+    if (result.counterexample) {
+      printCounterexample(result.counterexample);
+      violations++;
+    } else {
+      console.log(`  ${wrap(result.claim, 92, "  ")}`);
+      if (result.status === "INCONCLUSIVE_BOUND_REACHED") inconclusive++;
+    }
+  }
+
+  heading("assumptions");
+  const first = checkCandidate(study, targets[0]!);
+  for (const a of first.assumptions) console.log(`  ${DIM}\u00b7 ${a}${OFF}`);
+
+  heading("summary");
+  console.log(
+    `  ${targets.length} candidate${targets.length === 1 ? "" : "s"} checked: ` +
+      `${RED}${violations} violated${OFF}, ${YELLOW}${inconclusive} inconclusive${OFF}, ` +
+      `${GREEN}${targets.length - violations - inconclusive} with no violation within bounds${OFF}`
+  );
+  console.log(
+    `  ${DIM}"no violation within bounds" is not a proof of safety. Raising any bound may change the answer.${OFF}`
+  );
+  if (violations > 0) process.exitCode = 1;
+}
+
+/** `--portfolio`: evaluate every candidate and print the Pareto frontier. */
+function portfolioMode(study: Study): void {
+  heading("study");
+  console.log(`  ${study.name}`);
+
+  const replications = numeric("replications", { min: 1, max: 64, integer: true });
+  const t0 = Date.now();
+  const { study: evaluated, portfolio } = evaluateStudy(study, replications ? { replications } : {});
+  console.log(`  ${DIM}evaluated ${study.candidates.length} candidates in ${((Date.now() - t0) / 1000).toFixed(1)}s${OFF}`);
+
+  heading("eligibility");
+  for (const decision of portfolio.decisions) {
+    const candidate = study.candidates.find((c) => c.id === decision.candidateId);
+    const mark = decision.eligible ? `${GREEN}eligible${OFF}` : `${RED}ineligible${OFF}`;
+    console.log(`\n  ${BOLD}${candidate?.label ?? decision.candidateId}${OFF}  ${mark}`);
+    for (const gate of decision.gates) {
+      const icon = gate.passed ? `${GREEN}pass${OFF}` : `${RED}FAIL${OFF}`;
+      console.log(`    ${icon} ${pad(gate.gate, 26)} ${DIM}${wrap(gate.reason, 60, "                                 ")}${OFF}`);
+    }
+  }
+
+  heading("measured");
+  const header =
+    "  " + pad("candidate", 34) + rpad("p99", 12) + rpad("err%", 10) + rpad("oversell", 12) + rpad("dup", 10) + rpad("left", 8);
+  console.log(BOLD + header + OFF);
+  for (const decision of portfolio.decisions) {
+    const candidate = study.candidates.find((c) => c.id === decision.candidateId)!;
+    const e = cachedEvaluation(evaluated, candidate);
+    const p = e?.performance;
+    const m = e?.business?.metrics;
+    console.log(
+      "  " +
+        pad(candidate.label.slice(0, 33), 34) +
+        rpad(p ? `${p.p99Ms.mean.toFixed(0)}\u00b1${p.p99Ms.halfWidth.toFixed(0)}` : "-", 12) +
+        rpad(p ? p.errorRatePct.mean.toFixed(2) : "-", 10) +
+        rpad(m?.oversells ? m.oversells.mean.toFixed(1) : "-", 12) +
+        rpad(m?.duplicateSuccesses ? m.duplicateSuccesses.mean.toFixed(1) : "-", 10) +
+        rpad(m?.remainingInventory ? m.remainingInventory.mean.toFixed(0) : "-", 8)
+    );
+  }
+
+  heading("frontier");
+  if (portfolio.frontier.length === 0) {
+    console.log(`  ${YELLOW}nothing to compare${OFF}`);
+  } else {
+    for (const id of portfolio.frontier) {
+      const candidate = study.candidates.find((c) => c.id === id);
+      console.log(`  ${GREEN}\u25cf${OFF} ${candidate?.label ?? id}`);
+    }
+  }
+  for (const d of portfolio.dominated) {
+    const w = study.candidates.find((c) => c.id === d.winner)?.label ?? d.winner;
+    const l = study.candidates.find((c) => c.id === d.loser)?.label ?? d.loser;
+    console.log(`  ${DIM}${l} is dominated by ${w} (better on ${d.strictlyBetterOn.join(", ")})${OFF}`);
+  }
+  for (const [a, b] of portfolio.ties) {
+    const la = study.candidates.find((c) => c.id === a)?.label ?? a;
+    const lb = study.candidates.find((c) => c.id === b)?.label ?? b;
+    console.log(`  ${DIM}${la} and ${lb} are indistinguishable within the measured intervals${OFF}`);
+  }
+
+  heading("what this does and does not say");
+  console.log(`  ${wrap(portfolio.claim, 96, "  ")}`);
+  for (const w of portfolio.warnings) console.log(`\n  ${YELLOW}${wrap(w, 96, "  ")}${OFF}`);
+
+  if (value("out")) {
+    writeFileSync(value("out")!, JSON.stringify(evaluated, null, 2));
+    console.log(`\n  ${DIM}wrote ${value("out")} with cached evaluations${OFF}`);
+  }
+}
+
+/** Wrap text to a width, indenting continuation lines. */
+function wrap(text: string, width: number, indent: string): string {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    if (line.length + word.length + 1 > width) {
+      lines.push(line);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) lines.push(line);
+  return lines.join(`\n${indent}`);
+}
+
+// Study modes load their own document and must run before the design-only path, which would
+// otherwise reject a study file as an invalid design.
+if (flag("check") || flag("portfolio")) {
+  try {
+    const study = loadStudy();
+    console.log(`${CYAN}${BOLD}system design studio${OFF} ${DIM}${flag("check") ? "correctness" : "portfolio"}${OFF}`);
+    if (flag("check")) checkMode(study);
+    else portfolioMode(study);
+  } catch (err) {
+    console.log(`\n${RED}refused:${OFF} ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  console.log();
+  process.exit(process.exitCode ?? 0);
 }
 
 let effective: Design;

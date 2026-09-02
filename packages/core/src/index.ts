@@ -10,4 +10,5 @@ export * from "./confidence";
 export * from "./statistics";
 export * from "./result";
 export * from "./components";
+export * from "./workflow";
 export * from "./run";

@@ -170,6 +170,44 @@ export interface LoadBalancerMetrics {
   worstImbalancePct: number;
 }
 
+/**
+ * Lease behaviour at a lock service.
+ *
+ * Reported separately from station utilization because the interesting numbers are
+ * not about capacity at all. A lock service can sit at 4% utilization and still be the
+ * reason the design is broken, and the evidence for that is in `expired` and
+ * `staleOwnerRejections`, not in how busy it was.
+ *
+ * `staleOwnerRejections` is the number that proves fencing is doing something. It
+ * counts writes refused because the writer's token was older than the lease's current
+ * generation -- that is, occasions on which a worker that believed it held the lease
+ * tried to act and was stopped. A design with fencing enabled and zero stale-owner
+ * rejections under a fault model that includes lease expiry has not demonstrated
+ * safety; it has demonstrated that the race was never reached. A design WITHOUT
+ * fencing has no mechanism to count, and the corruption happens silently, which is
+ * precisely why the correctness explorer rather than the simulator is the right tool
+ * for that question.
+ */
+export interface LockMetrics {
+  acquireAttempts: number;
+  acquired: number;
+  /** Refused because someone else held an unexpired lease. Contention, not failure. */
+  contended: number;
+  released: number;
+  /** Leases that reached their TTL while still held. Each one is a potential race. */
+  expired: number;
+  /** Writes refused because the writer's fencing token was stale. */
+  staleOwnerRejections: number;
+  fencingEnabled: boolean;
+  /** Time spent waiting for the lock service itself, not for the lease to free up. */
+  waitMs: LatencySummary;
+  /** Time a lease was held, from grant to release or expiry. */
+  heldMs: LatencySummary;
+  /** Time-average leases held at once, across all keys. */
+  avgHeld: number;
+  peakHeld: number;
+}
+
 export interface NodeResult {
   nodeId: string;
   label: string;
@@ -222,6 +260,7 @@ export interface NodeResult {
   queue?: QueueMetrics;
   loadbalancer?: LoadBalancerMetrics;
   connections?: ConnectionMetrics;
+  lock?: LockMetrics;
 }
 
 export interface ClassResult {
@@ -356,6 +395,96 @@ export interface EdgeResult {
   hasPolicy: boolean;
 }
 
+/**
+ * What the workflow did, in business terms.
+ *
+ * WHY THESE AND NOT LATENCY
+ *
+ * Because a design can serve every request in forty milliseconds with a zero percent
+ * error rate and sell three hundred pizzas it does not have. Every oversell in history
+ * was a successful response, so a tool that ranked on latency and error rate alone would
+ * hand the crown to the broken candidate -- and would be right about every number it
+ * printed.
+ *
+ * `oversells` and `duplicateSuccesses` are the two that carry the weight, and both are
+ * only computable because the study's product contract says which outcome labels mean
+ * what. Without that mapping they are reported as raw label counts and interpreted not at
+ * all, which is the honest degradation.
+ */
+export interface BusinessMetrics {
+  validAllocations: number;
+  /** Succeeded twice for one logical claim. A correctness failure that returned 200. */
+  duplicateSuccesses: number;
+  /** Allocated a unit that did not exist. */
+  oversells: number;
+  /** Counter values at the end of the run, per collection. */
+  remainingInventory: Record<string, number>;
+  expiredReservations: number;
+  /**
+   * Units taken by a handler that then died, and never given back.
+   *
+   * NOT a correctness failure: nobody was oversold, so no invariant is violated. It is
+   * pure waste, and it is the cost of a design that decrements before it commits. Reported
+   * separately so a reader can weigh "loses stock on crash" against "oversells on crash",
+   * which are very different problems with very different fixes.
+   */
+  strandedReservations: number;
+  /** Unique inserts that lost the race. In an idempotent design, the happy path. */
+  idempotencyHits: number;
+  transactionConflicts: number;
+  redeliveries: number;
+  abandonedMessages: number;
+  /** Writes refused because the writer's fencing token was superseded. */
+  staleOwnerRejections: number;
+  leaseContentions: number;
+  leaseExpiries: number;
+  guardFailures: number;
+  /** Handlers abandoned by a station failure mid-flight. */
+  crashedHandlers: number;
+  /** Handlers still running when their caller gave up waiting. */
+  detachedAfterTimeout: number;
+  /** Outcome label -> count, verbatim from `respond` operations. */
+  outcomes: Record<string, number>;
+  statuses: Record<string, number>;
+  /** Measured seconds until a counter first hit zero. Null means it never did. */
+  timeToExhaustSec: Record<string, number | null>;
+  lockWaitMs: LatencySummary;
+  /** Queue backlog age at consumption. The real "async latency". */
+  messageAgeMs: LatencySummary;
+  /**
+   * The state the run finished in.
+   *
+   * Carried for two reasons. The first is that a reader wants it: "how many claims ended
+   * up in the table, and for whom" is the question a business-metric count is a summary
+   * of, and a summary that cannot be checked against its source is a number to be taken
+   * on trust.
+   *
+   * The second is that it is what makes the two engines comparable. The conformance test
+   * drives the same workflow through the breadth-first explorer and through this
+   * simulator and asserts the final states are identical; without the state in the result
+   * that test would have to reach inside the runtime, and a test that reaches inside is a
+   * test that stops proving the public behaviour.
+   *
+   * Tables are omitted past `rowsIncluded` rows, and `truncated` says so. A long
+   * production-scale run can fill a table with thousands of rows and shipping all of them
+   * across the worker boundary on every run would be paid by every user for the benefit
+   * of the few who look.
+   */
+  state: FinalState;
+}
+
+export interface FinalState {
+  counters: Record<string, number>;
+  /** collection id -> row key -> row. Absent when `truncated`. */
+  tables: Record<string, Record<string, Record<string, string | number | boolean>>>;
+  rowCounts: Record<string, number>;
+  truncated: boolean;
+  /** Messages never acknowledged, never abandoned. Work that silently did not happen. */
+  unackedMessages: number;
+  /** Leases still held when the run ended, including by handlers that died. */
+  heldLeases: number;
+}
+
 export interface RunResult {
   design: Design;
   /** Measurement window, simulated seconds (excludes warm-up). */
@@ -428,6 +557,15 @@ export interface RunResult {
    */
   confidence: ConfidenceReport;
   sloPassed: boolean | null;
+  /**
+   * What the workflow did, or null for a design with no workflow.
+   *
+   * Null is a first-class answer. Every design that existed before state arrived has no
+   * workflow, produces no business metrics, and remains a perfectly good capacity model --
+   * what it cannot do is make a claim about correctness or about allocation, and a zeroed
+   * metrics object would have let it appear to.
+   */
+  business: BusinessMetrics | null;
   trace: Trace;
   throughputSeries: SeriesData;
   latencyP99Series: SeriesData;

@@ -1,0 +1,202 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`input schemas come from the validators > matches a snapshot, so widening a validator without regenerating fails a test 1`] = `
+{
+  "studio_compare_candidates": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateIds": {
+        "default": [],
+        "items": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "maxItems": 64,
+        "type": "array",
+      },
+    },
+    "type": "object",
+  },
+  "studio_create_candidate": {
+    "additionalProperties": false,
+    "properties": {
+      "copyFrom": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "design": {},
+      "intent": {
+        "default": "",
+        "maxLength": 2000,
+        "type": "string",
+      },
+      "label": {
+        "description": "Short human-readable name.",
+        "maxLength": 120,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "label",
+    ],
+    "type": "object",
+  },
+  "studio_create_study": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "maxLength": 120,
+        "minLength": 1,
+        "type": "string",
+      },
+      "problem": {
+        "default": "",
+        "maxLength": 4000,
+        "type": "string",
+      },
+    },
+    "required": [
+      "name",
+    ],
+    "type": "object",
+  },
+  "studio_get_candidate": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "description": "Candidate id, from studio_get_study.",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "candidateId",
+    ],
+    "type": "object",
+  },
+  "studio_get_catalog": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "studio_get_evaluation": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "description": "Candidate id, from studio_get_study.",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "candidateId",
+    ],
+    "type": "object",
+  },
+  "studio_get_study": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "studio_list_studies": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "studio_open_study": {
+    "additionalProperties": false,
+    "properties": {
+      "exampleId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "studyId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
+  "studio_replace_candidate_draft": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "design": {
+        "description": "A complete, validated design document.",
+      },
+      "expectedRevision": {
+        "description": "The revision you believe you are replacing, from studio_get_candidate. The call is refused if the candidate has moved on.",
+        "minimum": 0,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "candidateId",
+      "expectedRevision",
+      "design",
+    ],
+    "type": "object",
+  },
+  "studio_run_evaluation": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "correctness": {
+        "default": true,
+        "type": "boolean",
+      },
+      "performance": {
+        "default": true,
+        "type": "boolean",
+      },
+    },
+    "required": [
+      "candidateId",
+    ],
+    "type": "object",
+  },
+  "studio_update_study": {
+    "additionalProperties": false,
+    "properties": {
+      "contract": {},
+      "name": {
+        "maxLength": 120,
+        "minLength": 1,
+        "type": "string",
+      },
+      "problem": {
+        "maxLength": 4000,
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
+  "studio_validate_draft": {
+    "additionalProperties": false,
+    "properties": {
+      "design": {
+        "description": "A design document to check without storing it.",
+      },
+    },
+    "required": [
+      "design",
+    ],
+    "type": "object",
+  },
+}
+`;

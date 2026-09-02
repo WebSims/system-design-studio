@@ -21,13 +21,17 @@ import {
   type TraceSink,
 } from "./components";
 import { assessConfidence } from "./confidence";
+import { WorkflowRuntime, type OutcomeMeaning } from "./workflow";
 import { LatencyHistogram } from "./histogram";
 import { sample } from "./distribution";
 import { RngBundle } from "./rng";
+import { stepEnvFor } from "@sds/kernel";
 import { Sim, delay, suspend, type Process } from "./sim";
 import { TimeSeries } from "./timeseries";
 import type {
+  BusinessMetrics,
   ClassResult,
+  FinalState,
   EdgeResult,
   ErrorBreakdown,
   ErrorReason,
@@ -233,6 +237,16 @@ export interface RunOptions {
   durationSec?: number;
   /** Set false to skip trace collection entirely (sweeps do not need it). */
   collectTrace?: boolean;
+  /**
+   * What the workflow's outcome labels MEAN, supplied by the study's product contract.
+   *
+   * Without it the engine reports outcome counts per label and interprets none of them,
+   * because it cannot: `oversold` and `alreadyClaimed` are both just strings a workflow
+   * chose, and guessing which one is a failure would be the engine inventing a business
+   * rule. With it, `oversells` and `duplicateSuccesses` become real numbers the
+   * eligibility gate can act on.
+   */
+  outcomes?: OutcomeMeaning;
 }
 
 /**
@@ -327,6 +341,22 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     trace,
     measuring: measuringFn,
   };
+
+  /**
+   * The stateful layer, when the design declares one.
+   *
+   * Built BEFORE the components, because the server component checks `env.workflow` to
+   * decide whether to run a handler or traverse its outgoing edges generically. Built
+   * from `stepEnvFor`, which is the single place queue delivery semantics and lock
+   * defaults are lifted out of the topology -- so the simulator and the explorer cannot
+   * disagree about whether a queue redelivers.
+   */
+  const stepEnv = design.workflow ? stepEnvFor(design) : null;
+  const workflow = stepEnv
+    ? new WorkflowRuntime(env, stepEnv, design, { outcomes: opts.outcomes })
+    : null;
+  if (workflow) env.workflow = workflow;
+
   for (const node of design.nodes) {
     const component = buildComponent(node, env);
     if (component) components.set(node.id, component);
@@ -412,6 +442,14 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       serviceMultiplier: cls.serviceMultiplier,
       deadlineAt: timeoutMs === null ? null : entryT + timeoutMs,
       traced,
+      // Generated here, once, at the request's entry -- not inside the handler.
+      //
+      // The distinction is the entire mechanism behind idempotency. A key generated per
+      // logical request is stable across retries and can be deduplicated; a key generated
+      // per attempt cannot. Generating it at the client boundary is the only arrangement
+      // in which the first property is true, and it is also what the explorer's
+      // `retry-same-key` fault reproduces.
+      ...(workflow ? { domain: workflow.generate() } : {}),
     };
 
     // Population is tracked unconditionally: it is a physical quantity, and
@@ -639,6 +677,10 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       inSystem.reset();
       for (const component of components.values()) component.resetStats();
       for (const site of callSites.values()) site.resetStats();
+      // Business tallies restart; the WORLD does not. Inventory consumed during warm-up
+      // is genuinely consumed, and restocking it here would hand the measurement window a
+      // fresh system rather than a warmed one -- the exact bias warm-up exists to remove.
+      workflow?.resetStats();
       edgeTraversals.clear();
       throughputSeries.reset();
       latencyP99Series.reset();
@@ -655,6 +697,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     if (measuring) {
       const tSec = (sim.now - (warmupMs > 0 ? warmupMs : 0)) / 1000;
       for (const component of components.values()) component.sample(tSec);
+      workflow?.sample(tSec);
       throughputSeries.push(tSec, (rec.windowCompletions * 1000) / samplePeriodMs);
       const windowP99 = rec.windowLatency.count > 0 ? rec.windowLatency.quantile(0.99) : 0;
       latencyP99Series.push(tSec, windowP99);
@@ -751,6 +794,8 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   const totalAttempts = edgeResults.reduce((s2, e) => s2 + e.attempts, 0);
   const retryAmplification = totalCalls > 0 ? totalAttempts / totalCalls : 1;
 
+  const businessMetrics = workflow ? summariseWorkflow(workflow) : null;
+
   const stability = checkStability(nodeResults, edgeResults, observedSec);
   const componentInvariants: InvariantReport[] = [];
   for (const component of components.values()) {
@@ -828,6 +873,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     stability,
     confidence,
     sloPassed,
+    business: businessMetrics,
     trace: traceResult,
     throughputSeries: series(throughputSeries),
     latencyP99Series: series(latencyP99Series),
@@ -1104,4 +1150,74 @@ function checkLittlesLaw(
       `(\u03bb=${lambda.toFixed(2)}/s, W=${(W * 1000).toFixed(1)}ms), ` +
       `error ${(error * 100).toFixed(2)}%`,
   };
+}
+
+/**
+ * Flatten the runtime's live tallies into the plain-data result shape.
+ *
+ * Plain data, no classes, no functions -- so it survives `structuredClone` across the
+ * worker boundary like every other result type in this file. A histogram cannot cross
+ * that boundary, so it is summarised here rather than carried.
+ */
+function summariseWorkflow(runtime: WorkflowRuntime): BusinessMetrics {
+  const m = runtime.results();
+  return {
+    validAllocations: m.validAllocations,
+    duplicateSuccesses: m.duplicateSuccesses,
+    oversells: m.oversells,
+    remainingInventory: { ...m.remainingInventory },
+    expiredReservations: m.expiredReservations,
+    strandedReservations: m.strandedReservations,
+    idempotencyHits: m.idempotencyHits,
+    transactionConflicts: m.transactionConflicts,
+    redeliveries: m.redeliveries,
+    abandonedMessages: m.abandonedMessages,
+    staleOwnerRejections: m.staleOwnerRejections,
+    leaseContentions: m.leaseContentions,
+    leaseExpiries: m.leaseExpiries,
+    guardFailures: m.guardFailures,
+    crashedHandlers: m.crashedHandlers,
+    detachedAfterTimeout: m.detachedAfterTimeout,
+    outcomes: { ...m.outcomes },
+    statuses: { ...m.statuses },
+    timeToExhaustSec: { ...m.timeToExhaustSec },
+    lockWaitMs: summarize(m.lockWait),
+    messageAgeMs: summarize(m.messageAge),
+    state: finalState(runtime),
+  };
+}
+
+/** Row ceiling above which tables are summarised rather than shipped. */
+const MAX_REPORTED_ROWS = 200;
+
+function finalState(runtime: WorkflowRuntime): FinalState {
+  const world = runtime.snapshot();
+  const rowCounts: Record<string, number> = {};
+  let total = 0;
+  for (const [id, table] of Object.entries(world.tables)) {
+    const n = Object.keys(table).length;
+    rowCounts[id] = n;
+    total += n;
+  }
+  const truncated = total > MAX_REPORTED_ROWS;
+  return {
+    counters: { ...world.counters },
+    tables: truncated ? {} : structuredTables(world.tables),
+    rowCounts,
+    truncated,
+    unackedMessages: world.messages.filter((m) => !m.acked && !m.abandoned).length,
+    heldLeases: Object.keys(world.leases).length,
+  };
+}
+
+function structuredTables(
+  tables: Record<string, Record<string, Record<string, string | number | boolean>>>
+): Record<string, Record<string, Record<string, string | number | boolean>>> {
+  const out: Record<string, Record<string, Record<string, string | number | boolean>>> = {};
+  for (const [id, table] of Object.entries(tables)) {
+    const rows: Record<string, Record<string, string | number | boolean>> = {};
+    for (const key of Object.keys(table).sort()) rows[key] = { ...table[key]! };
+    out[id] = rows;
+  }
+  return out;
 }

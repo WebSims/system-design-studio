@@ -12,6 +12,12 @@
       "@sds/schema": [
         "./packages/schema/src/index.ts"
       ],
+      "@sds/kernel": [
+        "./packages/kernel/src/index.ts"
+      ],
+      "@sds/explore": [
+        "./packages/explore/src/index.ts"
+      ],
       "@sds/core": [
         "./packages/core/src/index.ts"
       ],
@@ -23,6 +29,9 @@
       ],
       "@sds/analyze": [
         "./packages/analyze/src/index.ts"
+      ],
+      "@sds/study": [
+        "./packages/study/src/index.ts"
       ]
     }
   },

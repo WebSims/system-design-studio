@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc -b && tsc -p tsconfig.tests.json && tsc -p apps/studio/tsconfig.json",
     "verify": "pnpm typecheck && pnpm test",
-    "sim": "vite-node scripts/report.ts --"
+    "sim": "vite-node scripts/report.ts --",
+    "browser": "vite-node scripts/browser.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -22,6 +23,9 @@
     "@sds/core": "workspace:*",
     "@sds/analytic": "workspace:*",
     "@sds/models": "workspace:*",
-    "@sds/analyze": "workspace:*"
+    "@sds/analyze": "workspace:*",
+    "@sds/kernel": "workspace:*",
+    "@sds/explore": "workspace:*",
+    "@sds/study": "workspace:*"
   }
 }

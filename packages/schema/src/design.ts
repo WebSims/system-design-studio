@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { WorkflowSchema } from "./domain";
 
 /**
  * Upper bounds on the fields that drive the closed-form solvers' loop counts.
@@ -87,6 +88,7 @@ export const NodeKindSchema = z.enum([
   "database",
   "queue",
   "gateway",
+  "lock",
 ]);
 export type NodeKind = z.infer<typeof NodeKindSchema>;
 
@@ -613,6 +615,47 @@ export const QueueConfigSchema = z.object({
   consumerServiceTime: DistributionSchema.default({ kind: "exponential", mean: 50 }),
   /** Publish overhead paid by the caller. */
   publishTime: DistributionSchema.default({ kind: "deterministic", value: 1 }),
+  /**
+   * Delivery guarantee.
+   *
+   * THERE IS NO "EXACTLY ONCE" OPTION, AND THERE WILL NOT BE ONE.
+   *
+   * Exactly-once delivery over an unreliable channel is not implementable, and every
+   * broker that advertises it is describing either at-least-once delivery plus
+   * deduplication inside a single system boundary, or a transaction that the
+   * consumer's side effects are not actually inside. Offering it as a checkbox would
+   * let a user tick away the hazard that this entire correctness engine exists to
+   * find, and would produce designs that are safe in the model and duplicate charges
+   * in production.
+   *
+   * `at-least-once` redelivers an unacknowledged message. `at-most-once` delivers
+   * once and drops on failure. Exactly-once EFFECTS are reachable, and the only
+   * routes are `insertUnique` or a guarded `conditionalWrite` in the consumer -- both
+   * of which the workflow has to state explicitly, and both of which the explorer
+   * will confirm or refute.
+   */
+  delivery: z.enum(["at-least-once", "at-most-once"]).default("at-least-once"),
+  /**
+   * Whether a consumer must acknowledge, and how long the broker waits before
+   * assuming it will not.
+   *
+   * `visibilityTimeoutMs` is the interval during which a delivered-but-unacked
+   * message is hidden from other consumers. Setting it shorter than the consumer's
+   * actual handling time is the classic self-inflicted duplicate: the message
+   * becomes visible again while the first consumer is still working, so the work
+   * happens twice concurrently rather than twice in sequence, which defeats
+   * deduplication schemes that assume the second attempt sees the first's writes.
+   */
+  requireAck: z.boolean().default(true),
+  visibilityTimeoutMs: z.number().positive().max(3_600_000).default(30_000),
+  /**
+   * Redeliveries allowed before the message is abandoned.
+   *
+   * Bounded on purpose. An unbounded redelivery loop over a message that will never
+   * succeed is a poison-pill outage, and the model should be able to show it ending.
+   * The abandoned count is reported rather than silently dropped.
+   */
+  maxRedeliveries: z.number().int().nonnegative().max(100).default(3),
   citation: CitationSchema.optional(),
 });
 export type QueueConfig = z.infer<typeof QueueConfigSchema>;
@@ -663,6 +706,110 @@ export const GatewayConfigSchema = z.object({
 });
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;
 
+/**
+ * A distributed lock / lease service. Vendor-neutral on purpose.
+ *
+ * WHY THIS IS ITS OWN COMPONENT
+ *
+ * A lease is not a mutex and the difference is the entire reason distributed locking
+ * is hard. A mutex is held until released. A lease is held until released OR until it
+ * expires, and expiry happens on the lock service's clock, not the holder's. The
+ * holder therefore cannot know it still holds the lease -- it can only know it held
+ * one recently. Every "we used a lock, so it's safe" design that corrupts data in
+ * production corrupts it in that gap.
+ *
+ * Modelling this needs three things the existing components cannot express: state
+ * that survives the holder's death, an expiry that fires independently of anyone's
+ * control flow, and an optional monotonic token that lets the *datastore* reject a
+ * writer whose lease has already been reassigned. The last one is fencing, and it is
+ * the only mechanism in this file that actually makes lease-based mutual exclusion
+ * safe. A lock service without it provides an advisory hint, and the studio says so.
+ *
+ * Deliberately NOT modelled: leader election, quorums, clock skew between the lock
+ * service's replicas. Those live in the deferred multi-region scope, and pretending
+ * otherwise would produce a false negative -- "no violation found" for a design whose
+ * real failure needs a partition to reach.
+ */
+export const LockConfigSchema = z.object({
+  /**
+   * Lease requests genuinely served at once.
+   *
+   * A lock service is a serialisation point by construction, so this is usually
+   * modest. It matters because it is the number that turns "we take a lock" into a
+   * throughput ceiling that no amount of application-tier scaling can lift.
+   */
+  concurrency: z.number().int().positive().max(MAX_CONCURRENCY).default(64),
+  serviceTime: DistributionSchema.default({ kind: "lognormal", mean: 2, p99: 15 }),
+  /** Waiters allowed. Null = unbounded. */
+  queueCapacity: z.number().int().nonnegative().max(MAX_QUEUE_CAPACITY).nullable().default(null),
+  admissionPolicy: AdmissionPolicySchema.default("block"),
+  /**
+   * Default lease duration when an operation does not state one, ms.
+   *
+   * Both directions are hazards, which is why the value is explicit. Too short and
+   * a healthy holder loses its lease mid-work, so two workers proceed believing they
+   * are alone. Too long and a dead holder's key stays locked for that whole interval,
+   * converting a crash into an outage.
+   */
+  defaultTtlMs: z.number().positive().max(3_600_000).default(10_000),
+  /**
+   * Whether this service issues fencing tokens.
+   *
+   * Off by default because the common deployments -- a Redis `SET NX PX`, a row with
+   * an owner column -- do not issue one unless you build it. The default should
+   * reproduce what people actually have, not what they should have.
+   */
+  fencingTokens: z.boolean().default(false),
+  /** Probability a lease operation fails for reasons unrelated to load. */
+  failureProbability: z.number().min(0).max(1).default(0),
+  citation: CitationSchema.optional(),
+});
+export type LockConfig = z.infer<typeof LockConfigSchema>;
+
+/**
+ * What one instance of this component consumes.
+ *
+ * WHY THERE ARE NO PRICES HERE
+ *
+ * Because a price is a claim about a vendor's rate card on a particular day in a
+ * particular region under a particular commitment, and the studio has no way to check
+ * any of that. A tool that multiplied a made-up hourly rate by a simulated hour would
+ * be generating its most confident-looking and least defensible number. So the model
+ * stops at physical units, which are properties of the design rather than of a
+ * contract, and leaves the multiplication to whoever knows their own bill.
+ *
+ * WHY EVERY FIELD IS NULLABLE
+ *
+ * Because "unknown" and "zero" are different, and conflating them makes a design that
+ * nobody has measured look free -- so it wins the comparison. Null propagates: a
+ * candidate with any unknown resource reports that axis as unknown, and the Pareto
+ * comparison declines to rank on it rather than assuming the best case. This is the
+ * only honest behaviour and it is deliberately inconvenient.
+ */
+export const ResourceProfileSchema = z.object({
+  /**
+   * Compute units per instance. A "unit" is one busy vCPU-equivalent; the studio
+   * never converts it to anything else.
+   */
+  cpuUnits: z.number().nonnegative().nullable().default(null),
+  memoryMb: z.number().nonnegative().nullable().default(null),
+  /** Persistent bytes held. Meaningful for datastores; usually null elsewhere. */
+  storageMb: z.number().nonnegative().nullable().default(null),
+  /**
+   * Connection slots this instance occupies at a shared resource.
+   *
+   * Separate from `concurrency` because they are different scarcities: a serverless
+   * tier can scale its own concurrency freely and still exhaust the database's
+   * connection limit, which is the single most common way an autoscaled design takes
+   * down its datastore.
+   */
+  connectionSlots: z.number().nonnegative().nullable().default(null),
+  /** Bytes crossing the network per request handled. */
+  networkBytesPerRequest: z.number().nonnegative().nullable().default(null),
+  citation: CitationSchema.optional(),
+});
+export type ResourceProfile = z.infer<typeof ResourceProfileSchema>;
+
 export const NodeSchema = z.object({
   id: z.string().min(1),
   kind: NodeKindSchema,
@@ -677,6 +824,12 @@ export const NodeSchema = z.object({
   database: DatabaseConfigSchema.optional(),
   queue: QueueConfigSchema.optional(),
   gateway: GatewayConfigSchema.optional(),
+  lock: LockConfigSchema.optional(),
+  /**
+   * Physical resources one instance consumes. Absent means unmeasured, which the
+   * portfolio comparison reports as unknown rather than treating as free.
+   */
+  resources: ResourceProfileSchema.optional(),
 });
 export type SdsNode = z.infer<typeof NodeSchema>;
 
@@ -902,7 +1055,7 @@ export const SloSchema = z.object({
 });
 export type Slo = z.infer<typeof SloSchema>;
 
-export const DESIGN_SCHEMA_VERSION = 5 as const;
+export const DESIGN_SCHEMA_VERSION = 6 as const;
 
 export const DesignSchema = z.object({
   version: z.literal(DESIGN_SCHEMA_VERSION),
@@ -913,6 +1066,23 @@ export const DesignSchema = z.object({
   classes: z.array(RequestClassSchema).default([]),
   scenario: ScenarioSchema,
   slo: SloSchema,
+  /**
+   * The stateful behaviour this topology implements, or null for a pure load model.
+   *
+   * NULL IS A FIRST-CLASS ANSWER, NOT A MISSING VALUE.
+   *
+   * Every design that existed before this field is null, keeps behaving exactly as it
+   * did, and remains a perfectly good capacity model. What it cannot do is make a
+   * correctness claim, and the studio must not manufacture one: a design with no
+   * workflow has no invariants, so "no violation found" would be trivially true and
+   * therefore worthless. Such a candidate is reported as having no correctness
+   * contract, and is excluded from the eligibility gate rather than passing it.
+   *
+   * Attaching a workflow does not change the latency model of the topology. It adds
+   * state transitions at the stations the workflow names, which consume the capacity
+   * those stations already declared.
+   */
+  workflow: WorkflowSchema.nullable().default(null),
 });
 export type Design = z.infer<typeof DesignSchema>;
 

@@ -1,4 +1,5 @@
 import {
+  type OutcomeMeaning,
   confidenceInterval,
   pairedDifference,
   runSimulation,
@@ -66,6 +67,14 @@ export interface ReplicateOptions {
   /** Explicit seeds. Overrides `replications`. */
   seeds?: number[];
   durationSec?: number;
+  /**
+   * What the workflow's outcome labels mean, from the study's product contract.
+   *
+   * Passed straight through to every replication. Without it the business tallies come back
+   * as raw label counts with no interpretation, and `oversells` reads zero for a design that
+   * oversells constantly -- which would let the eligibility gate pass it.
+   */
+  outcomes?: OutcomeMeaning;
 }
 
 /**
@@ -100,7 +109,9 @@ export function replicate(design: Design, opts: ReplicateOptions = {}): Replicat
     ? withScenario(design, { durationSec: opts.durationSec, traceLimit: 0 })
     : withScenario(design, { traceLimit: 0 });
 
-  const runs = seeds.map((seed) => runSimulation(target, { seed, collectTrace: false }));
+  const runs = seeds.map((seed) =>
+    runSimulation(target, { seed, collectTrace: false, ...(opts.outcomes ? { outcomes: opts.outcomes } : {}) })
+  );
 
   const intervals = {} as MetricIntervals;
   for (const name of Object.keys(METRIC_EXTRACTORS) as Array<keyof MetricIntervals>) {

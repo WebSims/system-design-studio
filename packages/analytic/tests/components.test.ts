@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runSimulation, zipfTopMass, type RunResult } from "@sds/core";
 import {
+  DESIGN_SCHEMA_VERSION,
   DesignSchema,
   validateDesign,
   type Design,
@@ -31,7 +32,7 @@ function design(parts: {
   warmupSec?: number;
 }): Design {
   return DesignSchema.parse({
-    version: 5,
+    version: DESIGN_SCHEMA_VERSION,
     name: "validation",
     nodes: parts.nodes,
     edges: parts.edges,

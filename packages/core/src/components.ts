@@ -15,6 +15,7 @@ import type {
   ErrorReason,
   LatencySummary,
   LoadBalancerMetrics,
+  LockMetrics,
   NodeResult,
   QueueMetrics,
   SeriesData,
@@ -36,6 +37,16 @@ export interface RequestCtx {
   /** Absolute simulated time the client gives up, or null. */
   deadlineAt: number | null;
   traced: boolean;
+  /**
+   * Generated domain fields for this request: user id, claim id, idempotency key.
+   *
+   * Absent for designs with no workflow, which is every design that existed before state
+   * arrived. Present and STABLE ACROSS RETRIES for the fields declared as derived from
+   * request content -- that stability is the whole mechanism by which an idempotent
+   * handler recognises a retry, so it is generated once per logical request rather than
+   * per attempt.
+   */
+  domain?: Record<string, string | number | boolean>;
 }
 
 export interface TraceSink {
@@ -79,6 +90,22 @@ export interface ComponentEnv {
   trace: TraceSink;
   /** True once warm-up is over. Components record nothing before that. */
   measuring: () => boolean;
+  /**
+   * Stateful workflow execution, when the design declares one.
+   *
+   * Typed loosely here to avoid a cycle: `workflow.ts` imports `ComponentEnv`, and the
+   * server component needs to invoke the runtime. The narrow interface is the whole
+   * contract between the two, and keeping it narrow is what stops the workflow layer
+   * from growing tendrils into every component.
+   */
+  workflow?: WorkflowHost;
+}
+
+/** The part of the workflow runtime a component is allowed to see. */
+export interface WorkflowHost {
+  handlesRoot(nodeId: string): boolean;
+  setHandlerNode(nodeId: string): void;
+  runRoot(ctx: RequestCtx): Process<Outcome>;
 }
 
 /**
@@ -673,7 +700,23 @@ export class ServerComponent extends StationComponent {
       // slow dependency.
       if (!cfg.blocksOnDependencies) release();
 
-      const downstream = yield* callDependencies(env, this.node.id, ctx, cfg.fanout);
+      /**
+       * Either the workflow runs here, or generic dependency calls do.
+       *
+       * Not both, and the reason is that a workflow's operations NAME the stations they
+       * hit -- a `conditionalWrite` on a collection stored at `db` calls `db`, and nothing
+       * else. Also traversing every outgoing edge would double-charge the datastore: once
+       * for the operation that actually happened and once for the topology's assumption
+       * that a server calls everything downstream of it.
+       *
+       * The topology still matters: it supplies the network latency and the call policy
+       * for each of those named hops, and it is still what puts the request on this
+       * server in the first place.
+       */
+      const downstream =
+        env.workflow?.handlesRoot(this.node.id) === true
+          ? yield* this.runWorkflow(ctx)
+          : yield* callDependencies(env, this.node.id, ctx, cfg.fanout);
       if (ctx.traced) {
         env.trace.visit(
           ctx.requestId,
@@ -689,6 +732,12 @@ export class ServerComponent extends StationComponent {
       release();
       this.recordResidency(enqueuedAt);
     }
+  }
+
+  private *runWorkflow(ctx: RequestCtx): Process<Outcome> {
+    const host = this.env.workflow!;
+    host.setHandlerNode(this.node.id);
+    return yield* host.runRoot(ctx);
   }
 }
 
@@ -2015,6 +2064,228 @@ export class GatewayComponent implements Component {
 }
 
 // ---------------------------------------------------------------------------
+// lock service
+// ---------------------------------------------------------------------------
+
+/**
+ * A lease service.
+ *
+ * WHAT THIS CLASS DOES AND DELIBERATELY DOES NOT DO
+ *
+ * It charges capacity and it measures. It does NOT decide who holds a lease.
+ *
+ * That split is the single most important structural decision in the stateful layer.
+ * Lease ownership is shared mutable state with exactly the same status as a row in a
+ * table, and it must be governed by the one kernel that both the breadth-first
+ * explorer and this simulator call. If the lease table lived here, this component
+ * would be a second implementation of mutual exclusion -- and a second implementation
+ * is a second set of bugs, of which the worst class is "the simulator says safe and
+ * the explorer says broken and neither is wrong about its own model".
+ *
+ * So the world state holds the leases, `stepOperation` grants and expires them, and
+ * this component provides the two things the kernel has no way to know: how long the
+ * round trip to the lock service took, and how contended it was.
+ *
+ * The metrics it reports are the ones that are invisible in latency: leases that
+ * expired while held, and writes rejected for a stale fencing token. Both are events
+ * where a design either did or did not have the property it claimed, and neither
+ * shows up as a slow request.
+ */
+export class LockComponent extends StationComponent {
+  private acquireAttempts = 0;
+  private acquired = 0;
+  private contended = 0;
+  private released = 0;
+  private expired = 0;
+  private staleOwnerRejections = 0;
+  private readonly waitTime = new LatencyHistogram();
+  private readonly heldTime = new LatencyHistogram();
+  private held = 0;
+  private peakHeld = 0;
+  private heldIntegral = 0;
+  private lastHeldT = 0;
+  private readonly heldSeries: TimeSeries;
+
+  constructor(node: SdsNode, env: ComponentEnv) {
+    const cfg = node.lock!;
+    super(node, env, {
+      capacity: cfg.concurrency,
+      queueCapacity: cfg.queueCapacity,
+      discipline: "fifo",
+      admissionPolicy: cfg.admissionPolicy,
+    });
+    this.heldSeries = new TimeSeries(`${node.id}.leasesHeld`);
+    this.lastHeldT = env.sim.now;
+  }
+
+  protected serviceMeanMs(): number {
+    return distMean(this.node.lock!.serviceTime);
+  }
+  protected serviceScv(): number {
+    return scv(this.node.lock!.serviceTime);
+  }
+
+  /**
+   * One round trip to the lock service.
+   *
+   * Returns success or failure of the CALL, not of the lease. Whether the lease was
+   * granted is the kernel's answer, and the caller applies the operation to the world
+   * state after this returns. Conflating the two would make a contended lease look
+   * like a failed request, and contention is normal.
+   */
+  *handle(ctx: RequestCtx): Process<Outcome> {
+    const cfg = this.node.lock!;
+    const env = this.env;
+    const enqueuedAt = env.sim.now;
+
+    const slot = yield* acquire(this.resource, ctx.deadlineAt);
+    if (!slot.granted) {
+      if (ctx.traced) {
+        env.trace.visit(
+          ctx.requestId,
+          this.node.id,
+          enqueuedAt,
+          null,
+          env.sim.now,
+          slot.reason === "shed" ? "shed" : "timeout"
+        );
+      }
+      return { ok: false, reason: slot.reason ?? "timeout" };
+    }
+
+    try {
+      if (env.measuring()) this.waitTime.record(slot.waitedMs);
+      const serviceStart = env.sim.now;
+      const serviceMs = Math.max(
+        MIN_SERVICE_MS,
+        sample(cfg.serviceTime, env.rng.stream("service")) * ctx.serviceMultiplier
+      );
+      const served = yield* delay(serviceMs, ctx.deadlineAt);
+      this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);
+      if (ctx.traced) {
+        env.trace.visit(
+          ctx.requestId,
+          this.node.id,
+          enqueuedAt,
+          serviceStart,
+          env.sim.now,
+          served.timedOut ? "timeout" : "served"
+        );
+      }
+      if (served.timedOut) return { ok: false, reason: "timeout" };
+      if (cfg.failureProbability > 0 && env.rng.stream("failure").chance(cfg.failureProbability)) {
+        return { ok: false, reason: "error" };
+      }
+      return OK;
+    } finally {
+      this.resource.release();
+      this.recordResidency(enqueuedAt);
+    }
+  }
+
+  // ---- bookkeeping driven by the kernel ----------------------------------
+  //
+  // These are called by the workflow executor after the kernel has decided what
+  // happened, so the counts here describe lease SEMANTICS while the station above
+  // describes lease COST. Keeping them as explicit notifications rather than having
+  // this class infer them from its own traffic is what stops the two from drifting.
+
+  noteAcquireAttempt(): void {
+    if (this.env.measuring()) this.acquireAttempts++;
+  }
+
+  noteAcquired(): void {
+    this.touchHeld();
+    this.held++;
+    if (this.held > this.peakHeld) this.peakHeld = this.held;
+    if (this.env.measuring()) this.acquired++;
+  }
+
+  noteContended(): void {
+    if (this.env.measuring()) this.contended++;
+  }
+
+  noteReleased(heldMs: number): void {
+    this.touchHeld();
+    if (this.held > 0) this.held--;
+    if (this.env.measuring()) {
+      this.released++;
+      this.heldTime.record(Math.max(0, heldMs));
+    }
+  }
+
+  noteExpired(heldMs: number): void {
+    this.touchHeld();
+    if (this.held > 0) this.held--;
+    if (this.env.measuring()) {
+      this.expired++;
+      this.heldTime.record(Math.max(0, heldMs));
+    }
+  }
+
+  noteStaleOwnerRejection(): void {
+    if (this.env.measuring()) this.staleOwnerRejections++;
+  }
+
+  /** Fold elapsed time into the time-weighted held-lease integral. */
+  private touchHeld(): void {
+    const now = this.env.sim.now;
+    this.heldIntegral += this.held * (now - this.lastHeldT);
+    this.lastHeldT = now;
+  }
+
+  override load(): number {
+    return this.resource.inServiceCount + this.resource.queueLength;
+  }
+
+  override resetStats(): void {
+    super.resetStats();
+    this.acquireAttempts = 0;
+    this.acquired = 0;
+    this.contended = 0;
+    this.released = 0;
+    this.expired = 0;
+    this.staleOwnerRejections = 0;
+    this.waitTime.reset();
+    this.heldTime.reset();
+    // `held` is NOT reset: leases outstanding at the warm-up boundary are really
+    // outstanding, and zeroing the count would make the release that follows
+    // underflow. Peak and the integral restart from the current occupancy for the
+    // same reason the resource keeps its `*AtStart` terms.
+    this.peakHeld = this.held;
+    this.heldIntegral = 0;
+    this.lastHeldT = this.env.sim.now;
+    this.heldSeries.reset();
+  }
+
+  override sample(tSec: number): void {
+    super.sample(tSec);
+    this.heldSeries.push(tSec, this.held);
+  }
+
+  override result(observedSec: number): NodeResult {
+    const base = super.result(observedSec);
+    const cfg = this.node.lock!;
+    this.touchHeld();
+    const observedMs = observedSec * 1000;
+    const lock: LockMetrics = {
+      acquireAttempts: this.acquireAttempts,
+      acquired: this.acquired,
+      contended: this.contended,
+      released: this.released,
+      expired: this.expired,
+      staleOwnerRejections: this.staleOwnerRejections,
+      fencingEnabled: cfg.fencingTokens,
+      waitMs: summarize(this.waitTime),
+      heldMs: summarize(this.heldTime),
+      avgHeld: observedMs > 0 ? this.heldIntegral / observedMs : 0,
+      peakHeld: this.peakHeld,
+    };
+    return { ...base, lock, queueLengthSeries: series(this.heldSeries) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // factory
 // ---------------------------------------------------------------------------
 
@@ -2032,6 +2303,8 @@ export function buildComponent(node: SdsNode, env: ComponentEnv): Component | nu
       return new QueueComponent(node, env);
     case "gateway":
       return new GatewayComponent(node, env);
+    case "lock":
+      return new LockComponent(node, env);
     case "client":
       return null; // clients originate work; they are not a station
   }
@@ -2044,6 +2317,7 @@ export const STATION_KINDS: NodeKind[] = [
   "database",
   "queue",
   "gateway",
+  "lock",
 ];
 
 export { callDependencies, callThrough, eligibleEdges };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DesignSchema, type Design } from "@sds/schema";
+import { DESIGN_SCHEMA_VERSION, DesignSchema, type Design } from "@sds/schema";
 import { defaultDesign } from "@sds/models";
 import { runSimulation } from "@sds/core";
 import { previewDesign } from "../src/preview";
@@ -66,7 +66,7 @@ function chain(
     prev = id;
   });
   return DesignSchema.parse({
-    version: 5,
+    version: DESIGN_SCHEMA_VERSION,
     name: "chain",
     nodes,
     edges,
@@ -193,7 +193,7 @@ describe("preview flags its own approximations", () => {
     // Allen-Cunneen is an approximation for M/G/c and is labelled as one. A number
     // whose accuracy is unknown to its reader is worse than no number.
     const design = DesignSchema.parse({
-      version: 5,
+      version: DESIGN_SCHEMA_VERSION,
       name: "lognormal service",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 100 } } },
@@ -219,7 +219,7 @@ describe("preview flags its own approximations", () => {
 
   it("uses exact Pollaczek-Khinchine for a single-server non-exponential station", () => {
     const design = DesignSchema.parse({
-      version: 5,
+      version: DESIGN_SCHEMA_VERSION,
       name: "deterministic service",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 25 } } },
@@ -249,7 +249,7 @@ describe("preview flags its own approximations", () => {
 
   it("uses M/M/c/K for a shedding station and predicts the rejection rate", () => {
     const design = DesignSchema.parse({
-      version: 5,
+      version: DESIGN_SCHEMA_VERSION,
       name: "shedding",
       nodes: [
         { id: "client", kind: "client", label: "c", x: 0, y: 0, client: { arrival: { kind: "poisson", ratePerSec: 150 } } },

@@ -19,7 +19,11 @@
     "react-dom": "^18.3.1",
     "uplot": "^1.6.31",
     "zustand": "^5.0.2",
-    "@sds/analyze": "workspace:*"
+    "@sds/analyze": "workspace:*",
+    "@sds/kernel": "workspace:*",
+    "@sds/explore": "workspace:*",
+    "@sds/study": "workspace:*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.17",

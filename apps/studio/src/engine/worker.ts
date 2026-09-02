@@ -15,7 +15,16 @@ import {
   type MetricIntervals,
   type SensitivityReport,
 } from "@sds/analyze";
-import type { Design } from "@sds/schema";
+import type {
+  Candidate,
+  CandidateEvaluation,
+  CorrectnessResult,
+  Design,
+  PortfolioResult,
+  Study,
+} from "@sds/schema";
+import { checkCandidate } from "@sds/explore";
+import { assemblePortfolio, cachedEvaluation, evaluateCandidate } from "@sds/study";
 
 /**
  * The simulation worker.
@@ -103,6 +112,47 @@ const api = {
     };
   },
 
+  /**
+   * The bounded correctness search for one candidate.
+   *
+   * Separate from `evaluate` because the two have very different costs and an agent -- or a
+   * person iterating on an invariant -- wants one without the other. The search is a second or
+   * two; eight replicated simulations are tens of seconds.
+   */
+  check(study: Study, candidateId: string): CorrectnessResult {
+    const candidate = requireCandidate(study, candidateId);
+    return checkCandidate(study, candidate);
+  },
+
+  /**
+   * Correctness and/or replicated performance for one candidate.
+   *
+   * Returns the evaluation rather than the updated study: the store owns the study and merging a
+   * result into it on the main thread keeps the worker free of any notion of document identity.
+   */
+  evaluate(
+    study: Study,
+    candidateId: string,
+    opts: { correctness: boolean; performance: boolean }
+  ): CandidateEvaluation {
+    const candidate = requireCandidate(study, candidateId);
+    return evaluateCandidate(study, candidate, {
+      skipCorrectness: !opts.correctness,
+      skipPerformance: !opts.performance,
+    });
+  },
+
+  /** Assemble the portfolio from whatever the study already has cached. Cheap. */
+  portfolio(study: Study): PortfolioResult {
+    return assemblePortfolio(study);
+  },
+
+  /** Whether a candidate has a usable cached evaluation at the study's current settings. */
+  cached(study: Study, candidateId: string): CandidateEvaluation | null {
+    const candidate = study.candidates.find((c) => c.id === candidateId);
+    return candidate ? cachedEvaluation(study, candidate) : null;
+  },
+
   analyze(design: Design): FullAnalysis {
     const t0 = Date.now();
     const result = runSimulation(design, { collectTrace: false });
@@ -116,6 +166,12 @@ const api = {
     return { report, knee, sensitivity: sens, configSearch, wallMs: Date.now() - t0 };
   },
 };
+
+function requireCandidate(study: Study, id: string): Candidate {
+  const candidate = study.candidates.find((c) => c.id === id);
+  if (!candidate) throw new Error(`no candidate "${id}" in this study`);
+  return candidate;
+}
 
 export type SimWorkerApi = typeof api;
 

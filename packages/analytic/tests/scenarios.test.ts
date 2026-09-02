@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Rng, confidenceInterval, pairedDifference, runSimulation, tCritical95 } from "@sds/core";
-import { DesignSchema, meanRate, peakRate, rateAt, type Design } from "@sds/schema";
+import { DESIGN_SCHEMA_VERSION, DesignSchema, meanRate, peakRate, rateAt, type Design } from "@sds/schema";
 import { correlatedCascade, rampToFailure as rampExample, trafficSpike } from "@sds/models";
 import {
   checkErrorModel,
@@ -41,7 +41,7 @@ function station(o: {
   failureAtSaturation?: number | null;
 }): Design {
   return DesignSchema.parse({
-    version: 5,
+    version: DESIGN_SCHEMA_VERSION,
     name: "phase5",
     nodes: [
       {
