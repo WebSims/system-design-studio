@@ -44,7 +44,7 @@ export function CompareView() {
               ) : (
                 <>
                   <button className="btn primary" onClick={() => void evaluateAll()}>
-                    evaluate every candidate
+                    Run all
                   </button>
                   <button className="btn" onClick={() => void refresh()}>
                     refresh
@@ -55,7 +55,7 @@ export function CompareView() {
           </header>
 
           {!portfolio ? (
-            <p className="muted">nothing compared yet</p>
+            <p className="muted">No comparison yet.</p>
           ) : (
             <>
               <p className="lede">{portfolio.claim}</p>
@@ -73,7 +73,7 @@ export function CompareView() {
             <header className="section-head">
               <h2>the gates</h2>
             </header>
-            <p className="muted">Only candidates that pass all five gates are compared.</p>
+            <p className="muted">Candidates must pass all five gates to enter the comparison.</p>
 
             <div className="gate-grid">
               {portfolio.decisions.map((decision) => (
@@ -111,7 +111,7 @@ export function CompareView() {
                 <li key={axis.id}>
                   <strong>{axis.label}</strong>{" "}
                   <span className="muted">
-                    {axis.lowerIsBetter ? "lower is better" : "higher is better"} \u00b7{" "}
+                    {axis.lowerIsBetter ? "lower is better" : "higher is better"} ·{" "}
                     {axis.sampled
                       ? "measured with uncertainty, so a difference smaller than the interval is a tie"
                       : "deterministic given the design"}
@@ -187,11 +187,11 @@ function GateCard({
       <header>
         <h3>{label}</h3>
         <div className="badges">
-          {origin === "agent" && <span className="badge badge-agent">agent-authored</span>}
+          {origin === "agent" && <span className="badge badge-agent">AI draft</span>}
           {origin === "library" && <span className="badge badge-muted">library</span>}
-          {isPromoted && <span className="badge badge-ok">promoted</span>}
-          {onFrontier && <span className="badge badge-info">on the frontier</span>}
-          {busy && <span className="badge badge-muted">running\u2026</span>}
+          {isPromoted && <span className="badge badge-ok">chosen</span>}
+          {onFrontier && <span className="badge badge-info">frontier</span>}
+          {busy && <span className="badge badge-muted">Running…</span>}
         </div>
       </header>
 
@@ -208,10 +208,10 @@ function GateCard({
 
       <footer className="row-actions">
         <button className="btn btn-quiet" onClick={onOpen}>
-          open
+          Open design
         </button>
         <button className="btn btn-quiet" onClick={onInspect}>
-          why
+          Evidence
         </button>
         {/*
           Promotion is gated on eligibility AND on being a human click. There is no WebMCP tool that
@@ -228,7 +228,7 @@ function GateCard({
           }
           onClick={onPromote}
         >
-          {isPromoted ? "promoted" : "promote"}
+          {isPromoted ? "Chosen" : "Choose"}
         </button>
       </footer>
     </article>

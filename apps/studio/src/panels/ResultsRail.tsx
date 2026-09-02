@@ -67,7 +67,7 @@ function PreviewPanel({ preview }: { preview: DesignPreview }) {
   return (
     <>
       <div className="section">
-        estimate <span className="section-tag">closed form · instant</span>
+        instant estimate <span className="section-tag">closed form</span>
       </div>
 
       {!preview.stable ? (
@@ -685,7 +685,7 @@ export function ResultsRail() {
       <PreviewPanel preview={preview} />
 
       <button className="btn primary run" onClick={execute} disabled={running || blocking.length > 0}>
-        {running ? "simulating…" : "run simulation"}
+        {running ? "Running…" : "Run simulation"}
       </button>
 
       {error && (
@@ -707,8 +707,7 @@ export function ResultsRail() {
       ) : (
         !error && (
           <p className="note">
-            The estimate above is closed-form and instant. Run the simulation for
-            percentiles, queue dynamics over time, and a replayable trace.
+            Run a simulation for tail latency, queue behavior, and trace playback.
           </p>
         )
       )}

@@ -134,8 +134,7 @@ function CitationNote({ citation }: { citation: Citation | undefined }) {
       <b>source</b> {citationText(citation)}
       <br />
       <span className="citation-warn">
-        A starting point, not a measurement of your system. Paste a figure from your own
-        dashboard and it beats anything shipped here.
+        Starting point only. Replace it with a measurement from your system.
       </span>
     </p>
   );
@@ -248,9 +247,9 @@ export function Inspector() {
       <aside className="rail right">
         <div className="rail-title">inspector</div>
         <div className="empty">
-          select a node or connection to edit its behaviour
+          Select a node or connection to edit it.
           <div className="empty-sub">
-            drag from a node's right edge to another node's left edge to connect them
+            Drag between node handles to connect them.
           </div>
         </div>
         <ClassEditor />
@@ -1923,9 +1922,8 @@ function ClassEditor() {
       <div className="section">request classes</div>
       {classes.length === 0 ? (
         <p className="note">
-          One implicit class carries all traffic. Add classes to split a workload into a fast
-          path and a slow one, then restrict connections to a class so each follows its own
-          route.
+          All traffic currently shares one route. Add classes for separate paths, such as reads
+          and writes.
         </p>
       ) : (
         classes.map((c, i) => (
@@ -2041,10 +2039,7 @@ function ScenarioEditor() {
         />
       </Field>
       <p className="note">
-        A queueing system starts empty, which is not its steady state, so the warm-up window is
-        discarded before measuring. Duration matters more than it looks: samples needed for a
-        given accuracy scale as 1/(1&minus;&rho;)&sup2;, so a short run is noisiest at exactly
-        the utilizations worth studying.
+        Warm-up removes startup bias. Longer runs improve accuracy, especially near saturation.
       </p>
 
       <div className="section">slo</div>

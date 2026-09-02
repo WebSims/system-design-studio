@@ -73,6 +73,16 @@ const isTrue = (name: string): Expr => eq(local(name), lit(true));
 const STOCK = 200;
 
 /**
+ * Keep the worked example on the same 300px column rhythm as the studio's other
+ * presets. Canvas nodes are 216px wide, so this leaves an 84px pipe between
+ * neighbours instead of letting the first three cards overlap.
+ */
+const CLIENT_X = 0;
+const EDGE_X = 300;
+const SERVICE_X = 600;
+const DEPENDENCY_X = 900;
+
+/**
  * Resource profiles, cited as estimates rather than measurements.
  *
  * Every one of them is a guess with its provenance attached, and the studio renders the
@@ -89,7 +99,7 @@ function apiNode(replicas: number, label = "claim service"): Record<string, unkn
     id: "api",
     kind: "server",
     label,
-    x: 300,
+    x: SERVICE_X,
     y: 0,
     server: {
       concurrency: 32,
@@ -117,7 +127,7 @@ function dbNode(): Record<string, unknown> {
     id: "db",
     kind: "database",
     label: "claims store",
-    x: 600,
+    x: DEPENDENCY_X,
     y: 0,
     database: {
       poolSize: 40,
@@ -145,7 +155,7 @@ function clientNode(): Record<string, unknown> {
     id: "crowd",
     kind: "client",
     label: "the crowd",
-    x: 0,
+    x: CLIENT_X,
     y: 0,
     client: {
       // Overwritten from the study's canonical workload before every evaluation. Present
@@ -161,7 +171,7 @@ function lbNode(): Record<string, unknown> {
     id: "lb",
     kind: "loadbalancer",
     label: "edge",
-    x: 150,
+    x: EDGE_X,
     y: 0,
     loadbalancer: {
       algorithm: "power-of-two-choices",
@@ -177,7 +187,7 @@ function lockNode(fencing: boolean): Record<string, unknown> {
     id: "lock",
     kind: "lock",
     label: fencing ? "lease service (fenced)" : "lease service (advisory)",
-    x: 600,
+    x: DEPENDENCY_X,
     y: -220,
     lock: {
       concurrency: 32,
@@ -195,7 +205,7 @@ function queueNode(): Record<string, unknown> {
     id: "q",
     kind: "queue",
     label: "claim queue",
-    x: 600,
+    x: DEPENDENCY_X,
     y: 220,
     queue: {
       consumers: 8,

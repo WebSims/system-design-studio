@@ -100,14 +100,13 @@ function ReplicationSection() {
         )}
       </div>
       <button className="btn" onClick={() => run(8)} disabled={replicating}>
-        {replicating ? "replicating…" : replication ? "re-measure intervals" : "measure intervals"}
+        {replicating ? "Measuring…" : replication ? "Measure again" : "Measure uncertainty"}
       </button>
 
       {!replication && !replicating && (
         <p className="note">
-          Runs eight independent seeds and measures the spread directly, rather than estimating it
-          from a formula. A single run's p99 moves several percent between seeds, so any conclusion
-          drawn from one run is only as sharp as that.
+          Runs eight seeds to show how much the result varies. One run is not enough for a precise
+          p99.
         </p>
       )}
 
@@ -214,12 +213,10 @@ function ComparisonSection() {
       {!baseline ? (
         <>
           <button className="btn" onClick={save}>
-            save this design as baseline
+            Save baseline
           </button>
           <p className="note">
-            Save where you are, change something, then compare. Both sides run on the same seeds,
-            so the per-seed difference removes the workload variance and only the effect of your
-            change remains &mdash; which is what makes a small real improvement detectable at all.
+            Save this version, make a change, then compare both versions on the same seeds.
           </p>
         </>
       ) : (
@@ -305,13 +302,13 @@ export function AnalyzerPanel() {
       </div>
 
       <button className="btn primary run" onClick={analyze} disabled={analysing || blocked}>
-        {analysing ? "analysing…" : analysis ? "re-run analysis" : "analyse design"}
+        {analysing ? "Analyzing…" : analysis ? "Analyze again" : "Find bottlenecks"}
       </button>
 
       {!analysis && !analysing && (
         <p className="note">
-          Runs hundreds of simulations to answer where the design breaks, which parameter
-          matters, and what the smallest change is that meets the SLO. A few seconds.
+          Finds the breaking point, highest-impact setting, and smallest capacity change that
+          meets the SLO.
         </p>
       )}
 

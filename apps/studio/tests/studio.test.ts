@@ -16,6 +16,7 @@ import {
   readExpr,
   templateFor,
 } from "../src/correctness/builder";
+import { NODE_HEIGHT, NODE_WIDTH } from "../src/canvas/geometry";
 import { exportStudy, importStudy, studyFilename, STUDY_EXTENSION } from "../src/persist";
 
 /**
@@ -32,6 +33,32 @@ import { exportStudy, importStudy, studyFilename, STUDY_EXTENSION } from "../src
  */
 
 const study = pizzaStudy();
+
+describe("worked-example canvas layout", () => {
+  it("keeps every pizza-study node clear of every other node", () => {
+    const minimumGap = 48;
+
+    for (const candidate of study.candidates) {
+      for (let i = 0; i < candidate.design.nodes.length; i++) {
+        const a = candidate.design.nodes[i]!;
+        for (let j = i + 1; j < candidate.design.nodes.length; j++) {
+          const b = candidate.design.nodes[j]!;
+          const horizontallyClear =
+            a.x + NODE_WIDTH + minimumGap <= b.x ||
+            b.x + NODE_WIDTH + minimumGap <= a.x;
+          const verticallyClear =
+            a.y + NODE_HEIGHT + minimumGap <= b.y ||
+            b.y + NODE_HEIGHT + minimumGap <= a.y;
+
+          expect(
+            horizontallyClear || verticallyClear,
+            `${candidate.id}: ${a.id} overlaps ${b.id}`
+          ).toBe(true);
+        }
+      }
+    }
+  });
+});
 
 function realCounterexample(candidateId: string): Counterexample {
   const result = checkCandidate(study, study.candidates.find((c) => c.id === candidateId)!);

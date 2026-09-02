@@ -176,25 +176,33 @@ function EmptyStudy() {
   return (
     <div className="empty-study">
       <div className="empty-card">
-        <h2>Start with Codex</h2>
-        <p>Ask Codex to design and test a system. It uses this page through WebMCP.</p>
+        <div className="empty-kicker">Evidence-first system design</div>
+        <h1>Start a system study</h1>
+        <p className="empty-lede">
+          Describe the real problem to Codex. It will draft options, test races and load, then
+          bring the evidence back here.
+        </p>
 
-        <pre className="expr-preview">
-          Design three systems for my problem. Simulate races and bottlenecks, compare them, and show me the evidence.
-        </pre>
+        <div className="starter-prompt">
+          <span>Try this prompt</span>
+          <p>
+            Design three options for my system. Test races and bottlenecks, compare the
+            trade-offs, and show the evidence.
+          </p>
+        </div>
 
         <div className="empty-actions">
           {example && (
-            <button className="btn" onClick={() => openExample(example.id)}>
-              view pizza demo
+            <button className="btn primary" onClick={() => openExample(example.id)}>
+              Open demo
             </button>
           )}
         </div>
 
         <p className="muted empty-agent">
           {webmcp.status.includes("tools")
-            ? `Ready: ${webmcp.status}. You review the result and choose what to promote.`
-            : "Open this page in Codex's browser to enable WebMCP."}
+            ? "Codex is connected. You make the final choice."
+            : "Open this page in Codex's browser to connect."}
         </p>
       </div>
     </div>
@@ -202,10 +210,10 @@ function EmptyStudy() {
 }
 
 const VIEWS: Array<{ id: ViewId; label: string; hint: string }> = [
-  { id: "design", label: "design", hint: "draw the architecture and its stateful behaviour" },
-  { id: "correctness", label: "correctness", hint: "explore every interleaving within explicit bounds" },
-  { id: "performance", label: "performance", hint: "measure over independent seeds" },
-  { id: "compare", label: "compare", hint: "gates, trade-offs and the Pareto frontier" },
+  { id: "design", label: "Design", hint: "Draw the architecture and behavior" },
+  { id: "correctness", label: "Correctness", hint: "Search for unsafe interleavings" },
+  { id: "performance", label: "Performance", hint: "Measure load, latency, and outcomes" },
+  { id: "compare", label: "Compare", hint: "Review gates and trade-offs" },
 ];
 
 /**
@@ -259,107 +267,118 @@ function Topbar() {
 
   return (
     <header className="topbar" onClick={() => setMenu(null)}>
-      <div className="brand">
-        <div className="mark" />
-        <div>
-          <div className="brand-name">
-            system design <b>studio</b>
+      <div className="topbar-primary">
+        <div className="brand">
+          <div className="mark" aria-hidden="true" />
+          <div>
+            <div className="brand-name">
+              System Design <b>Studio</b>
+            </div>
+            <div className="brand-sub">Model · test · compare</div>
           </div>
-          <div className="brand-sub">design · test · compare</div>
+        </div>
+        <ViewTabs />
+        <div className="tb-spacer" />
+        <div className="topbar-status">
+          {study.candidates.length > 0 && (
+            <span className="tb-meta tnum">
+              {design.nodes.length} nodes · {design.edges.length} links
+            </span>
+          )}
+          {persistence.status !== "idle" && (
+            <span
+              className={`save-status ${persistence.status === "failed" ? "issue-error" : ""}`}
+              title={persistence.detail}
+            >
+              {persistence.status === "failed" ? "Not saved" : persistence.status}
+            </span>
+          )}
+          <div className="menu-anchor activity-anchor">
+            <button
+              className="btn status-btn"
+              title={webmcp.detail}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenu(menu === "activity" ? null : "activity");
+              }}
+            >
+              <span className={`status-dot ${webmcp.status.includes("tools") ? "ready" : ""}`} />
+              {webmcp.status.includes("tools") ? "Codex ready" : "Codex"}
+            </button>
+            {menu === "activity" && <ActivityLog onClose={() => setMenu(null)} />}
+          </div>
         </div>
       </div>
 
-      <div className="tb-group">
-        {study.candidates.length > 0 && (
-          <>
-            <div className="menu-anchor">
-              <button
-                className="btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenu(menu === "palette" ? null : "palette");
-                }}
-              >
-                add component
-              </button>
-              {menu === "palette" && <Palette onClose={() => setMenu(null)} />}
-            </div>
-            <div className="menu-anchor">
-              <button
-                className="btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenu(menu === "examples" ? null : "examples");
-                }}
-              >
-                design examples
-              </button>
-              {menu === "examples" && <ExampleMenu onClose={() => setMenu(null)} />}
-            </div>
-          </>
-        )}
-        <div className="menu-anchor">
-          <button
-            className="btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenu(menu === "studies" ? null : "studies");
-            }}
-          >
-            studies
-          </button>
-          {menu === "studies" && <StudyMenu onClose={() => setMenu(null)} />}
+      <div className="topbar-secondary">
+        <div className="tb-group">
+          <div className="menu-anchor">
+            <button
+              className="btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenu(menu === "studies" ? null : "studies");
+              }}
+            >
+              Studies
+            </button>
+            {menu === "studies" && <StudyMenu onClose={() => setMenu(null)} />}
+          </div>
+          {study.candidates.length > 0 && (
+            <>
+              <div className="menu-anchor">
+                <button
+                  className="btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenu(menu === "palette" ? null : "palette");
+                  }}
+                >
+                  Add component
+                </button>
+                {menu === "palette" && <Palette onClose={() => setMenu(null)} />}
+              </div>
+              <div className="menu-anchor">
+                <button
+                  className="btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenu(menu === "examples" ? null : "examples");
+                  }}
+                >
+                  Examples
+                </button>
+                {menu === "examples" && <ExampleMenu onClose={() => setMenu(null)} />}
+              </div>
+            </>
+          )}
         </div>
-      </div>
 
-      <ViewTabs />
+        <div className="tb-spacer" />
 
-      <div className="tb-spacer" />
-
-      <div className="tb-group">
-        <span className="tb-meta tnum">
-          {design.nodes.length} nodes &middot; {design.edges.length} links
-        </span>
-        <span
-          className={`tb-meta ${persistence.status === "failed" ? "issue-error" : "muted"}`}
-          title={persistence.detail}
-        >
-          {persistence.status === "failed" ? "not saved" : persistence.status}
-        </span>
-        <div className="menu-anchor">
-          <button
-            className="btn"
-            title={webmcp.detail}
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenu(menu === "activity" ? null : "activity");
-            }}
-          >
-            agent: {webmcp.status}
+        <div className="tb-group file-actions">
+          <button className="btn" onClick={download}>
+            Export
           </button>
-          {menu === "activity" && <ActivityLog onClose={() => setMenu(null)} />}
+          <button className="btn" onClick={() => fileRef.current?.click()}>
+            Import
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json"
+            style={{ display: "none" }}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              // Accepts a study OR a bare design; a design becomes a one-candidate study with no
+              // correctness contract, which is the honest treatment of a document that has no
+              // invariants.
+              importStudyJson(await file.text());
+              e.target.value = "";
+            }}
+          />
         </div>
-        <button className="btn" onClick={download}>
-          export
-        </button>
-        <button className="btn" onClick={() => fileRef.current?.click()}>
-          import
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="application/json"
-          style={{ display: "none" }}
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            // Accepts a study OR a bare design; a design becomes a one-candidate study with no
-            // correctness contract, which is the honest treatment of a document that has no
-            // invariants.
-            importStudyJson(await file.text());
-            e.target.value = "";
-          }}
-        />
       </div>
     </header>
   );

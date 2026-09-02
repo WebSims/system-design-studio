@@ -55,7 +55,7 @@ export function CorrectnessView() {
                   </button>
                 ) : (
                   <button className="btn primary" onClick={() => void checkOnly(active.id)}>
-                    run the bounded search
+                    Search for races
                   </button>
                 )}
               </div>
@@ -70,12 +70,12 @@ export function CorrectnessView() {
 
           {!correctness && !running && (
             <p className="muted">
-              Not checked yet. Limit: {study.correctness.bounds.actors} initial requests and{" "}
-              {study.correctness.bounds.states.toLocaleString()} states.
+              Not checked · up to {study.correctness.bounds.actors} requests ·{" "}
+              {study.correctness.bounds.states.toLocaleString()} states
             </p>
           )}
 
-          {running && <p className="muted">exploring\u2026</p>}
+          {running && <p className="muted">Exploring…</p>}
 
           {correctness && <Verdict result={correctness} />}
         </section>
@@ -359,7 +359,7 @@ function InvariantEditor({ study }: { study: Study }) {
                   value={String(draft.args[param.name] ?? "")}
                   onChange={(e) => setDraft({ ...draft, args: { ...draft.args, [param.name]: e.target.value } })}
                 >
-                  <option value="">choose\u2026</option>
+                  <option value="">Choose…</option>
                   {collections
                     .filter((c) => (param.of ? c.kind === param.of : true))
                     .map((c) => (
@@ -373,7 +373,7 @@ function InvariantEditor({ study }: { study: Study }) {
                   value={String(draft.args[param.name] ?? "")}
                   onChange={(e) => setDraft({ ...draft, args: { ...draft.args, [param.name]: e.target.value } })}
                 >
-                  <option value="">choose\u2026</option>
+                  <option value="">Choose…</option>
                   {collections
                     .flatMap((c) => (c.kind === "table" ? c.fields.map((f) => `${c.id}.${f.name}`) : []))
                     .map((f) => (

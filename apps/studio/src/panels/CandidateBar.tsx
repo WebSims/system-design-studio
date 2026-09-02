@@ -31,7 +31,7 @@ export function CandidateBar() {
           const isActive = candidate.id === study.activeCandidateId;
           const isPromoted = candidate.id === study.promotedCandidateId;
           return (
-            <button
+            <div
               key={candidate.id}
               className={[
                 "candidate-chip",
@@ -43,28 +43,33 @@ export function CandidateBar() {
                 .filter(Boolean)
                 .join(" ")}
               title={candidate.intent || candidate.label}
-              onClick={() => select(candidate.id)}
             >
-              {/* Origin is rendered, never inferred, and an agent cannot set it. */}
-              {candidate.origin === "agent" && <span className="chip-mark">AI</span>}
-              {isPromoted && <span className="chip-mark chip-promoted">\u2713</span>}
-              <span className="chip-label">{candidate.label}</span>
-              <span className="chip-rev tnum">r{candidate.revision}</span>
-              {running.has(candidate.id) && <span className="chip-spin" />}
+              <button
+                className="candidate-select"
+                aria-current={isActive ? "true" : undefined}
+                onClick={() => select(candidate.id)}
+              >
+                {/* Origin is rendered, never inferred, and an agent cannot set it. */}
+                {candidate.origin === "agent" && <span className="chip-mark">AI</span>}
+                {isPromoted && <span className="chip-mark chip-promoted">✓</span>}
+                <span className="chip-label">{candidate.label}</span>
+                <span className="chip-rev tnum">r{candidate.revision}</span>
+                {running.has(candidate.id) && <span className="chip-spin" />}
+              </button>
               {!isPromoted && study.candidates.length > 1 && (
-                <span
+                <button
                   className="chip-remove"
-                  role="button"
                   aria-label={`remove ${candidate.label}`}
+                  title={`Remove ${candidate.label}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     removeCandidate(candidate.id);
                   }}
                 >
                   &times;
-                </span>
+                </button>
               )}
-            </button>
+            </div>
           );
         })}
       </div>

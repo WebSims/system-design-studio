@@ -52,18 +52,18 @@ export function PerformanceView() {
               </button>
             ) : (
               <button className="btn primary" onClick={() => void evaluate(active.id)}>
-                measure over {study.workload.seeds.length} seeds
+                Run {study.workload.seeds.length} seeds
               </button>
             )}
           </header>
 
           <p className="muted">
-            {active.label} \u00b7 {study.workload.durationSec}s \u00b7 {study.workload.seeds.length} seeds
+            {active.label} · {study.workload.durationSec}s · {study.workload.seeds.length} seeds
           </p>
 
-          {running && <p className="muted">running {study.workload.seeds.length} replications\u2026</p>}
+          {running && <p className="muted">Running {study.workload.seeds.length} replications…</p>}
           {!p && !running && (
-            <p className="muted">Not measured yet. Results use 95% intervals.</p>
+            <p className="muted">No measurements yet. Results include 95% intervals.</p>
           )}
 
           {p && <PerformanceTable performance={p} slo={study.targets.slo} />}
@@ -158,7 +158,7 @@ function PerformanceTable({
               </td>
               <td>
                 {target === null ? (
-                  <span className="muted">\u2014</span>
+                  <span className="muted">—</span>
                 ) : (
                   <span className={met ? "badge badge-ok" : "badge badge-bad"}>
                     {met ? "met" : "missed"} at {target}
@@ -245,7 +245,7 @@ function BusinessTable({
                 </td>
                 <td>
                   {goal === undefined ? (
-                    <span className="muted">\u2014</span>
+                    <span className="muted">—</span>
                   ) : (
                     <span className={met ? "badge badge-ok" : "badge badge-bad"}>
                       {met ? "met" : "missed"}: {goal.comparison} {goal.value}
@@ -294,9 +294,7 @@ function ResourcePanel() {
         <h2>resources</h2>
       </header>
       <p className="muted">
-        Physical units only. No prices: a price is a claim about a vendor's rate card that this tool
-        cannot check, and multiplying a guessed rate by a simulated hour would produce its most
-        confident-looking and least defensible number.
+        Hardware units only. Pricing depends on the vendor and is not modeled.
       </p>
 
       {!r ? (
@@ -312,9 +310,8 @@ function ResourcePanel() {
           </dl>
           {r.unmeasuredNodes.length > 0 && (
             <p className="issue-warning">
-              unknown, not zero. Measure {r.unmeasuredNodes.join(", ")} to bring{" "}
-              {r.unknownAxes.join(", ")} into the comparison. Treating a missing figure as zero would
-              let an unmeasured design win on cost.
+              Unknown, not zero. Measure {r.unmeasuredNodes.join(", ")} to compare{" "}
+              {r.unknownAxes.join(", ")}.
             </p>
           )}
         </>
