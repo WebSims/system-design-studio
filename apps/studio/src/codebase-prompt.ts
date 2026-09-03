@@ -25,10 +25,11 @@ export const CODEBASE_PROMPT = [
   "2. Call studio_create_study with a short name and a problem statement taken from the code or documentation, then studio_get_catalog and use only the component kinds and operations it lists.",
   "3. Call studio_update_study to record only what the code, configuration or documentation supports: workload, SLOs, business outcomes and correctness invariants. Leave a field empty rather than guess; an unknown yardstick is more useful than an invented one.",
   "4. Write the as-is design as one document. Model callers as a client node, give every node and link a short stable id, and keep the workflow null unless the code shows the request steps. " +
-    "Check it with studio_validate_draft and fix every error it names before importing.",
+    "Check it with studio_validate_draft and fix every error it names before importing. Validating stores nothing and draws nothing; do not stop here.",
   "5. Call studio_import_architecture once, with repository { name, rootHint, branch, revision, dirty, scope }, the validated design, and an evidence record per observed component and connection: " +
     "{ id, targetKind: node | edge, targetId (the node or link id), confidence, source: code | config | documentation | runtime | user, path, lineStart, lineEnd, symbol, claim }. " +
-    "Use confidence observed only for what the cited lines state directly; mark deductions inferred and unknown production behaviour assumed.",
+    "Use confidence observed only for what the cited lines state directly; mark deductions inferred and unknown production behaviour assumed. " +
+    "This import is what puts the design on the page: until it succeeds the studio keeps showing its start screen.",
   "6. Call studio_get_architecture and report its evidenceSummary: uncovered nodes and links, and every inferred or assumed claim. " +
     "Use studio_annotate with tone warn on the components whose evidence is weakest or whose production risk is most likely, and studio_focus on the one that matters most.",
   "Then stop. Do not redesign the system or edit code, and do not create experiments, until I ask.",

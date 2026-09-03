@@ -26,7 +26,7 @@ structured architecture evidence and results into the same live page a person re
 | `studio_update_study` | set the workload, SLOs, invariants, faults and bounds |
 | `studio_list_studies` | list saved projects |
 | `studio_open_study` | open a saved project |
-| `studio_import_architecture` | link a repository snapshot and add its evidence-backed as-is baseline |
+| `studio_import_architecture` | link a repository snapshot and add its evidence-backed as-is baseline; the first step that draws anything on the page |
 
 **Read**
 
@@ -43,7 +43,7 @@ structured architecture evidence and results into the same live page a person re
 
 | tool | what it does |
 | --- | --- |
-| `studio_validate_draft` | check a design without storing it |
+| `studio_validate_draft` | check a design without storing or drawing it |
 | `studio_create_candidate` | add an isolated, agent-marked architecture |
 | `studio_replace_candidate_draft` | replace a design, guarded by revision |
 | `studio_apply_architecture_patch` | apply a small, revision-guarded node/link/workflow delta |

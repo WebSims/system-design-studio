@@ -483,7 +483,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_create_study",
         description:
           "Create and open a new project. The currently open project remains saved and can be reopened with " +
-          "studio_open_study. Set the new project's yardstick with studio_update_study, then add candidates.",
+          "studio_open_study. Set the new project's yardstick with studio_update_study, then add candidates. " +
+          "The page keeps showing its start screen until the project has a candidate: nothing is drawn until " +
+          "studio_import_architecture or studio_create_candidate succeeds.",
         input: z
           .object({
             name: z.string().min(1).max(120),
@@ -499,7 +501,14 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             ok: true,
             summary: `created project "${study.name}"`,
           });
-          return { studyId: study.id, name: study.name, contractLocked: false };
+          return {
+            studyId: study.id,
+            name: study.name,
+            contractLocked: false,
+            next:
+              "The canvas stays empty until a candidate exists. Finish with studio_import_architecture " +
+              "(as-is from a repository) or studio_create_candidate (a design without evidence).",
+          };
         },
       },
       host
@@ -623,7 +632,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         description:
           "Import the current as-is architecture of a repository revision. Atomically links the repository and creates an " +
           "immutable baseline with code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
-          "supported by the cited source; mark deductions inferred and unknown production behaviour assumed.",
+          "supported by the cited source; mark deductions inferred and unknown production behaviour assumed. " +
+          "This is the step that puts the design on the page: the start screen is replaced by the canvas when it succeeds.",
         input: ImportArchitectureInput,
         annotations: { readOnlyHint: false, untrustedContentHint: true },
         async run(args) {
@@ -828,7 +838,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_validate_draft",
         description:
                     "Check a design without storing it. Returns schema, topology and workflow errors naming the field and what " +
-          "is wrong, plus warnings. Call this before creating or replacing a candidate.",
+          "is wrong, plus warnings. Call this before creating or replacing a candidate. A valid result changes nothing on " +
+          "the page; pass the same design to studio_import_architecture or studio_create_candidate to render it.",
         input: ValidateDraftInput,
         annotations: { readOnlyHint: true },
         async run({ design }) {
@@ -837,9 +848,15 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             tool: "studio_validate_draft",
             at: Date.now(),
             ok: result.valid,
-            summary: result.valid ? "draft is valid" : `${result.errors.length} errors`,
+            summary: result.valid ? "draft is valid, not stored" : `${result.errors.length} errors`,
           });
-          return result;
+          if (!result.valid) return result;
+          return {
+            ...result,
+            next:
+              "Nothing was stored or drawn. Pass this design to studio_import_architecture (with repository and " +
+              "evidence) or studio_create_candidate to put it on the canvas.",
+          };
         },
       },
       host

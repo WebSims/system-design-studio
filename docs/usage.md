@@ -21,6 +21,12 @@ studio_create_study → studio_get_catalog → studio_update_study
 → studio_get_architecture → studio_annotate / studio_focus
 ```
 
+The canvas appears at `studio_import_architecture`. Until then the studio keeps showing the
+start screen: creating the study, setting its contract and validating a draft change the
+project and the activity log in the agent panel, but add no candidate, and the canvas
+renders only candidates. When an agent has started but nothing is drawn yet, the start
+screen says so and names the step that is still missing.
+
 Every observed component and connection should cite a source path and symbol (with line
 ranges where available). Deductions are labelled inferred; unknown production behaviour
 is labelled assumed. The result is a source-revision-pinned account of the system that

@@ -2669,6 +2669,46 @@ summary:focus-visible {
   color: var(--fg-3);
 }
 
+/* agent progress: the study exists, the agent is calling tools, nothing is drawn yet */
+.agent-progress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line-2));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ok) 6%, var(--bg-2));
+  text-align: left;
+}
+.agent-progress > .start-glyph { flex: none; }
+.agent-progress > .btn { flex: none; margin-left: auto; }
+.agent-progress-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.agent-progress-body strong { font-size: 13px; font-weight: 600; }
+.agent-progress-meta {
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-progress-hint { color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
+.agent-progress code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-3);
+  color: var(--accent);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (max-width: 720px) {
+  .agent-progress { flex-wrap: wrap; }
+  .agent-progress > .btn { margin-left: 0; }
+}
+
 /* recent studies: one row, title inline with the items */
 .start-recent {
   display: flex;

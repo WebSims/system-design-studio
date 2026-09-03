@@ -124,6 +124,67 @@ const RecentStudies = () => {
   )
 }
 
+/** The tools that add a candidate, and so replace this screen with the canvas. */
+const RENDERING_TOOLS = ["studio_import_architecture", "studio_create_candidate"] as const
+
+/** The empty human-authored candidate behind every "Design manually" button. */
+const manualCandidate = () => ({
+  label: "manual design",
+  intent: "Created manually from an empty canvas.",
+  design: blankDesign(),
+  origin: "human" as const,
+})
+
+/**
+ * An agent has started on this project but nothing is drawn yet.
+ *
+ * The workbench swaps the start screen for the canvas only when a candidate exists.
+ * create_study, update_study and validate_draft never add one, so a person watching the agent
+ * work sees the sidebar log move while this page stays put and reads that as broken. Say what
+ * happened, and name the one step that changes the picture.
+ */
+const AgentProgress = () => {
+  const studyName = useStudyStore((s) => s.study.name)
+  const activity = useStudyStore((s) => s.activity)
+  const addCandidate = useStudyStore((s) => s.addCandidate)
+
+  const last = activity[activity.length - 1]
+  if (!last) return null
+
+  const failed = activity.filter((entry) => !entry.ok).length
+
+  return (
+    <section className="agent-progress" aria-label="Agent progress" aria-live="polite">
+      <span className="start-glyph ready">
+        <BotIcon size={16} />
+      </span>
+      <div className="agent-progress-body">
+        <strong>
+          Project &ldquo;{studyName}&rdquo; is open. Nothing is drawn yet.
+        </strong>
+        <span className="agent-progress-meta tnum">
+          {activity.length} tool call{activity.length === 1 ? "" : "s"}
+          {failed > 0 && ` \u00b7 ${failed} failed`} {"\u00b7"} last: <code>{last.tool}</code> {"\u2014"} {last.summary}
+        </span>
+        <span className="agent-progress-hint">
+          The canvas appears once the agent calls{" "}
+          {RENDERING_TOOLS.map((tool, index) => (
+            <span key={tool}>
+              {index > 0 && " or "}
+              <code>{tool}</code>
+            </span>
+          ))}
+          . Validating a draft stores nothing.
+        </span>
+      </div>
+      <button className="btn with-icon" onClick={() => addCandidate(manualCandidate())}>
+        <PencilIcon size={14} />
+        Design manually instead
+      </button>
+    </section>
+  )
+}
+
 /**
  * What the studio shows before there is anything to show: three ways in.
  *
@@ -145,13 +206,7 @@ export const StartScreen = () => {
     setCopyState((await copyPrompt(CODEBASE_PROMPT)) ? "copied" : "failed")
   }
 
-  const startManualDesign = () =>
-    addCandidate({
-      label: "manual design",
-      intent: "Created manually from an empty canvas.",
-      design: blankDesign(),
-      origin: "human",
-    })
+  const startManualDesign = () => addCandidate(manualCandidate())
 
   const copyLabel =
     copyState === "copying"
@@ -197,6 +252,7 @@ export const StartScreen = () => {
           </ol>
         </header>
 
+        <AgentProgress />
         <RecentStudies />
 
         <section className="start-section" aria-label="Start">
