@@ -171,6 +171,10 @@ summary:focus-visible {
 }
 /* Agent-authored candidates are visibly distinct everywhere they appear, never only in a tooltip. */
 .candidate-chip.agent { border-style: dashed; }
+.candidate-chip.role-baseline {
+  border-color: color-mix(in srgb, var(--sky) 45%, var(--line));
+  background: color-mix(in srgb, var(--sky) 5%, var(--bg));
+}
 .candidate-chip.eligible .chip-label { color: var(--ok); }
 .candidate-chip.frontier { box-shadow: inset 0 -2px 0 var(--ok); }
 .chip-mark {
@@ -182,6 +186,20 @@ summary:focus-visible {
   background: var(--line-2);
   color: var(--bg);
 }
+.chip-role {
+  padding: 1px 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  color: var(--fg-3);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}
+.chip-role-baseline {
+  border-color: color-mix(in srgb, var(--sky) 50%, var(--line));
+  color: var(--sky);
+}
+.chip-role-experiment { color: var(--accent); }
 .chip-promoted { background: var(--ok); }
 .chip-rev { opacity: 0.5; font-size: 10px; }
 .chip-remove {
@@ -617,6 +635,62 @@ summary:focus-visible {
   gap: 10px;
 }
 
+.repository-status {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(540px, 44vw);
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--sky) 35%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--sky) 5%, var(--bg));
+  color: var(--fg-2);
+  font-size: 10.5px;
+}
+
+.repository-status strong {
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--fg);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-status code {
+  color: var(--sky);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.repository-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sky);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sky) 12%, transparent);
+}
+
+.repository-coverage {
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.repository-dirty {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warn) 15%, var(--bg-3));
+  color: var(--warn);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .save-status {
   display: inline-flex;
   align-items: center;
@@ -720,6 +794,94 @@ summary:focus-visible {
   font-size: 11px;
   opacity: 0.75;
 }
+
+.architecture-evidence {
+  margin: 0 0 14px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--sky) 3%, var(--bg));
+}
+
+.evidence-heading,
+.evidence-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.evidence-heading > span:first-child {
+  color: var(--fg-3);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.evidence-empty {
+  margin: 8px 0 0;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.evidence-uncovered {
+  padding-left: 8px;
+  border-left: 2px solid var(--crit);
+  color: var(--fg-2);
+}
+
+.evidence-list {
+  display: grid;
+  gap: 8px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence-item {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-left: 2px solid currentColor;
+  border-radius: 4px;
+  background: var(--bg-2);
+}
+
+.evidence-meta {
+  justify-content: flex-start;
+  color: var(--fg-3);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.evidence-confidence {
+  font-weight: 700;
+}
+
+.evidence-item.evidence-observed .evidence-confidence { color: var(--ok); }
+.evidence-item.evidence-inferred .evidence-confidence { color: var(--sky); }
+.evidence-item.evidence-assumed .evidence-confidence { color: var(--warn); }
+
+.evidence-item p {
+  margin: 5px 0 6px;
+  color: var(--fg-2);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.evidence-item code,
+.evidence-item small {
+  display: block;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-item small { margin-top: 2px; }
 
 /* ---------- metrics ---------- */
 
@@ -1085,6 +1247,21 @@ summary:focus-visible {
   pointer-events: none;
   font-variant-numeric: tabular-nums;
 }
+.edge-evidence,
+.node-evidence {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 8.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+.edge-evidence {
+  width: 14px;
+  height: 14px;
+}
 .edge-loss {
   color: var(--crit);
 }
@@ -1118,12 +1295,23 @@ summary:focus-visible {
   gap: 6px;
 }
 .node-label {
+  flex: 1;
   font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.node-evidence {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.evidence-observed { color: var(--ok); }
+.evidence-inferred { color: var(--sky); }
+.evidence-assumed { color: var(--warn); }
+.evidence-uncovered { color: var(--crit); }
 .node-cap {
   font-size: 10px;
   color: var(--fg-3);
@@ -1825,8 +2013,25 @@ summary:focus-visible {
 }
 
 .empty-card {
-  width: min(620px, 100%);
+  width: min(860px, 100%);
+  text-align: left;
+}
+
+.empty-card > .empty-kicker,
+.empty-card > h1,
+.empty-card > .empty-lede,
+.empty-card > .empty-agent {
+  margin-right: auto;
+  margin-left: auto;
   text-align: center;
+}
+
+.empty-card > h1 {
+  max-width: 760px;
+}
+
+.empty-card > .empty-lede {
+  max-width: 680px;
 }
 
 .empty-kicker {
@@ -1852,6 +2057,48 @@ summary:focus-visible {
   color: var(--fg-2);
   font-size: 15px;
   line-height: 1.65;
+}
+
+.onboarding-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 24px 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-steps li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 96px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.onboarding-steps li > span {
+  color: var(--accent);
+  font: 600 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.onboarding-steps b,
+.onboarding-steps small {
+  display: block;
+}
+
+.onboarding-steps b {
+  margin-bottom: 4px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.onboarding-steps small {
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.45;
 }
 
 .starter-prompt {
@@ -2359,7 +2606,8 @@ summary:focus-visible {
   }
 
   .brand-sub,
-  .tb-meta {
+  .tb-meta,
+  .repository-coverage {
     display: none;
   }
 
@@ -2401,6 +2649,10 @@ summary:focus-visible {
 
   .candidate-bar-title {
     max-width: 140px;
+  }
+
+  .repository-status {
+    max-width: 260px;
   }
 
   .btn,
@@ -2518,6 +2770,24 @@ summary:focus-visible {
   .topbar-secondary {
     overflow-x: auto;
     overscroll-behavior-inline: contain;
+  }
+
+  .onboarding-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .onboarding-steps li {
+    min-height: 0;
+  }
+
+  .empty-study {
+    justify-content: flex-start;
+    padding: 36px 16px;
+  }
+
+  .empty-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .topology-divider,

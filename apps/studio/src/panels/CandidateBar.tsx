@@ -25,8 +25,8 @@ export function CandidateBar() {
   const duplicateActive = () => {
     if (!active) return;
     const candidate = addCandidate({
-      label: `${active.label} copy`.slice(0, 120),
-      intent: `Copy of ${active.label} for a new design variation.`,
+      label: `${active.label} experiment`.slice(0, 120),
+      intent: `Experiment based on ${active.label}.`,
       copyFrom: active.id,
       origin: "human",
     });
@@ -50,6 +50,7 @@ export function CandidateBar() {
                 "candidate-chip",
                 isActive ? "active" : "",
                 candidate.origin === "agent" ? "agent" : "",
+                `role-${candidate.role}`,
                 eligible.has(candidate.id) ? "eligible" : "",
                 frontier.has(candidate.id) ? "frontier" : "",
               ]
@@ -63,6 +64,9 @@ export function CandidateBar() {
                 onClick={() => select(candidate.id)}
               >
                 {/* Origin is rendered, never inferred, and an agent cannot set it. */}
+                <span className={`chip-role chip-role-${candidate.role}`}>
+                  {candidate.role === "baseline" ? "AS IS" : "EXP"}
+                </span>
                 {candidate.origin === "agent" && <span className="chip-mark">AI</span>}
                 {isPromoted && <span className="chip-mark chip-promoted">✓</span>}
                 <span className="chip-label">{candidate.label}</span>
@@ -89,10 +93,10 @@ export function CandidateBar() {
           <button
             className="candidate-chip candidate-add"
             disabled={study.candidates.length >= 64}
-            title="Duplicate the active candidate"
+            title="Create an experiment from the active architecture"
             onClick={duplicateActive}
           >
-            Duplicate
+            New experiment
           </button>
         )}
       </div>

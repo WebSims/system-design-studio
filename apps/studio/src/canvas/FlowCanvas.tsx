@@ -13,7 +13,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { EdgeSchema } from "@sds/schema";
+import { EdgeSchema, type ArchitectureEvidence } from "@sds/schema";
 import { protocolFreeEdgeId } from "../ids";
 import { nodeTypes } from "./nodes";
 import { PacketLayer } from "./PacketLayer";
@@ -24,6 +24,15 @@ import { TopologyExplorer, type TopologyExploration } from "./TopologyExplorer";
 
 const edgeTypes = { pipe: PipeEdge };
 
+type EvidenceTone = "observed" | "inferred" | "assumed" | "uncovered";
+
+function evidenceTone(items: Array<{ confidence: "observed" | "inferred" | "assumed" }>): EvidenceTone {
+  if (items.length === 0) return "uncovered";
+  if (items.some((item) => item.confidence === "assumed")) return "assumed";
+  if (items.some((item) => item.confidence === "inferred")) return "inferred";
+  return "observed";
+}
+
 function Canvas() {
   const design = useStudio((s) => s.design);
   const selection = useStudio((s) => s.selection);
@@ -31,7 +40,18 @@ function Canvas() {
   const moveNode = useStudio((s) => s.moveNode);
   const select = useStudio((s) => s.select);
   const edit = useStudio((s) => s.edit);
-  const activeCandidateId = useStudyStore((s) => s.study.activeCandidateId);
+  const study = useStudyStore((s) => s.study);
+  const activeCandidateId = study.activeCandidateId;
+  const activeCandidate =
+    study.candidates.find((candidate) => candidate.id === activeCandidateId) ?? study.candidates[0];
+  const evidenceByTarget = useMemo(() => {
+    const grouped = new Map<string, ArchitectureEvidence[]>();
+    for (const evidence of activeCandidate?.evidence ?? []) {
+      const key = `${evidence.targetKind}:${evidence.targetId}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), evidence]);
+    }
+    return grouped;
+  }, [activeCandidate]);
   const [exploration, setExploration] = useState<TopologyExploration>(null);
 
   const topologyFingerprint = useMemo(
@@ -66,7 +86,11 @@ function Canvas() {
         id: n.id,
         type: n.kind,
         position: { x: n.x, y: n.y },
-        data: {},
+        data: {
+          repositoryLinked: study.repository !== null,
+          evidenceCount: evidenceByTarget.get(`node:${n.id}`)?.length ?? 0,
+          evidenceTone: evidenceTone(evidenceByTarget.get(`node:${n.id}`) ?? []),
+        },
         selected: selection?.kind === "node" && selection.id === n.id,
         className: exploration
           ? [
@@ -78,7 +102,16 @@ function Canvas() {
               .join(" ")
           : undefined,
       })),
-    [design.nodes, exploration, explorationEnd, explorationOrigin, highlightedNodeIds, selection]
+    [
+      design.nodes,
+      evidenceByTarget,
+      exploration,
+      explorationEnd,
+      explorationOrigin,
+      highlightedNodeIds,
+      selection,
+      study.repository,
+    ]
   );
 
   const edges = useMemo<Edge[]>(
@@ -100,9 +133,12 @@ function Canvas() {
               ? "match"
               : "muted"
             : "none",
+          repositoryLinked: study.repository !== null,
+          evidenceCount: evidenceByTarget.get(`edge:${e.id}`)?.length ?? 0,
+          evidenceTone: evidenceTone(evidenceByTarget.get(`edge:${e.id}`) ?? []),
         },
       })),
-    [design.edges, exploration, highlightedEdgeIds, selection]
+    [design.edges, evidenceByTarget, exploration, highlightedEdgeIds, selection, study.repository]
   );
 
   const onNodesChange = useCallback(

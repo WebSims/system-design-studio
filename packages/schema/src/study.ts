@@ -411,8 +411,8 @@ export const ArchitectureEvidenceSchema = z
     confidence: EvidenceConfidenceSchema,
     source: EvidenceSourceSchema,
     path: z.string().max(1024).default(""),
-    lineStart: z.number().int().positive().nullable().default(null),
-    lineEnd: z.number().int().positive().nullable().default(null),
+    lineStart: z.number().int().min(1).nullable().default(null),
+    lineEnd: z.number().int().min(1).nullable().default(null),
     symbol: z.string().max(512).default(""),
     claim: z.string().min(1).max(2000),
   })

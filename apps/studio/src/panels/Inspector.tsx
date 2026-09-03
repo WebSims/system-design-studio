@@ -9,6 +9,7 @@ import {
   type RetryableReason,
 } from "@sds/schema";
 import { useStudio } from "../store";
+import { useStudyStore } from "../study/store";
 
 /** Round to an integer and hold it inside the schema's bounds. */
 const clampInt = (v: number, min: number, max: number): number =>
@@ -137,6 +138,63 @@ function CitationNote({ citation }: { citation: Citation | undefined }) {
         Starting point only. Replace it with a measurement from your system.
       </span>
     </p>
+  );
+}
+
+function ArchitectureEvidence({
+  targetKind,
+  targetId,
+}: {
+  targetKind: "node" | "edge";
+  targetId: string;
+}) {
+  const study = useStudyStore((state) => state.study);
+  const candidate =
+    study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
+  if (!candidate) return null;
+  const evidence = candidate.evidence.filter(
+    (item) => item.targetKind === targetKind && item.targetId === targetId
+  );
+
+  return (
+    <section className="architecture-evidence" aria-label="Architecture evidence">
+      <div className="evidence-heading">
+        <span>source evidence</span>
+        <span className={`badge ${candidate.role === "baseline" ? "badge-info" : "badge-muted"}`}>
+          {candidate.role === "baseline" ? "as-is" : "experiment"}
+        </span>
+      </div>
+      {evidence.length === 0 ? (
+        <p className={`evidence-empty ${study.repository ? "evidence-uncovered" : ""}`}>
+          {study.repository
+            ? "No repository evidence is attached to this element. Treat it as an assumption until the agent cites a source."
+            : "This is a freehand model. Link a repository through Codex to attach auditable source evidence."}
+        </p>
+      ) : (
+        <ul className="evidence-list">
+          {evidence.map((item) => {
+            const location = item.path
+              ? `${item.path}${
+                  item.lineStart
+                    ? `:${item.lineStart}${item.lineEnd && item.lineEnd !== item.lineStart ? `–${item.lineEnd}` : ""}`
+                    : ""
+                }`
+              : item.source;
+            return (
+              <li key={item.id} className={`evidence-item evidence-${item.confidence}`}>
+                <div className="evidence-meta">
+                  <span className="evidence-confidence">{item.confidence}</span>
+                  <span>{item.source}</span>
+                </div>
+                <p>{item.claim}</p>
+                <code title={item.symbol || location}>{location}</code>
+                {item.symbol && <small>{item.symbol}</small>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -270,6 +328,7 @@ export function Inspector() {
     return (
       <aside className="rail right">
         <div className="rail-title">connection</div>
+        <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
 
         <div className="section">network latency</div>
         <DistributionEditor value={edge.latency} onChange={(latency) => patch((e) => { e.latency = latency; })} />
@@ -391,6 +450,7 @@ export function Inspector() {
   return (
     <aside className="rail right">
       <div className="rail-title">{node.kind}</div>
+      <ArchitectureEvidence targetKind="node" targetId={node.id} />
 
       <Field label="label">
         <input className="input" value={node.label} onChange={(e) => patch((n) => { n.label = e.target.value; })} />

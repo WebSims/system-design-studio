@@ -147,31 +147,82 @@ function ProjectMenu({ onClose }: { onClose: () => void }) {
  * or read an example first. It is not a marketing panel; every line is an action or the reason to
  * take it.
  */
+const REPOSITORY_PROMPT =
+  "Inspect this repository and reconstruct its current as-is architecture in System Design Studio. " +
+  "Cite code or configuration for every observed component and connection, label deductions as inferred, " +
+  "and keep unknown production behavior as explicit assumptions. Then create experiments for the highest-risk " +
+  "bottlenecks or concurrency issues and evaluate them. Do not change the code yet.";
+
 function EmptyProject() {
   const webmcp = useStudyStore((s) => s.webmcp);
+  const addCandidate = useStudyStore((s) => s.addCandidate);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(REPOSITORY_PROMPT);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1800);
+    } catch {
+      setCopyState("failed");
+    }
+  };
 
   return (
     <div className="empty-study">
       <div className="empty-card">
-        <div className="empty-kicker">Evidence-first system design</div>
-        <h1>Design a system with Codex</h1>
+        <div className="empty-kicker">Architecture twin for your codebase</div>
+        <h1>See the system your code actually builds.</h1>
         <p className="empty-lede">
-          Describe the real problem to Codex. It will draft options, test races and load, then
-          bring the evidence back here.
+          Ask Codex to inspect a repository. It will map the current architecture with source
+          evidence, then this studio can stress it, expose failure paths, and compare fixes.
         </p>
 
+        <ol className="onboarding-steps">
+          <li>
+            <span>01</span>
+            <div><b>Inspect code</b><small>Routes, services, stores, queues, config and deployment.</small></div>
+          </li>
+          <li>
+            <span>02</span>
+            <div><b>Build the as-is twin</b><small>Observed facts stay separate from inference and assumptions.</small></div>
+          </li>
+          <li>
+            <span>03</span>
+            <div><b>Break it safely</b><small>Test load, faults and races before changing production code.</small></div>
+          </li>
+        </ol>
+
         <div className="starter-prompt">
-          <span>Try this prompt</span>
-          <p>
-            Design three options for my system. Test races and bottlenecks, compare the
-            trade-offs, and show the evidence.
-          </p>
+          <span>Repository handoff prompt</span>
+          <p>{REPOSITORY_PROMPT}</p>
+        </div>
+
+        <div className="empty-actions">
+          <button className="btn primary" onClick={() => void copyPrompt()}>
+            {copyState === "copied" ? "Prompt copied" : copyState === "failed" ? "Copy unavailable" : "Copy agent prompt"}
+          </button>
+          <button
+            className="btn"
+            onClick={() => {
+              const example = EXAMPLES[0];
+              if (!example) return;
+              addCandidate({
+                label: example.label,
+                intent: `Worked example: ${example.blurb}`,
+                design: example.build(),
+                origin: "human",
+              });
+            }}
+          >
+            Explore worked example
+          </button>
         </div>
 
         <p className="muted empty-agent">
           {webmcp.status.includes("tools")
-            ? "Codex is connected. You make the final choice."
-            : "Open this page in Codex's browser to connect."}
+            ? "Codex is connected. It can write the model; you approve what becomes real."
+            : "Open this page in Codex's browser to expose the studio tools."}
         </p>
       </div>
     </div>
@@ -222,6 +273,20 @@ function Topbar() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState<"palette" | "examples" | "projects" | "activity" | null>(null);
   const webmcpReady = webmcp.status.includes("tools");
+  const activeCandidate =
+    study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ??
+    study.candidates[0];
+  const evidenceCoverage = activeCandidate
+    ? new Set(
+        activeCandidate.evidence.map((evidence) => `${evidence.targetKind}:${evidence.targetId}`)
+      ).size
+    : 0;
+  const architectureElements = activeCandidate
+    ? activeCandidate.design.nodes.length + activeCandidate.design.edges.length
+    : 0;
+  const sourceRevision = study.repository?.revision
+    ? study.repository.revision.slice(0, 9)
+    : "unversioned";
 
   const download = useCallback(() => {
     // A STUDY, not a design. The design alone would lose the invariants, the bounds and every
@@ -245,7 +310,7 @@ function Topbar() {
             <div className="brand-name">
               System Design <b>Studio</b>
             </div>
-            <div className="brand-sub">Model · test · compare</div>
+            <div className="brand-sub">Code → model → test → code</div>
           </div>
         </div>
         <ViewTabs />
@@ -328,6 +393,21 @@ function Topbar() {
             </>
           )}
         </div>
+
+        {study.repository && (
+          <div
+            className="repository-status"
+            title={`${study.repository.rootHint || study.repository.name} · ${evidenceCoverage}/${architectureElements} architecture elements have evidence`}
+          >
+            <span className="repository-dot" />
+            <strong>{study.repository.name}</strong>
+            <code>{study.repository.branch || "workspace"}@{sourceRevision}</code>
+            <span className="repository-coverage">
+              {evidenceCoverage}/{architectureElements} evidenced
+            </span>
+            {study.repository.dirty && <span className="repository-dirty">dirty</span>}
+          </div>
+        )}
 
         <div className="tb-spacer" />
 

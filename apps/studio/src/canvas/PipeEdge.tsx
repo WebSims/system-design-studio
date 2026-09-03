@@ -36,6 +36,13 @@ export function PipeEdge({
   const latencyMs = edge ? distMean(edge.latency) : 0;
   const loss = edge?.lossProbability ?? 0;
   const topology = (data as { topology?: "none" | "match" | "muted" } | undefined)?.topology;
+  const evidence = data as
+    | {
+        repositoryLinked?: boolean;
+        evidenceCount?: number;
+        evidenceTone?: "observed" | "inferred" | "assumed" | "uncovered";
+      }
+    | undefined;
 
   return (
     <>
@@ -47,6 +54,18 @@ export function PipeEdge({
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
           <span className="tnum">{latencyMs}ms</span>
+          {evidence?.repositoryLinked && (
+            <span
+              className={`edge-evidence evidence-${evidence.evidenceTone ?? "uncovered"}`}
+              title={
+                evidence.evidenceCount
+                  ? `${evidence.evidenceCount} source evidence record${evidence.evidenceCount === 1 ? "" : "s"}`
+                  : "No source evidence attached"
+              }
+            >
+              {evidence.evidenceCount || "?"}
+            </span>
+          )}
           {loss > 0 && <span className="edge-loss tnum">{(loss * 100).toFixed(1)}% loss</span>}
         </div>
       </EdgeLabelRenderer>

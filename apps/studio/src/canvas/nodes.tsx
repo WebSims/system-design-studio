@@ -213,12 +213,17 @@ function ChipStrip({ nodeId }: { nodeId: string }) {
   );
 }
 
-export function StudioNode({ id, selected }: NodeProps) {
+export function StudioNode({ id, selected, data }: NodeProps) {
   const node = useStudio((s) => s.design.nodes.find((n) => n.id === id));
   const preview = useStudio((s) => s.preview.nodes.find((n) => n.nodeId === id));
   const measured = useMeasured(id);
   // Narrow selector: this node re-renders only when ITS OWN occupancy changes.
   const occ = usePlayback((s) => s.occupancy[id]);
+  const evidence = data as {
+    repositoryLinked?: boolean;
+    evidenceCount?: number;
+    evidenceTone?: "observed" | "inferred" | "assumed" | "uncovered";
+  };
 
   if (!node) return null;
   const isClient = node.kind === "client";
@@ -244,6 +249,18 @@ export function StudioNode({ id, selected }: NodeProps) {
 
       <div className="node-head">
         <span className="node-label">{node.label}</span>
+        {evidence.repositoryLinked && (
+          <span
+            className={`node-evidence evidence-${evidence.evidenceTone ?? "uncovered"}`}
+            title={
+              evidence.evidenceCount
+                ? `${evidence.evidenceCount} source evidence record${evidence.evidenceCount === 1 ? "" : "s"}`
+                : "No source evidence attached"
+            }
+          >
+            {evidence.evidenceCount || "?"}
+          </span>
+        )}
         <span className="node-kind">{KIND_LABEL[node.kind]}</span>
       </div>
 

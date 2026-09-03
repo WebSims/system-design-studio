@@ -208,7 +208,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
             },
             "lineEnd": {
               "default": null,
-              "minimum": 0,
+              "minimum": 1,
               "type": [
                 "integer",
                 "null",
@@ -216,7 +216,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
             },
             "lineStart": {
               "default": null,
-              "minimum": 0,
+              "minimum": 1,
               "type": [
                 "integer",
                 "null",
@@ -424,7 +424,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
             },
             "lineEnd": {
               "default": null,
-              "minimum": 0,
+              "minimum": 1,
               "type": [
                 "integer",
                 "null",
@@ -432,7 +432,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
             },
             "lineStart": {
               "default": null,
-              "minimum": 0,
+              "minimum": 1,
               "type": [
                 "integer",
                 "null",

@@ -184,7 +184,7 @@ function ReplicationSection() {
 }
 
 /**
- * Paired comparison against a saved baseline.
+ * Paired comparison against a saved run reference.
  *
  * The question anyone actually has after making a change. Comparing two single runs
  * compares noise; comparing two eight-run averages unpaired is barely better. Both
@@ -213,17 +213,17 @@ function ComparisonSection() {
       {!baseline ? (
         <>
           <button className="btn" onClick={save}>
-            Save baseline
+            Save run reference
           </button>
           <p className="note">
-            Save this version, make a change, then compare both versions on the same seeds.
+            Save these metrics, make a change, then compare both runs on the same seeds.
           </p>
         </>
       ) : (
         <>
           <div className="knob-row">
             <div className="knob-head">
-              <span>baseline: {baseline.name}</span>
+              <span>run reference: {baseline.name}</span>
               <button className="btn small" onClick={clear}>
                 clear
               </button>
@@ -233,7 +233,7 @@ function ComparisonSection() {
             </div>
           </div>
           <button className="btn primary" onClick={() => run(8)} disabled={comparing}>
-            {comparing ? "comparing…" : "compare against baseline"}
+            {comparing ? "comparing…" : "compare against run reference"}
           </button>
         </>
       )}
