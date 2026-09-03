@@ -480,9 +480,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
   "studio_import_architecture": {
     "additionalProperties": false,
     "properties": {
-      "design": {
-        "description": "Complete design document for the architecture observed at this repository revision.",
-      },
+      "design": {},
       "evidence": {
         "default": [],
         "items": {
@@ -568,6 +566,15 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "maxItems": 4096,
         "type": "array",
       },
+      "expectedRevision": {
+        "minimum": 0,
+        "type": "integer",
+      },
+      "fromCandidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
       "intent": {
         "default": "As-is architecture reconstructed from repository evidence.",
         "maxLength": 2000,
@@ -629,7 +636,6 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     },
     "required": [
       "repository",
-      "design",
     ],
     "type": "object",
   },

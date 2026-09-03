@@ -7,37 +7,22 @@
  * WHY IT IS SHAPED LIKE THIS
  *
  * The agent discovers the `studio_*` tools as WebMCP site tools of the page open in its browser,
- * so the first line says exactly that; without it a coding agent looks for an MCP server or
- * starts driving the UI by clicking. The steps are numbered and name one tool each, in the order
- * the tools expect to be called, because the tool descriptions say what each does but not what
- * comes before it. The two payloads the agent has to author blind -- the `repository` snapshot
- * and an `evidence` record -- are spelled out field by field, so citations land in structured
- * evidence rather than in prose. The design is DRAWN, not delivered: an empty candidate first,
- * then one patch per component and link, because a person watching the page should see the
- * architecture form rather than wait on a blank start screen for one atomic import. Each patch
- * is validated on arrival and refused with a named error, which is also how the agent learns the
- * design shape. The import at the end seals the drawing as the immutable baseline and links the
- * repository revision. Every line is a plain sentence a person can edit before sending.
+ * so the first line says exactly that; without it a coding agent may look for an MCP server or
+ * start clicking the UI. The prompt keeps only the outcome, critical sequence and guardrails;
+ * tool descriptions and returned next steps own payload syntax and operational detail. The design
+ * is DRAWN, not delivered: an empty candidate first, then one patch per component and link, so a
+ * person watching the page sees the architecture form. The import at the end seals that drawing
+ * as the immutable baseline and links the repository revision.
  */
 export const CODEBASE_PROMPT = [
-  "Use the System Design Studio page open in your browser to create a system design from this codebase. " +
-    "The page registers WebMCP site tools named studio_*; call those directly rather than looking for an MCP server or clicking the interface. " +
-    "Read the repository with your own workspace tools; the page cannot see files.",
-  "1. Inspect the repository before drawing anything: entry points, services, background jobs, data stores, queues, caches, external APIs, configuration and deployment boundaries. " +
-    "Note the branch, commit, dirty state (whether uncommitted changes are included) and the directories or packages you actually inspected. Do not add a component you cannot cite.",
-  "2. Call studio_create_study with a short name and a problem statement taken from the code or documentation, then studio_get_catalog and use only the component kinds and operations it lists.",
-  "3. Call studio_update_study to record only what the code, configuration or documentation supports: workload, SLOs, business outcomes and correctness invariants. Leave a field empty rather than guess; an unknown yardstick is more useful than an invented one.",
-  "4. Draw the as-is design on the canvas step by step, so I can watch it form. Call studio_create_candidate with label \"as-is (drawing)\" and no design to open an empty canvas, " +
-    "then one studio_apply_architecture_patch per component (add-node; omit x and y and the studio places it) and, once both ends exist, one per connection (add-edge), passing the revision each call returns. " +
-    "Model callers as a client node and give every node and link a short stable id. Set the workflow with set-workflow only if the code shows the request steps. " +
-    "If a patch is refused, fix what it names and retry; use studio_validate_draft to check a whole document before sending it.",
-  "5. Seal the drawing: call studio_import_architecture once with repository { name, rootHint, branch, revision, dirty, scope }, fromCandidateId and expectedRevision of the drawing, and an evidence record per observed component and connection: " +
-    "{ id, targetKind: node | edge, targetId (the node or link id), confidence, source: code | config | documentation | runtime | user, path, lineStart, lineEnd, symbol, claim }. " +
-    "Use confidence observed only for what the cited lines state directly; mark deductions inferred and unknown production behaviour assumed. " +
-    "This turns the drawing into the immutable as-is baseline.",
-  "6. Call studio_get_architecture and report its evidenceSummary: uncovered nodes and links, and every inferred or assumed claim. " +
-    "Use studio_annotate with tone warn on the components whose evidence is weakest or whose production risk is most likely, and studio_focus on the one that matters most.",
-  "Then stop. Do not redesign the system or edit code, and do not create experiments, until I ask.",
+  "Inspect this repository with workspace tools, then call the open System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture. " +
+    "The page cannot read files; do not drive its UI.",
+  "Create a study, read its catalog, and record only code-backed workload, goals, SLOs, and invariants; leave unknowns blank. " +
+    "Open an empty as-is candidate and add one component or link per patch so it appears live. Use stable IDs and carry forward each returned revision. Add workflows only when supported by code.",
+  "Seal it as the immutable as-is baseline with branch, commit, dirty state, inspected scope, and evidence for every component and link. " +
+    "Mark facts observed, deductions inferred, and unknown production behaviour assumed. Follow the tool schemas and next-step guidance for payload details.",
+  "Read it back, report evidence gaps, annotate the weakest or riskiest parts, and focus the most important one. " +
+    "Stop before redesigning or editing code.",
 ].join("\n\n")
 
 export const CODEBASE_PROMPT_ROUTE = [

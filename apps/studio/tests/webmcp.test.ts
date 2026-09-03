@@ -655,6 +655,118 @@ describe("repository-backed architecture", () => {
     expect((patched.content.changed as string[])).toContain("renamed design");
   });
 
+  it("draws the as-is design one patch at a time on an empty canvas, then seals it as the baseline", async () => {
+    await call("studio_create_study", { name: "checkout" });
+
+    // No design, no candidate to copy: an empty canvas, visible at once.
+    const drawing = await call("studio_create_candidate", { label: "as-is (drawing)" });
+    expect(drawing.isError).toBeFalsy();
+    expect(host.study.candidates).toHaveLength(1);
+    expect(host.study.activeCandidateId).toBe(drawing.content.candidateId);
+    const candidateId = drawing.content.candidateId as string;
+
+    // Nodes without coordinates land in distinct grid slots.
+    const client = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 0,
+      operations: [
+        {
+          op: "add-node",
+          node: { id: "browser", kind: "client", label: "browser", client: { arrival: { kind: "poisson", ratePerSec: 20 } } },
+        },
+      ],
+    });
+    expect(client.isError).toBeFalsy();
+    expect((client.content.changed as string[])[0]).toBe("added node browser");
+
+    const api = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 1,
+      operations: [
+        {
+          op: "add-node",
+          node: { id: "api", kind: "server", label: "api", server: { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } } },
+        },
+      ],
+    });
+    expect(api.isError).toBeFalsy();
+    const placed = host.study.candidates[0]!.design.nodes;
+    expect(placed).toHaveLength(2);
+    expect(placed[0]!.x).not.toBe(placed[1]!.x);
+
+    // A link to a node that does not exist yet is refused, and the drawing is untouched.
+    const dangling = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 2,
+      operations: [{ op: "add-edge", edge: { id: "api-db", from: "api", to: "db" } }],
+    });
+    expect(dangling.isError).toBe(true);
+    expect(host.study.candidates[0]!.revision).toBe(2);
+
+    const link = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 2,
+      operations: [{ op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api" } }],
+    });
+    expect(link.isError).toBeFalsy();
+    expect((link.content.changed as string[])[0]).toBe("added link browser → api");
+
+    // Sealing needs the current revision.
+    const stale = await call("studio_import_architecture", {
+      repository: { name: "checkout-service", revision: "abc123" },
+      fromCandidateId: candidateId,
+      expectedRevision: 2,
+    });
+    expect(stale.isError).toBe(true);
+    expect(String(stale.content.error)).toContain("revision 3, not 2");
+
+    const sealed = await call("studio_import_architecture", {
+      repository: { name: "checkout-service", revision: "abc123" },
+      label: "As-is · abc123",
+      fromCandidateId: candidateId,
+      expectedRevision: 3,
+      evidence: [
+        {
+          id: "entrypoint",
+          targetKind: "node",
+          targetId: "api",
+          confidence: "observed",
+          source: "code",
+          path: "src/server.ts",
+          claim: "the HTTP server is created here",
+        },
+      ],
+    });
+    expect(sealed.isError).toBeFalsy();
+    // Same candidate, now the baseline: the picture on the canvas does not move.
+    expect(sealed.content.candidateId).toBe(candidateId);
+    expect(sealed.content.role).toBe("baseline");
+    expect(sealed.content.evidenceCount).toBe(1);
+    expect(host.study.candidates).toHaveLength(1);
+    expect(host.study.repository?.revision).toBe("abc123");
+
+    const again = await call("studio_import_architecture", {
+      repository: { name: "checkout-service", revision: "abc123" },
+      fromCandidateId: candidateId,
+      expectedRevision: 4,
+    });
+    expect(again.isError).toBe(true);
+    expect(String(again.content.error)).toContain("already an as-is baseline");
+  });
+
+  it("refuses an import that names both a design and a drawn candidate, or neither", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const repository = { name: "checkout-service" };
+    const neither = await call("studio_import_architecture", { repository });
+    expect(neither.isError).toBe(true);
+    const both = await call("studio_import_architecture", {
+      ...repositoryArchitectureInput(),
+      fromCandidateId: "agent-candidate-1",
+      expectedRevision: 0,
+    });
+    expect(both.isError).toBe(true);
+  });
+
   it("attaches evidence append-only with a revision guard", async () => {
     await call("studio_create_study", { name: "checkout" });
     const imported = await call("studio_import_architecture", repositoryArchitectureInput());
