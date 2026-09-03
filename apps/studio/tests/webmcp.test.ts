@@ -552,6 +552,8 @@ describe("creating a candidate", () => {
     expect(JSON.stringify(created.design)).toBe(JSON.stringify(active.design));
     // A copy, not an alias: editing one must not edit the other.
     expect(created.design).not.toBe(active.design);
+    expect(created.role).toBe("experiment");
+    expect(created.basedOnCandidateId).toBe(active.id);
   });
 
   it("starts at revision zero and never touches an existing candidate", async () => {

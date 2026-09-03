@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  ArchitectureEvidenceSchema,
   CorrectnessContractSchema,
   StudySchema,
   applyStudyContract,
@@ -20,8 +21,40 @@ describe("the empty study", () => {
   it("is a valid study, so nothing downstream needs an empty-case branch", () => {
     const study = blankStudy({ id: "s1" });
     expect(() => StudySchema.parse(study)).not.toThrow();
+    expect(study.repository).toBeNull();
     expect(study.candidates).toEqual([]);
     expect(validateStudy(study)).toEqual([]);
+  });
+
+  it("stores the repository revision an architecture snapshot came from", () => {
+    const study = StudySchema.parse({
+      ...blankStudy({ id: "s1", now: 12 }),
+      repository: {
+        name: "checkout-service",
+        rootHint: "services/checkout",
+        branch: "main",
+        revision: "abc123",
+        dirty: false,
+        capturedAt: 12,
+      },
+    });
+    expect(study.repository?.revision).toBe("abc123");
+    expect(study.repository?.scope).toEqual([]);
+  });
+
+  it("rejects source line evidence without a path or with a backwards range", () => {
+    const base = {
+      id: "api-route",
+      targetKind: "node" as const,
+      targetId: "api",
+      confidence: "observed" as const,
+      source: "code" as const,
+      claim: "the checkout route calls the order service",
+    };
+    expect(() => ArchitectureEvidenceSchema.parse({ ...base, lineStart: 20 })).toThrow(/path/);
+    expect(() =>
+      ArchitectureEvidenceSchema.parse({ ...base, path: "src/api.ts", lineStart: 20, lineEnd: 10 })
+    ).toThrow(/lineEnd/);
   });
 
   it("compares to a claim that says what to do, not that everything failed", () => {

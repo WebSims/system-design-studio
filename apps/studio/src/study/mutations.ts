@@ -4,7 +4,9 @@ import {
   migrateAndParse,
   validateDesign,
   validateWorkflow,
+  type ArchitectureEvidence,
   type Candidate,
+  type CandidateRole,
   type Study,
 } from "@sds/schema";
 
@@ -45,6 +47,10 @@ export interface CreateCandidateInput {
   design?: unknown;
   copyFrom?: string;
   origin: "human" | "agent";
+  /** Internal classification. Agent-facing tools choose this rather than accepting authority. */
+  role?: CandidateRole;
+  basedOnCandidateId?: string | null;
+  evidence?: ArchitectureEvidence[];
 }
 
 /**
@@ -100,9 +106,15 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
     label: input.label,
     pattern: source?.pattern ?? "",
     origin: input.origin,
+    role: input.role ?? "experiment",
+    basedOnCandidateId:
+      input.basedOnCandidateId !== undefined
+        ? input.basedOnCandidateId
+        : (source?.id ?? null),
     revision: 0,
     notes: input.notes ?? "",
     intent: input.intent ?? "",
+    evidence: structuredClone(input.evidence ?? source?.evidence ?? []),
     design,
   });
 
@@ -189,7 +201,17 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
     );
   }
 
-  const candidate: Candidate = { ...existing, design, revision: existing.revision + 1 };
+  const nodeIds = new Set(design.nodes.map((node) => node.id));
+  const edgeIds = new Set(design.edges.map((edge) => edge.id));
+  const evidence = existing.evidence.filter((item) =>
+    item.targetKind === "node" ? nodeIds.has(item.targetId) : edgeIds.has(item.targetId)
+  );
+  const candidate: Candidate = {
+    ...existing,
+    design,
+    evidence,
+    revision: existing.revision + 1,
+  };
   const next = StudySchema.parse({
     ...study,
     candidates: study.candidates.map((c) => (c.id === candidate.id ? candidate : c)),
@@ -224,7 +246,13 @@ export function deleteCandidate(study: Study, candidateId: string): Study {
       "promoted-candidate"
     );
   }
-  const candidates = study.candidates.filter((c) => c.id !== candidateId);
+  const candidates = study.candidates
+    .filter((c) => c.id !== candidateId)
+    .map((candidate) =>
+      candidate.basedOnCandidateId === candidateId
+        ? { ...candidate, basedOnCandidateId: null }
+        : candidate
+    );
   if (candidates.length === study.candidates.length) {
     throw new MutationRefused(`no candidate "${candidateId}"`, "no-such-candidate");
   }

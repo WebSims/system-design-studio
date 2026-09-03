@@ -364,6 +364,89 @@ export const StudyTargetsSchema = z
 export type StudyTargets = z.infer<typeof StudyTargetsSchema>;
 
 // ---------------------------------------------------------------------------
+// repository snapshots and architecture evidence
+// ---------------------------------------------------------------------------
+
+/**
+ * The repository revision an as-is architecture was reconstructed from.
+ *
+ * The browser cannot read the repository itself. An agent that can inspect the workspace records
+ * only the stable identity needed to audit and repeat its analysis here. `rootHint` is deliberately
+ * a hint rather than an authority: moving a project must not make its architecture unreadable.
+ */
+export const RepositorySnapshotSchema = z
+  .object({
+    name: z.string().min(1).max(160),
+    rootHint: z.string().max(1024).default(""),
+    branch: z.string().max(256).default(""),
+    revision: z.string().max(256).default(""),
+    dirty: z.boolean().nullable().default(null),
+    /** Relative directories or packages included in this architecture snapshot. */
+    scope: z.array(z.string().min(1).max(512)).max(128).default([]),
+    capturedAt: z.number().int().nonnegative(),
+  })
+  .strict();
+export type RepositorySnapshot = z.infer<typeof RepositorySnapshotSchema>;
+
+/** How strongly the available source supports an architectural claim. */
+export const EvidenceConfidenceSchema = z.enum(["observed", "inferred", "assumed"]);
+export type EvidenceConfidence = z.infer<typeof EvidenceConfidenceSchema>;
+
+/** What kind of source produced an architectural claim. */
+export const EvidenceSourceSchema = z.enum(["code", "config", "runtime", "documentation", "user"]);
+export type EvidenceSource = z.infer<typeof EvidenceSourceSchema>;
+
+/**
+ * One auditable reason that a node or link exists in the architecture model.
+ *
+ * `path` is repository-relative whenever possible. Lines and symbols are optional because config,
+ * runtime traces and user-supplied constraints do not always have a source location. `claim` says
+ * what the evidence establishes; a path on its own would only prove that a file exists.
+ */
+export const ArchitectureEvidenceSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    targetKind: z.enum(["node", "edge"]),
+    targetId: z.string().min(1).max(128),
+    confidence: EvidenceConfidenceSchema,
+    source: EvidenceSourceSchema,
+    path: z.string().max(1024).default(""),
+    lineStart: z.number().int().positive().nullable().default(null),
+    lineEnd: z.number().int().positive().nullable().default(null),
+    symbol: z.string().max(512).default(""),
+    claim: z.string().min(1).max(2000),
+  })
+  .strict()
+  .superRefine((evidence, ctx) => {
+    if (evidence.lineStart !== null && evidence.path.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["path"],
+        message: "a line number requires a repository-relative path",
+      });
+    }
+    if (evidence.lineEnd !== null && evidence.lineStart === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["lineStart"],
+        message: "lineEnd requires lineStart",
+      });
+    }
+    if (
+      evidence.lineStart !== null &&
+      evidence.lineEnd !== null &&
+      evidence.lineEnd < evidence.lineStart
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["lineEnd"],
+        message: "lineEnd cannot be before lineStart",
+      });
+    }
+  });
+export type ArchitectureEvidence = z.infer<typeof ArchitectureEvidenceSchema>;
+
+// ---------------------------------------------------------------------------
 // candidates
 // ---------------------------------------------------------------------------
 
@@ -377,6 +460,10 @@ export type StudyTargets = z.infer<typeof StudyTargetsSchema>;
 export const CandidateOriginSchema = z.enum(["human", "agent", "library"]);
 export type CandidateOrigin = z.infer<typeof CandidateOriginSchema>;
 
+/** Baselines describe code that exists; experiments describe a proposed departure from it. */
+export const CandidateRoleSchema = z.enum(["baseline", "experiment"]);
+export type CandidateRole = z.infer<typeof CandidateRoleSchema>;
+
 export const CandidateSchema = z
   .object({
     id: z.string().min(1).max(64),
@@ -387,6 +474,9 @@ export const CandidateSchema = z
      */
     pattern: z.string().default(""),
     origin: CandidateOriginSchema.default("human"),
+    role: CandidateRoleSchema.default("experiment"),
+    /** The baseline or earlier experiment this candidate was forked from. */
+    basedOnCandidateId: z.string().min(1).max(64).nullable().default(null),
     /**
      * Monotonic revision, incremented on every accepted draft replacement.
      *
@@ -403,9 +493,37 @@ export const CandidateSchema = z
      * meant to fail, and a reader needs to know that is intentional.
      */
     intent: z.string().default(""),
+    evidence: z.array(ArchitectureEvidenceSchema).max(4096).default([]),
     design: DesignSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((candidate, ctx) => {
+    const nodeIds = new Set(candidate.design.nodes.map((node) => node.id));
+    const edgeIds = new Set(candidate.design.edges.map((edge) => edge.id));
+    const evidenceIds = new Set<string>();
+    for (let index = 0; index < candidate.evidence.length; index += 1) {
+      const evidence = candidate.evidence[index]!;
+      if (evidenceIds.has(evidence.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["evidence", index, "id"],
+          message: `duplicate evidence id "${evidence.id}"`,
+        });
+      }
+      evidenceIds.add(evidence.id);
+      const targetExists =
+        evidence.targetKind === "node"
+          ? nodeIds.has(evidence.targetId)
+          : edgeIds.has(evidence.targetId);
+      if (!targetExists) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["evidence", index, "targetId"],
+          message: `missing ${evidence.targetKind} "${evidence.targetId}"`,
+        });
+      }
+    }
+  });
 export type Candidate = z.infer<typeof CandidateSchema>;
 
 // ---------------------------------------------------------------------------
@@ -756,7 +874,7 @@ export type PortfolioResult = z.infer<typeof PortfolioResultSchema>;
 // the study document
 // ---------------------------------------------------------------------------
 
-export const STUDY_SCHEMA_VERSION = 1 as const;
+export const STUDY_SCHEMA_VERSION = 2 as const;
 
 export const StudySchema = z
   .object({
@@ -772,6 +890,8 @@ export const StudySchema = z
      * reading the two next to each other.
      */
     problem: z.string().default(""),
+    /** Null for a freehand project; present when an agent reconstructed the baseline from code. */
+    repository: RepositorySnapshotSchema.nullable().default(null),
     contract: ProductContractSchema.default({}),
     workload: StudyWorkloadSchema,
     targets: StudyTargetsSchema.default({}),

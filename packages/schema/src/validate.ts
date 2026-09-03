@@ -1291,6 +1291,49 @@ export function validateStudy(study: Study): StudyIssue[] {
     }
     seen.add(c.id);
 
+    if (c.basedOnCandidateId === c.id) {
+      issues.push({
+        severity: "error",
+        code: "candidate-self-parent",
+        message: `candidate "${c.label}" cannot be based on itself`,
+        candidateId: c.id,
+      });
+    } else if (c.basedOnCandidateId && !candidateById(study, c.basedOnCandidateId)) {
+      issues.push({
+        severity: "error",
+        code: "candidate-parent-missing",
+        message: `candidate "${c.label}" is based on missing candidate "${c.basedOnCandidateId}"`,
+        candidateId: c.id,
+      });
+    }
+
+    const nodeIds = new Set(c.design.nodes.map((node) => node.id));
+    const edgeIds = new Set(c.design.edges.map((edge) => edge.id));
+    const evidenceIds = new Set<string>();
+    for (const evidence of c.evidence) {
+      if (evidenceIds.has(evidence.id)) {
+        issues.push({
+          severity: "error",
+          code: "duplicate-evidence-id",
+          message: `candidate "${c.label}" has two evidence records named "${evidence.id}"`,
+          candidateId: c.id,
+        });
+      }
+      evidenceIds.add(evidence.id);
+      const targetExists =
+        evidence.targetKind === "node"
+          ? nodeIds.has(evidence.targetId)
+          : edgeIds.has(evidence.targetId);
+      if (!targetExists) {
+        issues.push({
+          severity: "error",
+          code: "evidence-target-missing",
+          message: `evidence "${evidence.id}" cites missing ${evidence.targetKind} "${evidence.targetId}"`,
+          candidateId: c.id,
+        });
+      }
+    }
+
     for (const issue of validateDesign(c.design)) {
       issues.push({ ...issue, candidateId: c.id });
     }
@@ -1650,14 +1693,33 @@ export function migrateAndParse(input: unknown): Design {
 type StudyMigration = (doc: Record<string, unknown>) => Record<string, unknown>;
 
 /**
- * Study migration registry. Empty at v1, and present anyway.
+ * Study migration registry. Present from v1 so widening the document never strands saved work.
  *
  * The design schema shipped four versions before it grew a migration path, and the
  * cost of that was paid in lost saved work. The study format starts with the
  * mechanism, so the first widening is a one-line change rather than a decision about
  * whether to bother.
  */
-const STUDY_MIGRATIONS: Record<number, StudyMigration> = {};
+const STUDY_MIGRATIONS: Record<number, StudyMigration> = {
+  1: (doc) => {
+    const rawCandidates = Array.isArray(doc.candidates) ? doc.candidates : [];
+    const candidates = rawCandidates.map((candidate) => {
+      if (typeof candidate !== "object" || candidate === null) return candidate;
+      const raw = candidate as Record<string, unknown>;
+      const isOnlyPromotedCandidate =
+        rawCandidates.length === 1 &&
+        typeof raw.id === "string" &&
+        doc.promotedCandidateId === raw.id;
+      return {
+        ...raw,
+        role: isOnlyPromotedCandidate ? "baseline" : "experiment",
+        basedOnCandidateId: null,
+        evidence: [],
+      };
+    });
+    return { ...doc, version: 2, repository: null, candidates };
+  },
+};
 
 /**
  * Parse a saved study, migrating as needed.
@@ -1740,6 +1802,7 @@ export function studyFromDesign(design: Design, id = "study-1"): Study {
         id: "candidate-1",
         label: design.name,
         origin: "human",
+        role: "baseline",
         revision: 0,
         design,
       },

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DESIGN_SCHEMA_VERSION,
   DesignSchema,
+  CandidateSchema,
   STUDY_SCHEMA_VERSION,
   StudySchema,
   migrateAndParse,
@@ -265,6 +266,40 @@ describe("a standalone design opens as a one-candidate study", () => {
 });
 
 describe("a study round-trips", () => {
+  it("migrates v1 projects into explicit manual experiments", () => {
+    const old = JSON.parse(JSON.stringify(pizzaStudy())) as Record<string, unknown>;
+    old.version = 1;
+    delete old.repository;
+    for (const candidate of old.candidates as Array<Record<string, unknown>>) {
+      delete candidate.role;
+      delete candidate.basedOnCandidateId;
+      delete candidate.evidence;
+    }
+    const migrated = migrateAndParseStudy(old);
+    expect(migrated.version).toBe(STUDY_SCHEMA_VERSION);
+    expect(migrated.repository).toBeNull();
+    expect(migrated.candidates.every((candidate) => candidate.role === "experiment")).toBe(true);
+  });
+
+  it("refuses evidence that points outside its architecture", () => {
+    const candidate = pizzaStudy().candidates[0]!;
+    expect(() =>
+      CandidateSchema.parse({
+        ...candidate,
+        evidence: [
+          {
+            id: "missing-worker",
+            targetKind: "node",
+            targetId: "worker-that-does-not-exist",
+            confidence: "inferred",
+            source: "code",
+            claim: "a background worker appears to consume jobs",
+          },
+        ],
+      })
+    ).toThrow(/missing node/);
+  });
+
   it("through JSON, unchanged, with all seven candidates", () => {
     const original = pizzaStudy();
     const json = JSON.stringify(original);
