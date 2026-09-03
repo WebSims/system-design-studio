@@ -1,5 +1,7 @@
+import { useState } from "react";
 import type { EligibilityDecision, PortfolioResult } from "@sds/schema";
 import { useStudyStore } from "../study/store";
+import { compareDesignTopology, type EdgeDelta, type NodeDelta } from "../topology";
 
 /**
  * The compare view.
@@ -67,6 +69,8 @@ export function CompareView() {
             </>
           )}
         </section>
+
+        <ArchitectureDelta />
 
         {portfolio && (
           <section className="section">
@@ -155,6 +159,162 @@ export function CompareView() {
       </div>
     </div>
   );
+}
+
+function ArchitectureDelta() {
+  const study = useStudyStore((state) => state.study);
+  const [baseChoice, setBaseChoice] = useState("");
+  const [headChoice, setHeadChoice] = useState("");
+  if (study.candidates.length < 2) return null;
+
+  const candidateIds = new Set(study.candidates.map((candidate) => candidate.id));
+  const defaultBaseId =
+    study.promotedCandidateId && candidateIds.has(study.promotedCandidateId)
+      ? study.promotedCandidateId
+      : study.candidates[0]!.id;
+  const baseId = candidateIds.has(baseChoice) ? baseChoice : defaultBaseId;
+  const activeCandidateId = study.activeCandidateId;
+  const defaultHeadId =
+    activeCandidateId !== null &&
+    activeCandidateId !== baseId &&
+    candidateIds.has(activeCandidateId)
+      ? activeCandidateId
+      : (study.candidates.find((candidate) => candidate.id !== baseId)?.id ?? baseId);
+  const headId = candidateIds.has(headChoice) && headChoice !== baseId ? headChoice : defaultHeadId;
+  const base = study.candidates.find((candidate) => candidate.id === baseId)!;
+  const head = study.candidates.find((candidate) => candidate.id === headId)!;
+  const delta = compareDesignTopology(base.design, head.design);
+  const changes = [...delta.nodes, ...delta.edges];
+  const summary = [
+    { label: "nodes added", value: delta.summary.nodesAdded, tone: "added" },
+    { label: "nodes removed", value: delta.summary.nodesRemoved, tone: "removed" },
+    { label: "nodes configured", value: delta.summary.nodesChanged, tone: "changed" },
+    { label: "nodes moved", value: delta.summary.nodesMoved, tone: "moved" },
+    { label: "links added", value: delta.summary.edgesAdded, tone: "added" },
+    { label: "links removed", value: delta.summary.edgesRemoved, tone: "removed" },
+    { label: "links configured", value: delta.summary.edgesChanged, tone: "changed" },
+  ];
+
+  return (
+    <section className="section architecture-delta">
+      <header className="section-head">
+        <div>
+          <h2>architecture delta</h2>
+          <p className="section-subtitle">See what structurally changed before comparing outcomes.</p>
+        </div>
+      </header>
+
+      <div className="delta-pickers">
+        <label>
+          <span>From</span>
+          <select
+            className="input"
+            value={baseId}
+            onChange={(event) => {
+              setBaseChoice(event.target.value);
+              if (event.target.value === headId) setHeadChoice("");
+            }}
+          >
+            {study.candidates
+              .filter((candidate) => candidate.id !== headId || study.candidates.length === 2)
+              .map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.label} · r{candidate.revision}
+                </option>
+              ))}
+          </select>
+        </label>
+
+        <span className="delta-arrow" aria-hidden="true">
+          →
+        </span>
+
+        <label>
+          <span>To</span>
+          <select className="input" value={headId} onChange={(event) => setHeadChoice(event.target.value)}>
+            {study.candidates
+              .filter((candidate) => candidate.id !== baseId)
+              .map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.label} · r{candidate.revision}
+                </option>
+              ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="delta-summary" aria-label="Architecture change counts">
+        {summary.map((item) => (
+          <div key={item.label} className={`delta-metric delta-${item.tone}`}>
+            <strong className="tnum">{item.value}</strong>
+            <span>{item.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {!delta.comparable && (
+        <p className="delta-warning">
+          These candidates share no stable component IDs. Additions and removals are exact, but the
+          studio cannot pair components to claim that one was changed or moved.
+        </p>
+      )}
+
+      {changes.length === 0 ? (
+        <p className="delta-empty">The authored topology and component settings are identical.</p>
+      ) : (
+        <details className="delta-details" open={changes.length <= 8}>
+          <summary>
+            Inspect {changes.length} authored {changes.length === 1 ? "change" : "changes"}
+          </summary>
+          <ul className="delta-changes">
+            {changes.map((change) => (
+              <li key={`${change.kind}:${change.id}`}>
+                <span className={`delta-token delta-${change.status}`} aria-hidden="true">
+                  {deltaToken(change.status)}
+                </span>
+                <span>
+                  <strong>{change.kind === "node" ? change.label : `${change.from} → ${change.to}`}</strong>
+                  <small>{describeDelta(change)}</small>
+                </span>
+                <code>{change.id}</code>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <p className="delta-limit">
+        Exact-ID authored delta only. It does not infer runtime impact, risk, causality, or which
+        design is better.
+      </p>
+    </section>
+  );
+}
+
+function deltaToken(status: NodeDelta["status"] | EdgeDelta["status"]): string {
+  if (status === "added") return "+";
+  if (status === "removed") return "−";
+  if (status === "moved") return "↔";
+  return "~";
+}
+
+function describeDelta(change: NodeDelta | EdgeDelta): string {
+  if (change.status === "added") return `${change.kind} added`;
+  if (change.status === "removed") return `${change.kind} removed`;
+  if (change.kind === "node") {
+    const parts = [
+      change.changedFields.length > 0
+        ? `changed ${change.changedFields.map(readableField).join(", ")}`
+        : "",
+      change.moved ? "moved on canvas" : "",
+    ].filter(Boolean);
+    return parts.join(" · ");
+  }
+  return `changed ${change.changedFields.map(readableField).join(", ")}`;
+}
+
+function readableField(field: string): string {
+  return field.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
 function GateCard({

@@ -21,6 +21,8 @@ design or prove that one is globally best.
 - Local save, import and export.
 - Pizza scenario is not exposed by the app; the README is its user-facing entry.
 - AI-first empty state; no hardcoded project generator.
+- Canvas topology explorer: search, authored upstream/downstream reach and shortest routes.
+- Exact-ID architecture delta between candidates, with explicit comparison limits.
 
 ## Next
 

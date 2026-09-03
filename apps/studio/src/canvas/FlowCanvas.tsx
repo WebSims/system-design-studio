@@ -12,13 +12,15 @@ import {
   type OnConnect,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { EdgeSchema } from "@sds/schema";
 import { protocolFreeEdgeId } from "../ids";
 import { nodeTypes } from "./nodes";
 import { PacketLayer } from "./PacketLayer";
 import { PipeEdge } from "./PipeEdge";
 import { useStudio } from "../store";
+import { useStudyStore } from "../study/store";
+import { TopologyExplorer, type TopologyExploration } from "./TopologyExplorer";
 
 const edgeTypes = { pipe: PipeEdge };
 
@@ -29,6 +31,29 @@ function Canvas() {
   const moveNode = useStudio((s) => s.moveNode);
   const select = useStudio((s) => s.select);
   const edit = useStudio((s) => s.edit);
+  const activeCandidateId = useStudyStore((s) => s.study.activeCandidateId);
+  const [exploration, setExploration] = useState<TopologyExploration>(null);
+
+  const topologyFingerprint = useMemo(
+    () =>
+      JSON.stringify({
+        nodes: design.nodes.map((node) => node.id),
+        edges: design.edges.map((edge) => [edge.id, edge.from, edge.to]),
+      }),
+    [design.edges, design.nodes]
+  );
+  useEffect(() => setExploration(null), [activeCandidateId, topologyFingerprint]);
+  const highlightedNodeIds = useMemo(
+    () => new Set(exploration?.result.nodeIds ?? []),
+    [exploration]
+  );
+  const highlightedEdgeIds = useMemo(
+    () => new Set(exploration?.result.edgeIds ?? []),
+    [exploration]
+  );
+  const explorationOrigin =
+    exploration?.kind === "route" ? exploration.result.sourceId : exploration?.result.originId;
+  const explorationEnd = exploration?.kind === "route" ? exploration.result.targetId : null;
 
   /**
    * The React Flow node array is derived from the design and carries NOTHING that
@@ -43,8 +68,17 @@ function Canvas() {
         position: { x: n.x, y: n.y },
         data: {},
         selected: selection?.kind === "node" && selection.id === n.id,
+        className: exploration
+          ? [
+              highlightedNodeIds.has(n.id) ? "topology-match" : "topology-muted",
+              n.id === explorationOrigin ? "topology-origin" : "",
+              n.id === explorationEnd ? "topology-end" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")
+          : undefined,
       })),
-    [design.nodes, selection]
+    [design.nodes, exploration, explorationEnd, explorationOrigin, highlightedNodeIds, selection]
   );
 
   const edges = useMemo<Edge[]>(
@@ -55,8 +89,20 @@ function Canvas() {
         target: e.to,
         type: "pipe",
         selected: selection?.kind === "edge" && selection.id === e.id,
+        className: exploration
+          ? highlightedEdgeIds.has(e.id)
+            ? "topology-match"
+            : "topology-muted"
+          : undefined,
+        data: {
+          topology: exploration
+            ? highlightedEdgeIds.has(e.id)
+              ? "match"
+              : "muted"
+            : "none",
+        },
       })),
-    [design.edges, selection]
+    [design.edges, exploration, highlightedEdgeIds, selection]
   );
 
   const onNodesChange = useCallback(
@@ -96,6 +142,19 @@ function Canvas() {
     [edit]
   );
 
+  const onNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => select({ kind: "node", id: node.id }),
+    [select]
+  );
+
+  const onEdgeClick = useCallback(
+    (_event: React.MouseEvent, edge: Edge) => select({ kind: "edge", id: edge.id }),
+    [select]
+  );
+
+  const onPaneClick = useCallback(() => select(null), [select]);
+  const onSelectNode = useCallback((id: string) => select({ kind: "node", id }), [select]);
+
   return (
     <div className="canvas-wrap">
       <ReactFlow
@@ -105,9 +164,9 @@ function Canvas() {
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onConnect={onConnect}
-        onNodeClick={(_, n) => select({ kind: "node", id: n.id })}
-        onEdgeClick={(_, e) => select({ kind: "edge", id: e.id })}
-        onPaneClick={() => select(null)}
+        onNodeClick={onNodeClick}
+        onEdgeClick={onEdgeClick}
+        onPaneClick={onPaneClick}
         fitView
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         minZoom={0.2}
@@ -118,6 +177,14 @@ function Canvas() {
         <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#2a2621" />
         <Controls showInteractive={false} />
         <MiniMap pannable zoomable nodeColor="#3a342c" maskColor="rgba(10,9,7,0.7)" />
+        <TopologyExplorer
+          key={`${activeCandidateId ?? "none"}:${topologyFingerprint}`}
+          design={design}
+          selectedNodeId={selection?.kind === "node" ? selection.id : null}
+          exploration={exploration}
+          onExplorationChange={setExploration}
+          onSelectNode={onSelectNode}
+        />
         <PacketLayer design={design} trace={trace} />
       </ReactFlow>
     </div>

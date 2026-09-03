@@ -20,6 +20,7 @@ the final choice.
 | **AI design** | Codex creates and edits candidates through 13 WebMCP tools. |
 | **Race finder** | Finds a short execution that breaks a rule. |
 | **Simulator** | Measures load, latency, queues and business outcomes. |
+| **Topology explorer** | Searches components, traces authored reach and reveals shortest directed routes. |
 | **Comparison** | Filters broken designs, then shows trade-offs. |
 | **Human decision** | AI cannot promote or delete a candidate. |
 | **Local storage** | Projects stay in your browser. |
@@ -89,6 +90,7 @@ pnpm sim        # CLI: --check, --portfolio
 - [Testing](docs/testing.md) — how to check the engine yourself
 - [Design rules](docs/design-rules.md) — rules it holds itself to, and what is out of scope
 - [Example](docs/examples.md) — 200 pizzas, seven ways
+- [Archify review](docs/archify-review.md) — what we adopted, adapted and deliberately left out
 
 ## Layout
 

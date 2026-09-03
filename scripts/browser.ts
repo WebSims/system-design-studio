@@ -207,6 +207,78 @@ const checks: Check[] = [
   },
 
   {
+    name: "topology search, authored reach and shortest routes stay graph-grounded",
+    async run() {
+      await evaluate(`(() => {
+        const input = document.querySelector('[aria-label="Find a component by label or stable ID"]');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        setter.call(input, "claim service");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      })()`);
+      await click(".topology-go");
+      await waitFor(
+        `document.querySelector(".topology-receipt")?.textContent.includes("Focused claim service")`,
+        "component search to focus the authored node"
+      );
+
+      await evaluate(`(() => {
+        const button = [...document.querySelectorAll(".topology-action")]
+          .find((candidate) => candidate.textContent.trim().startsWith("Downstream"));
+        if (!button || button.disabled) throw new Error("downstream reach did not enable");
+        button.click();
+      })()`);
+      await waitFor(
+        `document.querySelectorAll(".react-flow__node.topology-muted").length > 0`,
+        "unrelated topology to dim"
+      );
+      const reachReceipt = await text(".topology-receipt");
+      if (!reachReceipt.includes("authored links")) return `reach receipt lost its source boundary: ${reachReceipt}`;
+      if (!reachReceipt.includes("runtime impact is not inferred")) {
+        return `reach receipt overclaims runtime meaning: ${reachReceipt}`;
+      }
+
+      await evaluate(`(() => {
+        const button = [...document.querySelectorAll(".topology-action")]
+          .find((candidate) => candidate.textContent.trim().startsWith("Route"));
+        if (!button) throw new Error("route control missing");
+        button.click();
+      })()`);
+      await waitFor(`document.querySelector('[aria-label="Route start"]')`, "route controls");
+      await evaluate(`(() => {
+        const select = document.querySelector('[aria-label="Route start"]');
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+        setter.call(select, "crowd");
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+      await waitFor(
+        `document.querySelector('[aria-label="Route destination"] option[value="db"]')`,
+        "the claims store route destination"
+      );
+      await evaluate(`(() => {
+        const select = document.querySelector('[aria-label="Route destination"]');
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set;
+        setter.call(select, "db");
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+      await waitFor(`document.querySelector(".topology-route-receipt")`, "the route receipt");
+      // The explorer receipt and React Flow's internally memoized SVG edges commit in separate
+      // render work. Wait for the rendered consequence instead of racing that second commit.
+      await waitFor(
+        `document.querySelectorAll(".react-flow__edge.topology-match").length === 3`,
+        "the three route links to highlight"
+      );
+
+      const matchingEdges = await count(".react-flow__edge.topology-match");
+      if (matchingEdges !== 3) return `expected the three-hop authored route, highlighted ${matchingEdges} links`;
+      const routeReceipt = await text(".topology-route-receipt");
+      if (!routeReceipt.includes("Shortest authored route · 3 hops")) {
+        return `route receipt is not exact about its method: ${routeReceipt}`;
+      }
+      return null;
+    },
+  },
+
+  {
     name: "the correctness view runs a search and renders a counterexample as swimlanes",
     async run() {
       await click(`.tabs button:nth-of-type(2)`);
@@ -309,6 +381,15 @@ const checks: Check[] = [
     async run() {
       await click(`.tabs button:nth-of-type(4)`);
       await waitFor(`document.querySelector(".view-compare")`, "the compare view");
+
+      const deltaPickers = await count(".architecture-delta select");
+      if (deltaPickers !== 2) return `architecture delta rendered ${deltaPickers} candidate selectors`;
+      const deltaClaim = await text(".architecture-delta");
+      if (!deltaClaim.includes("Exact-ID authored delta only")) {
+        return `architecture delta lost its comparison boundary: ${deltaClaim.slice(-180)}`;
+      }
+      if (!deltaClaim.includes("api")) return "architecture delta did not identify the changed stable component ID";
+
       await click(`.view-compare .btn.primary`);
       // Seven candidates, correctness plus replicated performance. Generous, and bounded.
       await waitFor(

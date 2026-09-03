@@ -22,6 +22,7 @@ export function PipeEdge({
   sourcePosition,
   targetPosition,
   selected,
+  data,
 }: EdgeProps) {
   const [path, labelX, labelY] = getBezierPath({
     sourceX,
@@ -34,6 +35,7 @@ export function PipeEdge({
   const edge = useStudio((s) => s.design.edges.find((e) => e.id === id));
   const latencyMs = edge ? distMean(edge.latency) : 0;
   const loss = edge?.lossProbability ?? 0;
+  const topology = (data as { topology?: "none" | "match" | "muted" } | undefined)?.topology;
 
   return (
     <>
@@ -41,7 +43,7 @@ export function PipeEdge({
       <BaseEdge id={id} path={path} className={`pipe-core ${selected ? "selected" : ""}`} />
       <EdgeLabelRenderer>
         <div
-          className="edge-chip"
+          className={`edge-chip ${topology ? `topology-${topology}` : ""}`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
           <span className="tnum">{latencyMs}ms</span>

@@ -1920,6 +1920,432 @@ summary:focus-visible {
   width: 100%;
 }
 
+/* ---------- topology explorer ---------- */
+
+.topology-panel {
+  max-width: calc(100% - 30px);
+  margin: 14px;
+}
+
+.topology-explorer {
+  width: max-content;
+  max-width: min(720px, calc(100vw - var(--rail-left) - var(--rail-right) - 30px));
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-2) 94%, transparent);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.34);
+  color: var(--fg);
+}
+
+.topology-tools-row,
+.topology-route-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+}
+
+.topology-search {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.topology-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.topology-search svg,
+.topology-action svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.topology-search svg {
+  margin-left: 9px;
+  color: var(--fg-3);
+}
+
+.topology-search input {
+  width: 148px;
+  min-width: 76px;
+  height: 32px;
+  padding: 5px 7px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: 11.5px;
+}
+
+.topology-search input::placeholder {
+  color: var(--fg-3);
+}
+
+.topology-go,
+.topology-action,
+.topology-clear {
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.topology-go {
+  align-self: stretch;
+  border-width: 0 0 0 1px;
+  border-color: var(--line);
+  border-radius: 0;
+  padding-inline: 9px;
+}
+
+.topology-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+}
+
+.topology-action:hover:not(:disabled),
+.topology-go:hover,
+.topology-clear:hover,
+.topology-action.active {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
+.topology-action.active {
+  border-color: var(--accent);
+}
+
+.topology-action:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.topology-count {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: var(--line);
+  color: var(--fg-2);
+  text-align: center;
+  font-size: 10px;
+}
+
+.topology-divider {
+  width: 1px;
+  height: 20px;
+  flex: none;
+  background: var(--line);
+}
+
+.topology-clear {
+  padding-inline: 7px;
+  color: var(--fg-3);
+}
+
+.topology-route-row {
+  align-items: end;
+  border-top: 1px solid var(--line);
+  padding: 8px 10px 10px;
+}
+
+.topology-route-row label {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  color: var(--fg-3);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.topology-route-row select {
+  max-width: 220px;
+  height: 34px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 4px 28px 4px 8px;
+  font-size: 11.5px;
+  text-transform: none;
+}
+
+.topology-route-row select:disabled {
+  opacity: 0.45;
+}
+
+.topology-route-arrow {
+  padding: 0 2px 7px;
+  color: var(--fg-3);
+}
+
+.topology-receipt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-3) 74%, transparent);
+  font-size: 10.5px;
+}
+
+.topology-receipt p {
+  margin: 0;
+  color: var(--fg-2);
+}
+
+.topology-receipt small {
+  flex: none;
+  color: var(--fg-3);
+  font-size: 9.5px;
+}
+
+.topology-receipt.topology-route-receipt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.topology-route-receipt .topology-path {
+  grid-column: 1 / -1;
+}
+
+.topology-path {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.topology-path > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topology-path b {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.react-flow__node,
+.react-flow__edge,
+.edge-chip {
+  transition: opacity 160ms ease-out;
+}
+
+.react-flow__node.topology-muted,
+.react-flow__edge.topology-muted,
+.edge-chip.topology-muted {
+  opacity: 0.14;
+}
+
+.react-flow__node.topology-match .node {
+  border-color: color-mix(in srgb, var(--accent) 66%, var(--line-2));
+}
+
+.react-flow__node.topology-origin .node {
+  border-color: var(--sky);
+  box-shadow: 0 0 0 1px var(--sky);
+}
+
+.react-flow__node.topology-end .node {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 1px var(--ok);
+}
+
+.react-flow__edge.topology-match .pipe-core {
+  stroke: var(--accent);
+  stroke-width: 3.5;
+}
+
+.edge-chip.topology-match {
+  border-color: color-mix(in srgb, var(--accent) 65%, var(--line));
+  color: var(--fg);
+}
+
+/* ---------- exact-ID architecture delta ---------- */
+
+.section-subtitle {
+  margin: 5px 0 0;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+
+.delta-pickers {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
+  align-items: end;
+  gap: 12px;
+  max-width: 780px;
+  margin: 18px 0;
+}
+
+.delta-pickers label {
+  display: grid;
+  gap: 5px;
+}
+
+.delta-pickers label > span {
+  color: var(--fg-3);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.delta-pickers .input {
+  min-width: 0;
+}
+
+.delta-arrow {
+  padding-bottom: 7px;
+  color: var(--fg-3);
+}
+
+.delta-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.delta-metric {
+  min-height: 68px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-top-width: 2px;
+  border-radius: 7px;
+  background: var(--bg-2);
+}
+
+.delta-metric strong,
+.delta-metric span {
+  display: block;
+}
+
+.delta-metric strong {
+  margin-bottom: 4px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.delta-metric span {
+  color: var(--fg-3);
+  font-size: 10.5px;
+}
+
+.delta-added { color: var(--ok); }
+.delta-removed { color: var(--crit); }
+.delta-changed { color: var(--warn); }
+.delta-moved { color: var(--sky); }
+
+.delta-details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.delta-details summary {
+  padding: 11px 13px;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.delta-changes {
+  margin: 0;
+  padding: 0 10px 10px;
+  list-style: none;
+}
+
+.delta-changes li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) minmax(90px, auto);
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 4px;
+  border-top: 1px solid var(--line);
+}
+
+.delta-token {
+  font: 750 15px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.delta-changes strong,
+.delta-changes small {
+  display: block;
+}
+
+.delta-changes strong {
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.delta-changes small {
+  margin-top: 2px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+}
+
+.delta-changes code {
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+
+.delta-warning,
+.delta-empty,
+.delta-limit {
+  margin: 10px 0;
+  color: var(--fg-3);
+  font-size: 11.5px;
+}
+
+.delta-warning {
+  padding: 9px 11px;
+  border-left: 2px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  color: var(--fg-2);
+}
+
+.delta-limit {
+  margin-bottom: 0;
+  font-size: 10.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node,
+  .react-flow__edge,
+  .edge-chip {
+    transition: none;
+  }
+}
+
 @media (max-width: 1180px) {
   :root {
     --rail-left: 300px;
@@ -1939,6 +2365,14 @@ summary:focus-visible {
 
   .tabs button {
     padding-inline: 9px;
+  }
+
+  .topology-explorer {
+    max-width: min(660px, calc(100vw - var(--rail-left) - var(--rail-right) - 30px));
+  }
+
+  .topology-action {
+    padding-inline: 6px;
   }
 }
 
@@ -1967,6 +2401,85 @@ summary:focus-visible {
 
   .candidate-bar-title {
     max-width: 140px;
+  }
+
+  .btn,
+  .tabs button {
+    min-height: 40px;
+  }
+
+  .candidate-select {
+    min-height: 36px;
+  }
+
+  .candidate-add {
+    min-height: 36px;
+  }
+
+  .chip-remove {
+    width: 36px;
+  }
+
+  .topology-panel {
+    max-width: calc(100% - 20px);
+    margin: 10px;
+  }
+
+  .topology-explorer {
+    width: min(620px, calc(100vw - 20px));
+    max-width: 100%;
+  }
+
+  .topology-tools-row {
+    flex-wrap: wrap;
+  }
+
+  .topology-search {
+    flex: 1 1 190px;
+    height: 44px;
+  }
+
+  .topology-search input {
+    width: 100%;
+    height: 42px;
+  }
+
+  .topology-go,
+  .topology-action,
+  .topology-clear,
+  .topology-route-row select {
+    min-height: 44px;
+  }
+
+  .topology-receipt {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .topology-receipt.topology-route-receipt {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topology-route-receipt .topology-path {
+    grid-column: 1;
+  }
+
+  .delta-pickers {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .delta-arrow {
+    display: none;
+  }
+
+  .delta-changes li {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .delta-changes code {
+    grid-column: 2;
   }
 
   .view {
@@ -1998,5 +2511,37 @@ summary:focus-visible {
     border-top: 1px solid var(--line);
     border-right: 0;
     border-left: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar-secondary {
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .topology-divider,
+  .topology-route-arrow {
+    display: none;
+  }
+
+  .topology-action {
+    flex: 1 0 auto;
+    justify-content: center;
+  }
+
+  .topology-route-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .topology-route-row select {
+    width: 100%;
+    max-width: none;
+  }
+
+  .delta-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
