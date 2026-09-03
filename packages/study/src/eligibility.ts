@@ -1,3 +1,4 @@
+import { performanceCalibration } from "@sds/schema";
 import type {
   BusinessGoal,
   CandidateEvaluation,
@@ -8,7 +9,7 @@ import type {
 } from "@sds/schema";
 
 /**
- * The hard gates. A candidate opens all five or it is not compared at all.
+ * The hard gates. A candidate opens all six or it is not compared at all.
  *
  * WHY GATES RATHER THAN A WEIGHTED SCORE
  *
@@ -26,8 +27,9 @@ import type {
  *   1. schema-valid              -- the document parses and its references resolve
  *   2. correctness-exhausted     -- the search finished rather than running out of budget
  *   3. no-violation              -- and it found nothing
- *   4. slo-satisfied             -- the CONSERVATIVE end of the interval meets the SLO
- *   5. business-goals-satisfied  -- likewise for the business goals
+ *   4. performance-calibrated    -- repository timing and capacity inputs are measured
+ *   5. slo-satisfied             -- the CONSERVATIVE end of the interval meets the SLO
+ *   6. business-goals-satisfied  -- likewise for the business goals
  *
  * Gate two comes before gate three deliberately. A candidate that hit a state cap has not
  * been shown to be safe and has not been shown to be broken; it has been shown nothing. Every
@@ -124,7 +126,36 @@ export function decideEligibility(input: EligibilityInput): EligibilityDecision 
     }
   }
 
-  // ---- 4: the SLO, at the conservative end ----
+  // ---- 4: the numeric model is grounded before any performance result can count ----
+  const candidate = study.candidates.find((item) => item.id === evaluation.candidateId);
+  const calibration =
+    study.repository === null
+      ? {
+          required: false,
+          calibrated: true,
+          gaps: [],
+          message: "Performance calibration is not required for a freehand model.",
+        }
+      : candidate
+        ? performanceCalibration(study, candidate)
+        : null;
+  gates.push(
+    calibration?.calibrated
+      ? {
+          gate: "performance-calibrated",
+          passed: true,
+          reason: calibration.required
+            ? "every modeled component and link has observed runtime or user performance evidence"
+            : "freehand hypothetical model; repository calibration is not required",
+        }
+      : {
+          gate: "performance-calibrated",
+          passed: false,
+          reason: calibration?.message ?? "the candidate no longer exists in this project",
+        }
+  );
+
+  // ---- 5: the SLO, at the conservative end ----
   const p = evaluation.performance;
   if (!p) {
     gates.push({
@@ -175,7 +206,7 @@ export function decideEligibility(input: EligibilityInput): EligibilityDecision 
     );
   }
 
-  // ---- 5: the business goals ----
+  // ---- 6: the business goals ----
   const b = evaluation.business;
   if (study.targets.businessGoals.length === 0) {
     gates.push({

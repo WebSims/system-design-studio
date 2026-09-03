@@ -36,7 +36,10 @@ rearranged. When later evidence changes the topology, one `auto-layout` or `upda
 with new `x`/`y` re-places the drawing.
 
 Each patch is validated before it is committed: a link to a node that does not exist yet is
-refused with a named error, while a missing client is only a warning.
+refused with a named error, while a missing client is only a warning. Agent-authored servers
+must state `fanout: "sequential"` or `fanout: "parallel"`; they may not inherit a call-order
+default. Agent-authored links must state a positive one-way latency. Omitting latency or using
+zero is refused.
 `studio_import_architecture` with `fromCandidateId` then turns the drawing into the as-is
 baseline in place, keeping its id and everything on the canvas; passing a complete `design`
 instead still imports in one call.
@@ -50,12 +53,25 @@ are alternatives: the graph shows the choice selected by checked-in deployment c
 or the documented default when no deployed configuration exists, and records the other choices
 as evidence gaps rather than active dependencies.
 
+A link means that work at its source causes a call to its target for each matching request. It
+does not mean ownership, startup order, or “these run in one process.” Autonomous pollers,
+timers, cron jobs, and queue consumers therefore start from their own client/work-source node;
+an HTTP request is not drawn as their cause unless it really triggers them.
+
 Invariants describe required system outcomes, not current implementation mechanisms or
 process-local guarantees. At least one high-risk state-changing source flow should become a
 workflow when the code supports it; otherwise recorded invariants cannot produce meaningful
-correctness evidence. Repository code also cannot reveal production traffic, replica counts,
-service times, or dependency latency. If a schema-required value has no source, it is a cited
-assumed placeholder and performance is not run until those inputs are calibrated.
+correctness evidence. A safety invariant is checked after every operation. If two values may
+legitimately differ while work is in flight, their relationship is a postcondition checked when
+the execution settles; a crash-loss claim must also enable the worker-crash fault.
+
+Repository code cannot reveal production traffic, replica counts, service times, or dependency
+latency. If a schema-required value has no source, the agent selects a positive locality-matched
+catalog benchmark and labels it `aspect: performance`, `confidence: assumed`; it never uses
+`0ms`. That keeps the topology drawable without pretending to have measured it. The Load lens,
+production scenarios, and performance comparison remain unavailable until every modeled node
+and link has `aspect: performance`, `confidence: observed` evidence from runtime measurements or
+the user. Architecture citations do not satisfy that gate.
 
 Until a candidate exists the studio keeps showing the start screen: creating the study,
 setting its contract and validating a draft change the project and the activity log in the
@@ -63,9 +79,10 @@ agent panel, but add no candidate, and the canvas renders only candidates. When 
 has started but nothing is drawn yet, the start screen says so and names the step that is
 still missing.
 
-Every observed component and connection should cite a source path and symbol (with line
-ranges where available). Deductions are labelled inferred; unknown production behaviour
-is labelled assumed. The result is a source-revision-pinned account of the system that
+Every component and connection must carry architecture or behavior evidence before an
+agent-created baseline can be sealed. Observed elements cite a source path and symbol (with line
+ranges where available); deductions are labelled inferred and unknown production behaviour is
+labelled assumed. The result is a source-revision-pinned account of the system that
 exists now, plus evidence gaps and likely risks—not a proposed redesign.
 
 ## Design manually

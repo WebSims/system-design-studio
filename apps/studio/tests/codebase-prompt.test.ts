@@ -9,7 +9,7 @@ describe("the codebase-to-design prompt", () => {
   });
 
   it("is concise and delegates payload details to the tools", () => {
-    expect(CODEBASE_PROMPT.split(/\s+/).length).toBeLessThanOrEqual(260);
+    expect(CODEBASE_PROMPT.split(/\s+/).length).toBeLessThanOrEqual(300);
     expect(CODEBASE_PROMPT.split("\n\n")).toHaveLength(5);
     expect(CODEBASE_PROMPT).toMatch(/Follow the tool schemas and next-step guidance/);
     expect(CODEBASE_PROMPT).not.toMatch(/targetKind:|lineStart|fromCandidateId/);

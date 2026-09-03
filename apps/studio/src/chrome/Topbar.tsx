@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type ChangeEvent } from "react"
+import { performanceCalibration } from "@sds/schema"
 import { studyFilename } from "../persist"
 import { useRaceModel } from "../raceModel"
 import { useRacePlayback } from "../racePlayback"
@@ -66,6 +67,7 @@ const LensTabs = () => {
 const HeroPlay = () => {
   const lens = useStudyStore((s) => s.lens)
   const active = useStudyStore((s) => s.activeCandidate())
+  const study = useStudyStore((s) => s.study)
   const evaluation = useStudyStore((s) => (active ? s.evaluationFor(active.id) : null))
   const running = useStudyStore((s) => (active ? s.running.has(active.id) : false))
   const checkOnly = useStudyStore((s) => s.checkOnly)
@@ -81,12 +83,18 @@ const HeroPlay = () => {
   if (!active) return null
 
   if (lens === "load") {
+    const calibration = performanceCalibration(study, active)
+    const disabledReason = !calibration.calibrated
+      ? calibration.message
+      : blocking > 0
+        ? "The design has errors; see the analysis rail."
+        : null
     return (
       <button
         className="btn primary hero-play"
         onClick={execute}
-        disabled={simRunning || blocking > 0}
-        title={blocking > 0 ? "The design has errors; see the analysis rail." : "Simulate the workload against this version."}
+        disabled={simRunning || disabledReason !== null}
+        title={disabledReason ?? "Simulate the workload against this version."}
       >
         {simRunning ? <span className="spinner" aria-hidden="true" /> : <PlayIcon size={13} />}
         {simRunning ? "Running\u2026" : "Run under load"}
@@ -176,7 +184,11 @@ const RepositoryStatus = () => {
   const activeCandidate =
     study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ?? study.candidates[0]
   const evidenceCoverage = activeCandidate
-    ? new Set(activeCandidate.evidence.map((evidence) => `${evidence.targetKind}:${evidence.targetId}`)).size
+    ? new Set(
+        activeCandidate.evidence
+          .filter((evidence) => evidence.aspect !== "performance")
+          .map((evidence) => `${evidence.targetKind}:${evidence.targetId}`)
+      ).size
     : 0
   const architectureElements = activeCandidate
     ? activeCandidate.design.nodes.length + activeCandidate.design.edges.length

@@ -39,6 +39,7 @@ export function PipeEdge({
   const evidence = data as
     | {
         repositoryLinked?: boolean;
+        performanceCalibrated?: boolean;
         evidenceCount?: number;
         evidenceTone?: "observed" | "inferred" | "assumed" | "uncovered";
       }
@@ -53,7 +54,18 @@ export function PipeEdge({
           className={`edge-chip ${topology ? `topology-${topology}` : ""}`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
-          <span className="tnum">{latencyMs}ms</span>
+          <span
+            className="tnum"
+            title={
+              evidence?.repositoryLinked && evidence.performanceCalibrated === false
+                ? "Latency is a placeholder until supported by observed runtime or user performance evidence."
+                : undefined
+            }
+          >
+            {evidence?.repositoryLinked && evidence.performanceCalibrated === false
+              ? "?ms"
+              : `${latencyMs}ms`}
+          </span>
           {evidence?.repositoryLinked && (
             <span
               className={`edge-evidence evidence-${evidence.evidenceTone ?? "uncovered"}`}

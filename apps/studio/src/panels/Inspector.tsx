@@ -3,6 +3,7 @@ import {
   MAX_CONCURRENCY,
   MAX_REPLICAS,
   isTimeVarying,
+  performanceCalibration,
   type ArrivalProcess,
   type Citation,
   type Distribution,
@@ -134,6 +135,7 @@ function ArchitectureEvidence({
               <li key={item.id} className={`evidence-item evidence-${item.confidence}`}>
                 <div className="evidence-meta">
                   <span className="evidence-confidence">{item.confidence}</span>
+                  <span>{item.aspect}</span>
                   <span>{item.source}</span>
                 </div>
                 <p>{item.claim}</p>
@@ -145,6 +147,30 @@ function ArchitectureEvidence({
         </ul>
       )}
     </section>
+  );
+}
+
+/** Numeric values from a code reconstruction stay visibly provisional until measured. */
+function PerformanceCalibrationNote({
+  targetKind,
+  targetId,
+}: {
+  targetKind: "node" | "edge";
+  targetId: string;
+}) {
+  const study = useStudyStore((state) => state.study);
+  const candidate =
+    study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
+  if (!candidate || !study.repository) return null;
+  const missing = performanceCalibration(study, candidate).gaps.some(
+    (gap) => gap.targetKind === targetKind && gap.targetId === targetId
+  );
+  if (!missing) return null;
+  return (
+    <p className="note warn">
+      <b>Performance uncalibrated.</b> Values below are model placeholders, not measurements. Attach
+      observed performance evidence from runtime data or the user before running load analysis.
+    </p>
   );
 }
 
@@ -170,9 +196,11 @@ function FreehandNote() {
 function DistributionEditor({
   value,
   onChange,
+  allowZero = true,
 }: {
   value: Distribution;
   onChange: (d: Distribution) => void;
+  allowZero?: boolean;
 }) {
   return (
     <div className="dist-editor">
@@ -192,7 +220,7 @@ function DistributionEditor({
                     : 20;
             switch (kind) {
               case "deterministic":
-                return onChange({ kind, value: m });
+                return onChange({ kind, value: allowZero ? m : Math.max(0.01, m) });
               case "exponential":
                 return onChange({ kind, mean: Math.max(0.01, m) });
               case "lognormal":
@@ -214,7 +242,12 @@ function DistributionEditor({
 
       {value.kind === "deterministic" && (
         <Field label="value" hint="ms">
-          <NumberInput value={value.value} min={0} step={0.1} onChange={(v) => onChange({ ...value, value: Math.max(0, v) })} />
+          <NumberInput
+            value={value.value}
+            min={allowZero ? 0 : 0.01}
+            step={0.1}
+            onChange={(v) => onChange({ ...value, value: Math.max(allowZero ? 0 : 0.01, v) })}
+          />
         </Field>
       )}
       {value.kind === "exponential" && (
@@ -310,9 +343,14 @@ export function Inspector() {
           }
         />
         <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
+        <PerformanceCalibrationNote targetKind="edge" targetId={edge.id} />
 
         <div className="section">network latency</div>
-        <DistributionEditor value={edge.latency} onChange={(latency) => patch((e) => { e.latency = latency; })} />
+        <DistributionEditor
+          value={edge.latency}
+          allowZero={false}
+          onChange={(latency) => patch((e) => { e.latency = latency; })}
+        />
         <p className="note">
           <b>One way.</b> A request and its response each cross the wire, so this is applied
           twice per call. Entering a round-trip figure would double-count it.
@@ -455,6 +493,7 @@ export function Inspector() {
         }
       />
       <ArchitectureEvidence targetKind="node" targetId={node.id} />
+      <PerformanceCalibrationNote targetKind="node" targetId={node.id} />
 
       {lens === "behaviour" && behaviour}
 

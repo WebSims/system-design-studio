@@ -290,7 +290,7 @@ export const StartScreen = () => {
               <strong>Let your coding agent draw the current system</strong>
               <span className="start-blurb">
                 Paste one request into a WebMCP-capable agent. It reads the repository and imports
-                the architecture with a citation per component.
+                the architecture with evidence for every component and link.
               </span>
               <div className="start-actions">
                 <button className="btn primary with-icon" disabled={copyState === "copying"} onClick={() => void copySelected()}>

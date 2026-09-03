@@ -12,13 +12,18 @@ import {
   type ArchitectureEvidence,
   type PortfolioResult,
   type RepositorySnapshot,
+  performanceCalibration,
   StudyContractLockedError,
   StudyContractPatchSchema,
   studyContractLock,
   type Study,
   type StudyContractPatch,
 } from "@sds/schema";
-import type { ArchitecturePatchOperation } from "../study/mutations";
+import {
+  MutationRefused,
+  assertAgentModelFields,
+  type ArchitecturePatchOperation,
+} from "../study/mutations";
 import { buildImplementationHandoff } from "../implementation-handoff";
 import { layoutIssue } from "../canvas/layout";
 import { toJsonSchema, type JsonSchema } from "./json-schema";
@@ -85,8 +90,10 @@ const EvaluationInput = z
     correctness: z.boolean().default(true).describe("Run the bounded correctness search."),
     performance: z
       .boolean()
-      .default(true)
-      .describe("Run the replicated performance measurement."),
+      .default(false)
+      .describe(
+        "Run the replicated performance measurement. Repository models must first have observed performance evidence for every component and link."
+      ),
   })
   .strict();
 
@@ -455,6 +462,19 @@ export interface Catalog {
     suggestedStep: { x: number; y: number };
     rules: string[];
   };
+  performanceGuide: {
+    requirement: string;
+    edgeLatency: string;
+    placeholders: Array<{
+      id: string;
+      label: string;
+      note: string;
+      distribution: unknown;
+      rangeMs: readonly [number, number] | null;
+      source: string;
+      asOf: string;
+    }>;
+  };
   notes: string[];
 }
 
@@ -544,7 +564,8 @@ const isDrawing = (study: Study, candidate: Candidate): boolean =>
 const drawingNext = (candidate: Candidate): string =>
   `Keep drawing with studio_apply_architecture_patch { candidateId: "${candidate.id}", expectedRevision: ${candidate.revision} }: ` +
   "add-node per component with x/y chosen from studio_get_catalog.layoutGuide (or include auto-layout in the patch and omit them), " +
-  "add-edge once both ends exist, and set-workflow for a source-backed state-changing flow when the project declares correctness invariants; " +
+  "set fanout explicitly on every server, add-edge once both ends exist with an explicit positive one-way latency, " +
+  "and set-workflow for a source-backed state-changing flow when the project declares correctness invariants; " +
   `each accepted patch appears on the canvas. When complete, seal it with studio_import_architecture { fromCandidateId: "${candidate.id}", expectedRevision, repository, evidence }.`;
 
 // ---------------------------------------------------------------------------
@@ -710,6 +731,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Import the current as-is architecture of a repository revision. Atomically links the repository and creates an " +
           "immutable baseline with code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
           "supported by the cited source; mark deductions inferred and unknown production behaviour assumed. " +
+          "Evidence must cover every component and link. Mark numeric measurements aspect=performance; code proving that a call " +
+          "exists is architecture evidence, not latency calibration. Every link needs a positive one-way latency; 0ms is refused. " +
           "If the project declares correctness invariants, the design must contain a workflow handler that can exercise them; " +
           "a vacuous immutable baseline is refused. " +
           "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
@@ -799,8 +822,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_get_catalog",
         description:
-                    "Read the modelling vocabulary: component kinds, workflow operations and which are indivisible, the shipped " +
-          "patterns and whether each is expected to be sound, and the injectable faults. Read this before writing a " +
+          "Read the modelling vocabulary: component kinds, workflow operations and which are indivisible, the shipped " +
+          "patterns, injectable faults, layout rules, and non-zero latency placeholders. Read this before writing a " +
           "design. The operations are a closed set, and the indivisible ones are what make a design safe.",
         input: EmptyInput,
         annotations: { readOnlyHint: true },
@@ -859,7 +882,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "coordinates communicate the topology (callers to dependencies left-to-right, parallel branches on separate rows, " +
           "shared dependencies centered): either choose x/y per node from studio_get_catalog.layoutGuide, or include an " +
           "auto-layout operation and the studio computes that layout from the links. Overlapping nodes and missing " +
-          "coordinates are otherwise refused, never silently repositioned. Requires the revision read from " +
+          "coordinates are otherwise refused, never silently repositioned. Agent-authored servers must set fanout explicitly; " +
+          "agent-authored links must include an explicit positive one-way latency (use a catalog benchmark marked assumed when unmeasured). Requires the revision read from " +
           "studio_get_architecture or returned by the previous call, and refuses baselines, promoted candidates, stale " +
           "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,
@@ -1033,13 +1057,18 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_run_evaluation",
         description:
-                    "Run the bounded correctness search and/or the replicated performance measurement for one candidate. " +
+          "Run the bounded correctness search and/or the replicated performance measurement for one candidate. Performance " +
+          "defaults off and is refused for a repository model until every component and link has observed runtime or user performance evidence. " +
           "Verdicts: VIOLATED, NO_VIOLATION_WITHIN_BOUNDS, INCONCLUSIVE_BOUND_REACHED, INVALID_MODEL. " +
           "NO_VIOLATION_WITHIN_BOUNDS is not proof of safety, and INCONCLUSIVE_BOUND_REACHED establishes nothing " +
           "either way. Fetch the counterexample with studio_get_evaluation.",
         input: EvaluationInput,
         annotations: { readOnlyHint: true },
         async run(args, ctx) {
+          const study = host.getStudy();
+          const candidate = requireCandidate(study, args.candidateId);
+          const calibration = performanceCalibration(study, candidate);
+          if (args.performance) assertPerformanceCalibrated(study, candidate);
           const evaluation = await host.runEvaluation({
             candidateId: args.candidateId,
             correctness: args.correctness,
@@ -1054,7 +1083,17 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             summary: `evaluated ${args.candidateId}: ${evaluation.correctness?.status ?? "performance only"}`,
             candidateId: args.candidateId,
           });
-          return compactEvaluation(evaluation);
+          const compact = compactEvaluation(evaluation);
+          return calibration.calibrated
+            ? compact
+            : {
+                ...compact,
+                performance: null,
+                business: null,
+                resources: null,
+                scenarios: [],
+                performanceWithheld: calibration.message,
+              };
         },
       },
       host
@@ -1067,10 +1106,14 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Run the standard production suite for one candidate: bounded concurrent requests and retries, a 3x " +
           "30-second traffic spike with recovery, a load ramp to the project SLO boundary, and 30% degradation " +
           "of a high-impact dependency. Returns measured evidence and a specific recommendation for every probe. " +
+          "For a repository model this is refused until every component and link has observed runtime or user performance evidence. " +
           "An inconclusive result names the missing workflow, invariant, SLO, dependency or bound; never treat it as a pass.",
         input: CandidateIdInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         async run({ candidateId }, ctx) {
+          const study = host.getStudy();
+          const candidate = requireCandidate(study, candidateId);
+          assertPerformanceCalibrated(study, candidate);
           const evaluation = await host.runEvaluation({
             candidateId,
             correctness: false,
@@ -1109,6 +1152,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         input: CandidateIdInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         async run({ candidateId }) {
+          const study = host.getStudy();
+          const candidate = requireCandidate(study, candidateId);
           const evaluation = host.getEvaluation(candidateId);
           host.log({
             tool: "studio_get_evaluation",
@@ -1124,7 +1169,24 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
                 "No evaluation is cached for this candidate at the project's current design, seeds and bounds. Run studio_run_evaluation.",
             };
           }
-          return { evaluation };
+          const calibration = performanceCalibration(study, candidate);
+          if (!calibration.calibrated) {
+            return {
+              evaluation: {
+                ...evaluation,
+                performance: null,
+                business: null,
+                resources: null,
+                scenarios: [],
+              },
+              performanceWithheld: calibration.message,
+              interpretationWarning: correctnessInterpretationWarning(evaluation),
+            };
+          }
+          return {
+            evaluation,
+            interpretationWarning: correctnessInterpretationWarning(evaluation),
+          };
         },
       },
       host
@@ -1134,9 +1196,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_compare_candidates",
         description:
-                    "Compare candidates. Returns each eligibility decision with the reason every gate opened or did not, and " +
+          "Compare candidates. Returns each eligibility decision with the reason every gate opened or did not, and " +
           "the Pareto frontier among the ELIGIBLE ones. Eligible means the correctness search ran to exhaustion " +
-          "without a violation AND the conservative end of the performance interval meets every SLO and goal. " +
+          "without a violation, repository performance inputs are calibrated, AND the conservative end of the performance interval meets every SLO and goal. " +
           "The frontier is Pareto-optimal among the candidates tested: not globally best, and not ranked. " +
           "Differences within the measured intervals are ties, not wins.",
         input: CompareInput,
@@ -1291,9 +1353,21 @@ function requireCandidate(study: Study, id: string): Candidate {
   return candidate;
 }
 
+function assertPerformanceCalibrated(study: Study, candidate: Candidate): void {
+  const calibration = performanceCalibration(study, candidate);
+  if (!calibration.calibrated) {
+    throw new Error(
+      `${calibration.message} Attach aspect=performance, confidence=observed evidence from runtime measurements or the user, ` +
+        "then retry. Correctness can still run now with performance=false."
+    );
+  }
+}
+
 function architecturePayload(study: Study, candidate: Candidate) {
   const confidence = { observed: 0, inferred: 0, assumed: 0 };
+  const aspects = { architecture: 0, behavior: 0, performance: 0 };
   for (const evidence of candidate.evidence) confidence[evidence.confidence] += 1;
+  for (const evidence of candidate.evidence) aspects[evidence.aspect] += 1;
   return {
     repository: study.repository,
     candidate: {
@@ -1308,14 +1382,19 @@ function architecturePayload(study: Study, candidate: Candidate) {
     },
     design: candidate.design,
     evidence: candidate.evidence,
+    performanceCalibration: performanceCalibration(study, candidate),
     evidenceSummary: {
       total: candidate.evidence.length,
       ...confidence,
+      byAspect: aspects,
       uncoveredNodes: candidate.design.nodes
         .filter(
           (node) =>
             !candidate.evidence.some(
-              (evidence) => evidence.targetKind === "node" && evidence.targetId === node.id
+              (evidence) =>
+                evidence.aspect !== "performance" &&
+                evidence.targetKind === "node" &&
+                evidence.targetId === node.id
             )
         )
         .map((node) => node.id),
@@ -1323,7 +1402,10 @@ function architecturePayload(study: Study, candidate: Candidate) {
         .filter(
           (edge) =>
             !candidate.evidence.some(
-              (evidence) => evidence.targetKind === "edge" && evidence.targetId === edge.id
+              (evidence) =>
+                evidence.aspect !== "performance" &&
+                evidence.targetKind === "edge" &&
+                evidence.targetId === edge.id
             )
         )
         .map((edge) => edge.id),
@@ -1368,6 +1450,7 @@ export function summariseStudy(study: Study) {
       evidenceCount: c.evidence.length,
       nodeCount: c.design.nodes.length,
       hasWorkflow: c.design.workflow !== null,
+      performanceCalibration: performanceCalibration(study, c),
       isPromoted: study.promotedCandidateId === c.id,
       isActive: study.activeCandidateId === c.id,
     })),
@@ -1411,6 +1494,7 @@ export function compactEvaluation(evaluation: CandidateEvaluation) {
           counterexampleLength: c.counterexample?.steps.length ?? null,
           faultsUsed: c.counterexample?.faultsUsed ?? [],
           traceAvailableVia: c.counterexample ? "studio_get_evaluation" : null,
+          interpretationWarning: correctnessInterpretationWarning(evaluation),
         }
       : null,
     performance: p,
@@ -1423,13 +1507,23 @@ export function compactEvaluation(evaluation: CandidateEvaluation) {
   };
 }
 
+function correctnessInterpretationWarning(evaluation: CandidateEvaluation): string | null {
+  const counterexample = evaluation.correctness?.counterexample;
+  if (counterexample?.scope !== "safety" || counterexample.steps.length !== 1) return null;
+  return (
+    "This safety rule failed after one intermediate operation. If later work may legitimately restore the relationship, " +
+    "model it as a postcondition and enable the relevant fault; this trace alone does not establish lost work."
+  );
+}
+
 /**
  * Validate a draft the way the studio validates it, and say so in the same words.
  *
- * Four layers, reported separately because the fixes are different: Zod shape errors mean a
- * field is the wrong type, topology errors mean the graph does not make sense, layout errors mean
- * authored coordinates collide, and workflow errors mean the state model does not match the
- * topology. An agent that gets one list cannot tell which kind of mistake it made.
+ * Five layers, reported separately because the fixes are different: agent-policy errors catch
+ * semantically dangerous inherited defaults, Zod errors mean a field is the wrong type, topology
+ * errors mean the graph does not make sense, layout errors mean authored coordinates collide, and
+ * workflow errors mean the state model does not match the topology. An agent that gets one list
+ * cannot tell which kind of mistake it made.
  */
 export function validateDraft(design: unknown): {
   valid: boolean;
@@ -1439,6 +1533,16 @@ export function validateDraft(design: unknown): {
 } {
   const errors: Array<{ layer: string; code: string; message: string; where?: string }> = [];
   const warnings: Array<{ layer: string; code: string; message: string; where?: string }> = [];
+
+  try {
+    assertAgentModelFields(design);
+  } catch (err) {
+    if (err instanceof MutationRefused) {
+      errors.push({ layer: "agent-policy", code: err.code, message: err.message });
+    } else {
+      throw err;
+    }
+  }
 
   let parsed;
   try {

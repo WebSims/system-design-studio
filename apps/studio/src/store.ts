@@ -6,6 +6,7 @@ import {
   blankDesign,
   DesignSchema,
   migrateAndParse,
+  performanceCalibration,
   validateDesign,
   type Design,
   type DesignIssue,
@@ -137,6 +138,18 @@ function activeDesign(): Design {
   return active ? active.design : blankDesign();
 }
 
+/** Refuse numeric results for a repository reconstruction whose timing inputs are still guesses. */
+function performanceCalibrationError(): string | null {
+  const study = useStudyStore.getState().study;
+  const candidate =
+    study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
+  if (!candidate) return "Create a version before running performance analysis.";
+  const calibration = performanceCalibration(study, candidate);
+  return calibration.calibrated
+    ? null
+    : `${calibration.message} Load results stay unavailable until those inputs are measured.`;
+}
+
 /**
  * Forward an edit to the study store.
  *
@@ -213,6 +226,11 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   execute: async () => {
     const { design } = get();
+    const calibrationError = performanceCalibrationError();
+    if (calibrationError) {
+      set({ running: false, run: null, error: calibrationError });
+      return;
+    }
     set({ running: true, error: null });
     try {
       const result = await runInWorker(design);
@@ -228,6 +246,11 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   analyze: async () => {
     const { design } = get();
+    const calibrationError = performanceCalibrationError();
+    if (calibrationError) {
+      set({ analysing: false, analysis: null, error: calibrationError });
+      return;
+    }
     set({ analysing: true, error: null });
     try {
       const analysis = await analyzeInWorker(design);
@@ -243,6 +266,11 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   runReplications: async (replications) => {
     const { design } = get();
+    const calibrationError = performanceCalibrationError();
+    if (calibrationError) {
+      set({ replicating: false, replication: null, error: calibrationError });
+      return;
+    }
     set({ replicating: true, error: null });
     try {
       const replication = await replicateInWorker(design, replications);
@@ -258,6 +286,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   compareToBaseline: async (replications) => {
     const { design, baseline } = get();
     if (!baseline) return;
+    const calibrationError = performanceCalibrationError();
+    if (calibrationError) {
+      set({ comparing: false, comparison: null, error: calibrationError });
+      return;
+    }
     set({ comparing: true, error: null });
     try {
       const comparison = await compareInWorker(baseline, design, replications);

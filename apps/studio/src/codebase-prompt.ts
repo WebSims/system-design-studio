@@ -15,22 +15,17 @@
  * as the immutable baseline and links the repository revision.
  */
 export const CODEBASE_PROMPT = [
-  "Inspect this repository with workspace tools. Use the open System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; " +
-    "the page cannot read files, so do not drive its UI.",
-  "Before drawing, identify entrypoints, processes or containers, dependency configuration, and critical synchronous and background flows. " +
-    "A node is a deployed runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
-    "Keep ordinary in-process work on its host; split it only for a separate bound, label it '(in-process)', and cite its shared lifecycle. " +
-    "Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
-  "Create a study, read its catalog, and record code-backed workload classes, goals, SLOs, and invariants; leave unsupported targets blank. " +
-    "Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. " +
-    "Trace one highest-risk state-changing flow into a workflow when source supports it. " +
-    "Never invent production rates, replicas, latencies, or provider choices. Mark schema-required placeholders assumed and do not run performance until calibrated. " +
-    "Plan topology and layout from layoutGuide, or use auto-layout. " +
-    "Open an empty as-is candidate and add one component or link per patch; carry forward each returned revision.",
-  "Seal it as the immutable as-is baseline with branch, commit, dirty state, inspected scope, and evidence for every component and link. " +
-    "Mark facts observed, deductions inferred, and unknown production behaviour assumed. Follow the tool schemas and next-step guidance.",
-  "Read it back, report evidence gaps, annotate and focus the highest risk. " +
-    "Stop before redesigning or editing code.",
+  "Inspect this repository with workspace tools. Use the open System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; the page cannot read files, so do not drive its UI.",
+  "Identify entrypoints, processes or containers, dependencies, and synchronous/background flows. A node is a runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
+    "Keep in-process work on its host; for a separate bound, label it '(in-process)' and cite shared lifecycle. Links are per-request causal work, never ownership. " +
+    "Give autonomous pollers, timers, cron, and consumers a client source, not HTTP. Set server fanout from code. Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
+  "Create a study, read its catalog, and record only evidenced workloads, goals, SLOs, and invariants. Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. " +
+    "Safety is checked after every step; use a postcondition for allowed mid-flow divergence and the relevant fault for crash claims. Trace the highest-risk state-changing flow into a workflow.",
+  "Never invent production rates, replicas, latencies, or provider choices. Give each link explicit positive one-way latency; if unmeasured, use locality-matched catalog placeholders assumed, never 0ms. " +
+    "Then do not run performance until calibrated by observed runtime or user evidence on every target. Plan topology and layout from layoutGuide or use auto-layout. " +
+    "Open an empty as-is candidate; add one component or link per patch; carry forward each returned revision.",
+  "Seal the immutable as-is baseline with branch, commit, dirty state, scope, and architecture evidence for every element. Mark facts observed, deductions inferred, and unknown production behaviour assumed. " +
+    "Follow the tool schemas and next-step guidance. Read it back, report gaps, annotate and focus the highest risk. Stop before redesigning or editing code.",
 ].join("\n\n")
 
 export const CODEBASE_PROMPT_ROUTE = [
@@ -83,6 +78,7 @@ export const traceEndpointPrompt = (endpoint: string, ctx: PromptContext): strin
   `Use the System Design Studio tools on this page. Trace the endpoint ${endpoint.trim() || "<endpoint>"} through this codebase into request steps: ` +
   "for each step say which component runs it, which store it touches, and whether it is a read, a write, a conditional write, a unique insert, a lease acquire/release, a publish or a consume; " +
   "record what is read into which local name and what is written from which expression. " +
+  "Choose invariant scope deliberately: safety is checked after every operation; use a postcondition plus the relevant enabled fault when an intermediate state is allowed but must recover by quiescence. " +
   "Then apply the steps to the active version with studio_replace_candidate_draft or studio_apply_architecture_patch as a workflow handler on the component that serves the endpoint, " +
   "adding any collection (counter or table) the code reads or writes to the component that stores it, with realistic initial values. " +
   "Attach evidence with studio_attach_code_evidence: one citation (path, symbol, line range) per step and per collection, marked observed; mark anything you deduced as inferred. " +
@@ -94,14 +90,14 @@ export const fixRacePrompt = (ctx: PromptContext): string =>
   "Use the System Design Studio tools on this page. The active version breaks a rule (see context). " +
   "Create a new version with studio_create_candidate copied from the active one, and change only what removes the break: " +
   "for example an atomic conditional decrement, a unique insert per person, a fenced lease, or a queue with a single consumer. " +
-  "Explain the change in the version's intent, run studio_run_evaluation on it with correctness and performance, and use studio_annotate to note the trade-off you expect under load. Do not edit code." +
+  "Explain the change in the version's intent, run studio_run_evaluation with correctness, and include performance only when the repository model is calibrated. Use studio_annotate to note the trade-off you expect under load. Do not edit code." +
   contextLines(ctx);
 
 /** Ask for an alternative that trades differently, not a fix. */
 export const alternativePrompt = (ctx: PromptContext): string =>
   "Use the System Design Studio tools on this page. Propose one alternative version of the active design with a different trade-off " +
   "(for example queue and worker instead of a synchronous write, or a cache in front of the store), created with studio_create_candidate copied from the active one. " +
-  "State the trade-off you expect in the version's intent, run studio_run_evaluation on both, then studio_compare_candidates, and annotate what the numbers show. Do not edit code." +
+  "State the trade-off you expect in the version's intent, run correctness on both, and run performance plus studio_compare_candidates only when the repository model is calibrated. Annotate what the evidence shows. Do not edit code." +
   contextLines(ctx);
 
 /**

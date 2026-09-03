@@ -1,12 +1,12 @@
 # The agent surface (WebMCP)
 
-The nineteen tools, what an agent cannot do, and the repository-to-code acceptance loop.
+The twenty-one tools, what an agent cannot do, and the repository-to-code acceptance loop.
 
 [< back to the README](../README.md)
 
 ## The tools
 
-Nineteen imperative tools are registered on the top-level page through
+Twenty-one imperative tools are registered on the top-level page through
 `document.modelContext.registerTool()`. Every input schema is generated from the same
 Zod schema that validates at runtime and is snapshot-tested, so a widened validator
 cannot drift from its documentation.
@@ -52,6 +52,13 @@ structured architecture evidence and results into the same live page a person re
 | `studio_run_production_scenarios` | run concurrency, spike, capacity, and dependency probes |
 | `studio_compare_candidates` | gates and the Pareto frontier |
 
+**Point at the canvas**
+
+| tool | what it does |
+| --- | --- |
+| `studio_annotate` | add a temporary agent note to a component or link |
+| `studio_focus` | move the canvas and inspector to a component or link |
+
 ## The repository loop
 
 1. Codex reads the real workspace and records commit, branch, dirty state, and scope.
@@ -70,7 +77,8 @@ structured architecture evidence and results into the same live page a person re
    every correctness verdict would be vacuous and the baseline would then be immutable.
 4. Codex creates experiments from that baseline. The baseline cannot be redesigned in
    place through WebMCP.
-5. Correctness, performance, and named production scenarios produce evidence. Exact-ID
+5. Correctness can run immediately. Performance and named production scenarios run only after
+   every modeled node and link has observed runtime or user performance evidence. Exact-ID
    comparison shows what was authored, without pretending it proves runtime causality.
 6. A person approves one eligible experiment in Compare. The receipt pins both the
    experiment revision and its baseline revision.
@@ -120,6 +128,23 @@ description is an instruction to the model and document text is data, and splici
 the second into the first is prompt injection with extra steps. Anything that can
 return user text carries `untrustedContentHint`.
 
+## Repository-model guardrails
+
+- Links are causal per-request work, not ownership or shared lifecycle. An autonomous poller,
+  timer, cron job, or consumer gets its own client/work source rather than being made downstream
+  of HTTP traffic.
+- Every agent-authored server states sequential or parallel fanout explicitly. Every link states
+  a positive one-way latency; omitted and zero values are refused.
+- A catalog latency may be used only as an assumed placeholder with performance-scoped evidence.
+  It keeps the document valid but does not unlock load results. Code proving that a dependency
+  exists is architecture evidence, not a timing measurement.
+- A safety invariant is tested after every operation. A relationship allowed to diverge mid-flow
+  belongs in a postcondition, and a crash-recovery claim must enable the matching fault. The tools
+  flag a one-step safety counterexample as a likely contract-scope mismatch rather than silently
+  presenting it as proof of lost work.
+- An agent-created baseline needs architecture or behavior evidence on every component and link.
+  Missing coverage is refused atomically, leaving the project and repository link unchanged.
+
 ## Codex desktop acceptance
 
 The target client is Codex desktop's built-in browser. Current OpenAI support
@@ -130,8 +155,8 @@ declarative markup or tools inside iframes, which is why registration is a singl
 The app is AI-first and opens empty. Old bundled-demo records are retired from browser
 storage, and there is no example loader in the product surface. Internal tests can keep
 domain fixtures without presenting them as user projects. The real loop starts from the user's code: inspect repository → import evidence-backed
-as-is twin → create focused experiments → validate → run bounded correctness and
-replicated performance → run production scenarios → compare gates and trade-offs →
+as-is twin → create focused experiments → validate → run bounded correctness → calibrate
+runtime inputs → run replicated performance and production scenarios → compare gates and trade-offs →
 human approval → read implementation handoff → edit code and tests → verify → re-scan.
 
 The MVP exposes one copyable request: inspect the repository and reconstruct the system

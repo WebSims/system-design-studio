@@ -48,6 +48,21 @@ canonical state deduplication, actor symmetry, message and timer symmetry, and
 terminal-frame compression. Together they are worth more here than POR would be, and
 each is a two-line argument rather than a twenty-line one.
 
+## Safety versus an end-state promise
+
+Scope is part of the claim, not a search option. Use `safety` only when the expression must hold
+after every atomic operation. Use `postcondition` when temporary divergence is valid while a
+handler is still running and the expression must hold once no actor can move.
+
+For example, a batch processor may durably advance a cursor and then perform an external side
+effect for each fetched item. The statement “cursor never exceeds completed-item count” is false
+for an ordinary in-flight execution immediately after the cursor update. A one-step safety
+counterexample therefore does not prove lost work. The relevant question is whether the
+relationship is restored when the execution settles, including a worker crash between the durable
+cursor update and the external side effect. Model that as a postcondition with `workerCrash`
+enabled. A terminal counterexample using that fault is evidence of the recovery gap; the
+intermediate state alone is not.
+
 
 ## What it will and will not say
 

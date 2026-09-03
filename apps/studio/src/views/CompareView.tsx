@@ -81,7 +81,7 @@ export function CompareView() {
             <header className="section-head">
               <h2>does each version pass?</h2>
             </header>
-            <p className="muted">A version has to pass all five checks before its numbers are compared with the others.</p>
+            <p className="muted">A version has to pass all six checks before its numbers are compared with the others.</p>
 
             <div className="gate-grid">
               {portfolio.decisions.map((decision) => {

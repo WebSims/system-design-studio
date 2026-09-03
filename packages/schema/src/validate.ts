@@ -157,6 +157,20 @@ export function validateDesign(design: Design): DesignIssue[] {
     }
     seenEdge.add(key);
 
+    const zeroLatency =
+      (e.latency.kind === "deterministic" && e.latency.value === 0) ||
+      (e.latency.kind === "uniform" && e.latency.min === 0 && e.latency.max === 0);
+    if (zeroLatency) {
+      issues.push({
+        severity: "warning",
+        code: "zero-edge-latency",
+        message:
+          "this connection uses 0ms latency. Treat zero as an uncalibrated schema placeholder, not a physical measurement; " +
+          "replace it with a measured value or an explicitly assumed non-zero benchmark before load testing.",
+        edgeId: e.id,
+      });
+    }
+
     if (byId.get(e.to)?.kind === "client") {
       issues.push({
         severity: "error",

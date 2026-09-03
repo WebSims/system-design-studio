@@ -65,6 +65,83 @@ interface RawDraft {
 const hasPosition = (node: Record<string, unknown>): boolean =>
   typeof node.x === "number" && typeof node.y === "number";
 
+/** A repository model must never inherit semantic defaults the agent did not choose. */
+const assertAgentNodeFields = (raw: Record<string, unknown>): void => {
+  if (raw.kind !== "server") return;
+  const server = raw.server;
+  if (
+    typeof server !== "object" ||
+    server === null ||
+    !("fanout" in server) ||
+    !["parallel", "sequential"].includes(String((server as Record<string, unknown>).fanout))
+  ) {
+    throw new MutationRefused(
+      `server "${String(raw.id ?? raw.label ?? "unknown")}" must set fanout explicitly to ` +
+        '"parallel" or "sequential". Inspect the call ordering; do not inherit the schema default.',
+      "server-fanout-required"
+    );
+  }
+};
+
+const distributionHasPositiveMean = (raw: unknown): boolean => {
+  if (typeof raw !== "object" || raw === null) return false;
+  const value = raw as Record<string, unknown>;
+  switch (value.kind) {
+    case "deterministic":
+      return typeof value.value === "number" && value.value > 0;
+    case "exponential":
+    case "lognormal":
+      return typeof value.mean === "number" && value.mean > 0;
+    case "uniform":
+      return (
+        typeof value.min === "number" &&
+        typeof value.max === "number" &&
+        (value.min + value.max) / 2 > 0
+      );
+    case "pareto":
+      return (
+        typeof value.scale === "number" &&
+        typeof value.alpha === "number" &&
+        value.scale > 0 &&
+        value.alpha > 1
+      );
+    default:
+      return false;
+  }
+};
+
+const assertAgentEdgeFields = (raw: Record<string, unknown>): void => {
+  if (!("latency" in raw)) {
+    throw new MutationRefused(
+      `link "${String(raw.id ?? "unknown")}" must include an explicit one-way latency. ` +
+        "Use a non-zero catalog benchmark as an assumed placeholder when no measurement exists; never inherit 0ms.",
+      "edge-latency-required"
+    );
+  }
+  if (!distributionHasPositiveMean(raw.latency)) {
+    throw new MutationRefused(
+      `link "${String(raw.id ?? "unknown")}" has zero or invalid mean latency. ` +
+        "Every modeled handoff has a positive cost; use a non-zero catalog benchmark and mark it assumed if unmeasured.",
+      "edge-latency-zero"
+    );
+  }
+};
+
+export const assertAgentModelFields = (raw: unknown): void => {
+  if (typeof raw !== "object" || raw === null) return;
+  const design = raw as Record<string, unknown>;
+  for (const node of Array.isArray(design.nodes) ? design.nodes : []) {
+    if (typeof node === "object" && node !== null) {
+      assertAgentNodeFields(node as Record<string, unknown>);
+    }
+  }
+  for (const edge of Array.isArray(design.edges) ? design.edges : []) {
+    if (typeof edge === "object" && edge !== null) {
+      assertAgentEdgeFields(edge as Record<string, unknown>);
+    }
+  }
+};
+
 /** Move every node of a raw draft to its layered position; nodes without a string id are left alone. */
 const layOutDraft = (draft: RawDraft): number => {
   const nodes: LayoutNode[] = draft.nodes.flatMap((node) =>
@@ -154,6 +231,7 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
 
   let design;
   try {
+    if (input.origin === "agent" && input.design !== undefined) assertAgentModelFields(rawDesign);
     design = migrateAndParse(rawDesign)
     // Only a design the agent wrote is held to the layout contract; a copy of what a person drew
     // is theirs, and refusing the copy would tell the agent to fix something it did not do.
@@ -311,6 +389,7 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
 
   let design;
   try {
+    if (input.by === "agent") assertAgentModelFields(input.design);
     design = migrateAndParse(input.design)
     assertAgentLayout(design, input.by)
   } catch (err) {
@@ -396,7 +475,7 @@ export function importRepositoryArchitecture(
     basedOnCandidateId: null,
     evidence: input.evidence ?? [],
   });
-  assertExecutableBaselineContract(created.study, created.candidate);
+  assertRepositoryBaselineContract(created.study, created.candidate, input.origin);
   return {
     candidate: created.candidate,
     study: StudySchema.parse({ ...created.study, activeCandidateId: created.candidate.id }),
@@ -409,17 +488,52 @@ export function importRepositoryArchitecture(
  * declares no invariants; the problem is specifically the contradictory combination the explorer
  * would otherwise evaluate vacuously.
  */
-function assertExecutableBaselineContract(study: Study, candidate: Candidate): void {
-  if (study.correctness.invariants.length === 0) return;
-  if ((candidate.design.workflow?.handlers.length ?? 0) > 0) return;
+function assertRepositoryBaselineContract(
+  study: Study,
+  candidate: Candidate,
+  origin: "human" | "agent"
+): void {
+  if (
+    study.correctness.invariants.length > 0 &&
+    (candidate.design.workflow?.handlers.length ?? 0) === 0
+  ) {
+    throw new MutationRefused(
+      `cannot seal "${candidate.label}" as an immutable baseline: the project declares ` +
+        `${study.correctness.invariants.length} correctness invariant${study.correctness.invariants.length === 1 ? "" : "s"}, ` +
+        "but the drawing has no workflow handlers, so every correctness result would be vacuous. " +
+        "Add a source-backed workflow with studio_apply_architecture_patch, or remove unsupported invariants before sealing.",
+      "baseline-workflow-required"
+    );
+  }
 
-  throw new MutationRefused(
-    `cannot seal "${candidate.label}" as an immutable baseline: the project declares ` +
-      `${study.correctness.invariants.length} correctness invariant${study.correctness.invariants.length === 1 ? "" : "s"}, ` +
-      "but the drawing has no workflow handlers, so every correctness result would be vacuous. " +
-      "Add a source-backed workflow with studio_apply_architecture_patch, or remove unsupported invariants before sealing.",
-    "baseline-workflow-required"
+  if (origin !== "agent") return;
+
+  const evidenced = new Set(
+    candidate.evidence
+      .filter((item) => item.aspect !== "performance")
+      .map((item) => `${item.targetKind}:${item.targetId}`)
   );
+  const missing = [
+    ...candidate.design.nodes.map((node) => ({ key: `node:${node.id}`, label: node.label })),
+    ...candidate.design.edges.map((edge) => ({ key: `edge:${edge.id}`, label: edge.id })),
+  ].filter((target) => !evidenced.has(target.key));
+  if (missing.length > 0) {
+    throw new MutationRefused(
+      `cannot seal "${candidate.label}": ${missing.length} architecture element${missing.length === 1 ? " has" : "s have"} no evidence ` +
+        `(${missing.slice(0, 4).map((item) => `"${item.label}"`).join(", ")}${missing.length > 4 ? ", …" : ""}). ` +
+        "Attach observed, inferred or assumed evidence to every component and link first.",
+      "baseline-evidence-required"
+    );
+  }
+
+  const zero = candidate.design.edges.find((edge) => !distributionHasPositiveMean(edge.latency));
+  if (zero) {
+    throw new MutationRefused(
+      `cannot seal "${candidate.label}": link "${zero.id}" uses 0ms latency. ` +
+        "Use a non-zero catalog benchmark as an assumed placeholder, then leave performance uncalibrated until measured.",
+      "baseline-zero-latency"
+    );
+  }
 }
 
 /**
@@ -454,7 +568,6 @@ function sealDrawnArchitecture(
       );
     }
   }
-  assertExecutableBaselineContract(linked, existing);
   const added = input.evidence ?? [];
   const ids = new Set(existing.evidence.map((item) => item.id));
   const duplicate = added.find((item) => ids.has(item.id));
@@ -470,6 +583,7 @@ function sealDrawnArchitecture(
     evidence: [...existing.evidence, ...structuredClone(added)],
     revision: existing.revision + 1,
   });
+  assertRepositoryBaselineContract(linked, candidate, input.origin);
   return {
     candidate,
     study: StudySchema.parse({
@@ -502,6 +616,7 @@ export function applyArchitecturePatch(
     switch (operation.op) {
       case "add-node": {
         const node = structuredClone(operation.node) as Record<string, unknown>;
+        if (input.by === "agent") assertAgentNodeFields(node);
         if (input.by === "agent" && !laysOut && !hasPosition(node)) {
           throw new MutationRefused(
             "add-node needs numeric x and y chosen from the topology (see studio_get_catalog.layoutGuide), " +
@@ -542,6 +657,7 @@ export function applyArchitecturePatch(
       }
       case "add-edge": {
         const edge = structuredClone(operation.edge) as Record<string, unknown>;
+        if (input.by === "agent") assertAgentEdgeFields(edge);
         draft.edges.push(edge);
         changed.push(
           typeof edge.from === "string" && typeof edge.to === "string" ? `added link ${edge.from} → ${edge.to}` : "added link"

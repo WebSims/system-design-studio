@@ -250,6 +250,15 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "items": {
           "additionalProperties": false,
           "properties": {
+            "aspect": {
+              "default": "architecture",
+              "enum": [
+                "architecture",
+                "behavior",
+                "performance",
+              ],
+              "type": "string",
+            },
             "claim": {
               "maxLength": 2000,
               "minLength": 1,
@@ -501,6 +510,15 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "items": {
           "additionalProperties": false,
           "properties": {
+            "aspect": {
+              "default": "architecture",
+              "enum": [
+                "architecture",
+                "behavior",
+                "performance",
+              ],
+              "type": "string",
+            },
             "claim": {
               "maxLength": 2000,
               "minLength": 1,
@@ -710,7 +728,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "type": "boolean",
       },
       "performance": {
-        "default": true,
+        "default": false,
         "type": "boolean",
       },
     },

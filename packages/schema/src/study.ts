@@ -392,6 +392,10 @@ export type RepositorySnapshot = z.infer<typeof RepositorySnapshotSchema>;
 export const EvidenceConfidenceSchema = z.enum(["observed", "inferred", "assumed"]);
 export type EvidenceConfidence = z.infer<typeof EvidenceConfidenceSchema>;
 
+/** Which part of the model an evidence record supports. */
+export const EvidenceAspectSchema = z.enum(["architecture", "behavior", "performance"]);
+export type EvidenceAspect = z.infer<typeof EvidenceAspectSchema>;
+
 /** What kind of source produced an architectural claim. */
 export const EvidenceSourceSchema = z.enum(["code", "config", "runtime", "documentation", "user"]);
 export type EvidenceSource = z.infer<typeof EvidenceSourceSchema>;
@@ -408,6 +412,13 @@ export const ArchitectureEvidenceSchema = z
     id: z.string().min(1).max(128),
     targetKind: z.enum(["node", "edge"]),
     targetId: z.string().min(1).max(128),
+    /**
+     * Architecture proves that an element or dependency exists; behavior proves ordering,
+     * lifecycle or delivery semantics; performance supports numeric load-model inputs. Keeping
+     * these separate prevents a code citation for "calls Postgres" from being mistaken for a
+     * measurement of that call's latency.
+     */
+    aspect: EvidenceAspectSchema.default("architecture"),
     confidence: EvidenceConfidenceSchema,
     source: EvidenceSourceSchema,
     path: z.string().max(1024).default(""),
@@ -854,6 +865,7 @@ export const EligibilityGateSchema = z.enum([
   "schema-valid",
   "correctness-exhausted",
   "no-violation",
+  "performance-calibrated",
   "slo-satisfied",
   "business-goals-satisfied",
 ]);
@@ -1008,6 +1020,83 @@ export type Study = z.infer<typeof StudySchema>;
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+export interface PerformanceCalibrationGap {
+  targetKind: "node" | "edge";
+  targetId: string;
+  label: string;
+}
+
+export interface PerformanceCalibration {
+  /** Freehand studies are hypothetical models and do not require repository calibration. */
+  required: boolean;
+  calibrated: boolean;
+  gaps: PerformanceCalibrationGap[];
+  message: string;
+}
+
+/**
+ * Whether a repository-derived candidate has enough evidence to print performance results.
+ *
+ * Code and configuration can establish structure and capacity settings, but they cannot measure
+ * production arrival rates, service time or network latency. For that reason every modeled node
+ * and edge needs an explicitly performance-scoped, observed runtime measurement or a value
+ * supplied by the user. Benchmark and assumed values remain useful placeholders, but they do not
+ * turn a source reconstruction into a calibrated load model.
+ */
+export function performanceCalibration(
+  study: Pick<Study, "repository">,
+  candidate: Candidate
+): PerformanceCalibration {
+  if (study.repository === null) {
+    return { required: false, calibrated: true, gaps: [], message: "Performance calibration is not required for a freehand model." };
+  }
+
+  const labels = new Map(candidate.design.nodes.map((node) => [node.id, node.label]));
+  const targets: PerformanceCalibrationGap[] = [
+    ...candidate.design.nodes.map((node) => ({
+      targetKind: "node" as const,
+      targetId: node.id,
+      label: node.label,
+    })),
+    ...candidate.design.edges.map((edge) => ({
+      targetKind: "edge" as const,
+      targetId: edge.id,
+      label: `${labels.get(edge.from) ?? edge.from} → ${labels.get(edge.to) ?? edge.to}`,
+    })),
+  ];
+
+  const gaps = targets.filter((target) =>
+    !candidate.evidence.some(
+      (item) =>
+        item.targetKind === target.targetKind &&
+        item.targetId === target.targetId &&
+        item.aspect === "performance" &&
+        item.confidence === "observed" &&
+        (item.source === "runtime" || item.source === "user")
+    )
+  );
+
+  if (gaps.length === 0) {
+    return {
+      required: true,
+      calibrated: true,
+      gaps,
+      message: "Every modeled component and link has observed runtime or user-supplied performance evidence.",
+    };
+  }
+
+  const sample = gaps.slice(0, 3).map((gap) => `"${gap.label}"`).join(", ");
+  const more = gaps.length > 3 ? ` and ${gaps.length - 3} more` : "";
+  return {
+    required: true,
+    calibrated: false,
+    gaps,
+    message:
+      `Performance is uncalibrated: ${gaps.length} modeled component${gaps.length === 1 ? "" : "s"}/link${gaps.length === 1 ? "" : "s"} ` +
+      `need observed performance evidence from runtime measurements or the user (${sample}${more}).`,
+  };
+}
 
 export function candidateById(study: Study, id: string): Candidate | undefined {
   return study.candidates.find((c) => c.id === id);

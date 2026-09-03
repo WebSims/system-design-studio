@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { pizzaStudy } from "@sds/models";
-import { StudySchema, blankStudy, evaluationKey, type Study } from "@sds/schema";
+import {
+  StudySchema,
+  blankStudy,
+  evaluationKey,
+  type ArchitectureEvidence,
+  type Design,
+  type Study,
+} from "@sds/schema";
 import { evaluateCandidate } from "@sds/study";
 import { reimportPrompt } from "../src/codebase-prompt";
 import { buildImplementationHandoff } from "../src/implementation-handoff";
@@ -21,6 +28,47 @@ type RepositoryFixture = {
 };
 
 let cachedFixture: RepositoryFixture | null = null;
+
+function targetEvidence(
+  design: Design,
+  aspect: "architecture" | "performance",
+  prefix: string
+): ArchitectureEvidence[] {
+  return [
+    ...design.nodes.map((node, index) => ({
+      id: `${prefix}-node-${index}`,
+      targetKind: "node" as const,
+      targetId: node.id,
+      aspect,
+      confidence: "observed" as const,
+      source: aspect === "performance" ? ("runtime" as const) : ("code" as const),
+      path: aspect === "architecture" ? "src/checkout.ts" : "",
+      lineStart: null,
+      lineEnd: null,
+      symbol: "",
+      claim:
+        aspect === "performance"
+          ? `runtime measurement supports ${node.label}'s performance inputs`
+          : `source establishes the ${node.label} component`,
+    })),
+    ...design.edges.map((edge, index) => ({
+      id: `${prefix}-edge-${index}`,
+      targetKind: "edge" as const,
+      targetId: edge.id,
+      aspect,
+      confidence: "observed" as const,
+      source: aspect === "performance" ? ("runtime" as const) : ("code" as const),
+      path: aspect === "architecture" ? "src/checkout.ts" : "",
+      lineStart: null,
+      lineEnd: null,
+      symbol: "",
+      claim:
+        aspect === "performance"
+          ? `runtime measurement supports ${edge.id}'s latency`
+          : `source establishes the ${edge.from} to ${edge.to} dependency`,
+    })),
+  ];
+}
 
 function repositoryStudy(): RepositoryFixture {
   if (cachedFixture) return structuredClone(cachedFixture);
@@ -57,6 +105,7 @@ function repositoryStudy(): RepositoryFixture {
         id: "ev-entry",
         targetKind: "node",
         targetId: changedNodeId,
+        aspect: "architecture",
         confidence: "observed",
         source: "code",
         path: "src/checkout.ts",
@@ -65,6 +114,7 @@ function repositoryStudy(): RepositoryFixture {
         symbol: "checkout",
         claim: "The request enters this component.",
       },
+      ...targetEvidence(sourceDesign, "performance", "perf"),
     ],
     origin: "human",
   });
@@ -231,6 +281,7 @@ describe("implementation handoff", () => {
       repository: { ...released.repository!, revision: "def456", capturedAt: 900 },
       label: "as built @def456",
       design: asBuiltDesign,
+      evidence: targetEvidence(asBuiltDesign, "architecture", "as-built"),
       origin: "agent",
     });
     expect(reimported.candidate.role).toBe("baseline");

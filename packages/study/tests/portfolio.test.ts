@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ArchitectureEvidenceSchema,
   StudySchema,
   contentHash,
   evaluationKey,
@@ -125,6 +126,7 @@ describe("the hard gates", () => {
       "schema-valid",
       "correctness-exhausted",
       "no-violation",
+      "performance-calibrated",
       "slo-satisfied",
       "business-goals-satisfied",
     ]);
@@ -179,6 +181,64 @@ describe("the hard gates", () => {
     const e = evaluation({ candidateId: "comfortable" });
     e.performance = { ...e.performance!, p99Ms: interval(300, 40) };
     expect(decide(e).eligible).toBe(true);
+  });
+
+  it("keeps an uncalibrated repository model out of the comparison", () => {
+    const candidate = structuredClone(study.candidates[0]!);
+    const repositoryStudy: Study = {
+      ...study,
+      repository: {
+        name: "checkout",
+        rootHint: "",
+        branch: "main",
+        revision: "abc123",
+        dirty: false,
+        scope: [],
+        capturedAt: 1,
+      },
+      candidates: [candidate],
+    };
+    const uncalibrated = decideEligibility({
+      study: repositoryStudy,
+      evaluation: evaluation({ candidateId: candidate.id }),
+      modelErrors: [],
+    });
+    expect(uncalibrated.eligible).toBe(false);
+    expect(uncalibrated.gates.find((gate) => gate.gate === "performance-calibrated")).toMatchObject({
+      passed: false,
+      reason: expect.stringContaining("uncalibrated"),
+    });
+
+    candidate.evidence = [
+      ...candidate.design.nodes.map((node, index) =>
+        ArchitectureEvidenceSchema.parse({
+          id: `perf-node-${index}`,
+          targetKind: "node",
+          targetId: node.id,
+          aspect: "performance",
+          confidence: "observed",
+          source: "runtime",
+          claim: "Measured runtime inputs.",
+        })
+      ),
+      ...candidate.design.edges.map((edge, index) =>
+        ArchitectureEvidenceSchema.parse({
+          id: `perf-edge-${index}`,
+          targetKind: "edge",
+          targetId: edge.id,
+          aspect: "performance",
+          confidence: "observed",
+          source: "user",
+          claim: "User supplied a measured latency.",
+        })
+      ),
+    ];
+    const calibrated = decideEligibility({
+      study: repositoryStudy,
+      evaluation: evaluation({ candidateId: candidate.id }),
+      modelErrors: [],
+    });
+    expect(calibrated.gates.find((gate) => gate.gate === "performance-calibrated")?.passed).toBe(true);
   });
 
   it("refuses an unstable run outright rather than reporting its percentiles", () => {

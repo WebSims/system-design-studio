@@ -969,7 +969,9 @@ export const EdgeSchema = z.object({
   to: z.string().min(1),
   /**
    * One-way network latency. The legacy engine used a single 520ms constant for
-   * every edge in the graph, so topology had no effect on latency.
+   * every edge in the graph, so topology had no effect on latency. Zero remains the
+   * backwards-compatible parse default for old and test documents; validation labels it an
+   * uncalibrated sentinel, and the agent import boundary refuses it for repository baselines.
    */
   latency: DistributionSchema.default({ kind: "deterministic", value: 0 }),
   /** Probability [0,1] a message is dropped in transit. */

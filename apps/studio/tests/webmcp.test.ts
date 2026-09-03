@@ -315,13 +315,62 @@ async function call(name: string, input: unknown, ctx?: { signal?: AbortSignal }
   return (await mc.call(name, input, ctx)) as { content: Record<string, unknown>; isError?: boolean };
 }
 
-function repositoryArchitectureInput() {
+function repositoryArchitectureInput(calibrated = false) {
   const design = structuredClone(
     pizzaStudy().candidates.find(
       (candidate) => candidate.id === "c7-atomic-decrement-unique-claim"
     )!.design
   );
-  const nodeId = design.nodes[0]!.id;
+  const evidence = [
+    ...design.nodes.map((node, index) => ({
+      id: `node-${index}`,
+      targetKind: "node" as const,
+      targetId: node.id,
+      aspect: "architecture" as const,
+      confidence: "observed" as const,
+      source: "code" as const,
+      path: "src/server.ts",
+      lineStart: 12,
+      lineEnd: 28,
+      symbol: "startServer",
+      claim: `source establishes the ${node.label} runtime boundary`,
+    })),
+    ...design.edges.map((edge, index) => ({
+      id: `edge-${index}`,
+      targetKind: "edge" as const,
+      targetId: edge.id,
+      aspect: "architecture" as const,
+      confidence: "inferred" as const,
+      source: "code" as const,
+      path: "src/server.ts",
+      lineStart: 12,
+      lineEnd: 28,
+      symbol: "startServer",
+      claim: `source establishes the ${edge.from} to ${edge.to} dependency`,
+    })),
+    ...(calibrated
+      ? [
+          ...design.nodes.map((node, index) => ({
+            id: `perf-node-${index}`,
+            targetKind: "node" as const,
+            targetId: node.id,
+            aspect: "performance" as const,
+            confidence: "observed" as const,
+            source: "runtime" as const,
+            claim: `runtime measurement supports ${node.label}'s performance inputs`,
+          })),
+          ...design.edges.map((edge, index) => ({
+            id: `perf-edge-${index}`,
+            targetKind: "edge" as const,
+            targetId: edge.id,
+            aspect: "performance" as const,
+            confidence: "observed" as const,
+            source: "runtime" as const,
+            claim: `runtime measurement supports ${edge.id}'s latency`,
+          })),
+        ]
+      : []),
+  ];
   return {
     repository: {
       name: "checkout-service",
@@ -333,20 +382,7 @@ function repositoryArchitectureInput() {
     },
     label: "As-is · abc123",
     design,
-    evidence: [
-      {
-        id: "entrypoint",
-        targetKind: "node",
-        targetId: nodeId,
-        confidence: "observed",
-        source: "code",
-        path: "src/server.ts",
-        lineStart: 12,
-        lineEnd: 28,
-        symbol: "startServer",
-        claim: "the process exposes the HTTP entrypoint",
-      },
-    ],
+    evidence,
   };
 }
 
@@ -625,6 +661,18 @@ describe("reading the study", () => {
     expect(layout.rules.join(" ")).toMatch(/dependency depth/)
     expect(layout.rules.join(" ")).toMatch(/Never overlap/)
   })
+
+  it("publishes non-zero placeholders without calling them measurements", async () => {
+    const { content } = await call("studio_get_catalog", {});
+    const guide = content.performanceGuide as {
+      requirement: string;
+      edgeLatency: string;
+      placeholders: Array<{ distribution: { kind: string } }>;
+    };
+    expect(guide.requirement).toContain("observed performance evidence");
+    expect(guide.edgeLatency).toContain("Zero is an unknown-value sentinel");
+    expect(guide.placeholders.length).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -632,14 +680,27 @@ describe("reading the study", () => {
 // ---------------------------------------------------------------------------
 
 describe("repository-backed architecture", () => {
+  it("refuses an as-is baseline with uncovered architecture elements", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const input = repositoryArchitectureInput();
+    input.evidence.pop();
+    const result = await call("studio_import_architecture", input);
+    expect(result.isError).toBe(true);
+    expect(String(result.content.error)).toContain("no evidence");
+    expect(host.study.repository).toBeNull();
+    expect(host.study.candidates).toEqual([]);
+  });
+
   it("imports an evidence-backed baseline atomically", async () => {
     await call("studio_create_study", { name: "checkout" });
     const result = await call("studio_import_architecture", repositoryArchitectureInput());
     expect(result.isError).toBeFalsy();
     expect(result.content.role).toBe("baseline");
-    expect(result.content.evidenceCount).toBe(1);
-    expect(host.study.repository?.revision).toBe("abc123");
     const baseline = host.study.candidates.find((candidate) => candidate.id === result.content.candidateId)!;
+    expect(result.content.evidenceCount).toBe(
+      baseline.design.nodes.length + baseline.design.edges.length
+    );
+    expect(host.study.repository?.revision).toBe("abc123");
     expect(baseline.role).toBe("baseline");
     expect(host.study.activeCandidateId).toBe(baseline.id);
   });
@@ -657,10 +718,13 @@ describe("repository-backed architecture", () => {
       assumed: number;
       uncoveredNodes: string[];
     };
-    expect(summary.total).toBe(1);
-    expect(summary.observed).toBe(1);
-    expect(summary.inferred).toBe(0);
-    expect(summary.uncoveredNodes.length).toBeGreaterThan(0);
+    const baseline = host.study.candidates.find(
+      (candidate) => candidate.id === imported.content.candidateId
+    )!;
+    expect(summary.total).toBe(baseline.design.nodes.length + baseline.design.edges.length);
+    expect(summary.observed).toBe(baseline.design.nodes.length);
+    expect(summary.inferred).toBe(baseline.design.edges.length);
+    expect(summary.uncoveredNodes).toEqual([]);
   });
 
   it("keeps the as-is baseline immutable and patches an experiment instead", async () => {
@@ -732,7 +796,7 @@ describe("repository-backed architecture", () => {
       operations: [
         {
           op: "add-node",
-          node: { id: "api", kind: "server", label: "api", x: 0, y: 240, server: { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } } },
+          node: { id: "api", kind: "server", label: "api", x: 0, y: 240, server: { concurrency: 8, fanout: "sequential", serviceTime: { kind: "deterministic", value: 0.01 } } },
         },
       ],
     });
@@ -746,7 +810,7 @@ describe("repository-backed architecture", () => {
       operations: [
         {
           op: "add-node",
-          node: { id: "api", kind: "server", label: "api", x: 320, y: 240, server: { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } } },
+          node: { id: "api", kind: "server", label: "api", x: 320, y: 240, server: { concurrency: 8, fanout: "sequential", serviceTime: { kind: "deterministic", value: 0.01 } } },
         },
       ],
     });
@@ -762,7 +826,7 @@ describe("repository-backed architecture", () => {
     const dangling = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 2,
-      operations: [{ op: "add-edge", edge: { id: "api-db", from: "api", to: "db" } }],
+      operations: [{ op: "add-edge", edge: { id: "api-db", from: "api", to: "db", latency: { kind: "deterministic", value: 0.25 } } }],
     });
     expect(dangling.isError).toBe(true);
     expect(host.study.candidates[0]!.revision).toBe(2);
@@ -770,7 +834,7 @@ describe("repository-backed architecture", () => {
     const link = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 2,
-      operations: [{ op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api" } }],
+      operations: [{ op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency: { kind: "deterministic", value: 0.25 } } }],
     });
     expect(link.isError).toBeFalsy();
     expect((link.content.changed as string[])[0]).toBe("added link browser → api");
@@ -791,7 +855,16 @@ describe("repository-backed architecture", () => {
       expectedRevision: 3,
       evidence: [
         {
-          id: "entrypoint",
+          id: "browser-entrypoint",
+          targetKind: "node",
+          targetId: "browser",
+          confidence: "observed",
+          source: "code",
+          path: "src/server.ts",
+          claim: "the browser originates this request path",
+        },
+        {
+          id: "api-entrypoint",
           targetKind: "node",
           targetId: "api",
           confidence: "observed",
@@ -799,13 +872,22 @@ describe("repository-backed architecture", () => {
           path: "src/server.ts",
           claim: "the HTTP server is created here",
         },
+        {
+          id: "browser-api-route",
+          targetKind: "edge",
+          targetId: "browser-api",
+          confidence: "observed",
+          source: "code",
+          path: "src/server.ts",
+          claim: "the request reaches the HTTP server",
+        },
       ],
     });
     expect(sealed.isError).toBeFalsy();
     // Same candidate, now the baseline: the picture on the canvas does not move.
     expect(sealed.content.candidateId).toBe(candidateId);
     expect(sealed.content.role).toBe("baseline");
-    expect(sealed.content.evidenceCount).toBe(1);
+    expect(sealed.content.evidenceCount).toBe(3);
     expect(host.study.candidates).toHaveLength(1);
     expect(host.study.repository?.revision).toBe("abc123");
 
@@ -854,7 +936,8 @@ describe("repository-backed architecture", () => {
     await call("studio_create_study", { name: "checkout" });
     const drawing = await call("studio_create_candidate", { label: "as-is (drawing)" });
     const candidateId = drawing.content.candidateId as string;
-    const server = { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } };
+    const server = { concurrency: 8, fanout: "sequential", serviceTime: { kind: "deterministic", value: 0.01 } };
+    const latency = { kind: "deterministic", value: 0.25 };
 
     const patched = await call("studio_apply_architecture_patch", {
       candidateId,
@@ -865,10 +948,10 @@ describe("repository-backed architecture", () => {
         { op: "add-node", node: { id: "api", kind: "server", label: "api", server } },
         { op: "add-node", node: { id: "worker", kind: "server", label: "worker", server } },
         { op: "add-node", node: { id: "pg", kind: "database", label: "postgres", database: { serviceTime: { kind: "deterministic", value: 0.005 } } } },
-        { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api" } },
-        { op: "add-edge", edge: { id: "browser-worker", from: "browser", to: "worker" } },
-        { op: "add-edge", edge: { id: "api-pg", from: "api", to: "pg" } },
-        { op: "add-edge", edge: { id: "worker-pg", from: "worker", to: "pg" } },
+        { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency } },
+        { op: "add-edge", edge: { id: "browser-worker", from: "browser", to: "worker", latency } },
+        { op: "add-edge", edge: { id: "api-pg", from: "api", to: "pg", latency } },
+        { op: "add-edge", edge: { id: "worker-pg", from: "worker", to: "pg", latency } },
       ],
     });
     expect(patched.isError).toBeFalsy();
@@ -888,6 +971,82 @@ describe("repository-backed architecture", () => {
     });
     expect(unpositioned.isError).toBe(true);
     expect(String(unpositioned.content.error)).toContain("auto-layout");
+  });
+
+  it("requires explicit server fanout and a positive one-way latency from an agent", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const drawing = await call("studio_create_candidate", { label: "as-is (drawing)" });
+    const candidateId = drawing.content.candidateId as string;
+
+    const implicitFanout = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 0,
+      operations: [
+        {
+          op: "add-node",
+          node: {
+            id: "api",
+            kind: "server",
+            label: "api",
+            x: 320,
+            y: 0,
+            server: { concurrency: 8, serviceTime: { kind: "deterministic", value: 1 } },
+          },
+        },
+      ],
+    });
+    expect(implicitFanout.isError).toBe(true);
+    expect(String(implicitFanout.content.error)).toContain("fanout explicitly");
+
+    const nodes = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 0,
+      operations: [
+        { op: "auto-layout" },
+        {
+          op: "add-node",
+          node: {
+            id: "timer",
+            kind: "client",
+            label: "autonomous timer",
+            client: { arrival: { kind: "deterministic", ratePerSec: 1 } },
+          },
+        },
+        {
+          op: "add-node",
+          node: {
+            id: "worker",
+            kind: "server",
+            label: "worker (in-process)",
+            server: {
+              concurrency: 1,
+              fanout: "sequential",
+              serviceTime: { kind: "deterministic", value: 1 },
+            },
+          },
+        },
+      ],
+    });
+    expect(nodes.isError).toBeFalsy();
+
+    for (const edge of [
+      { id: "missing", from: "timer", to: "worker" },
+      {
+        id: "zero",
+        from: "timer",
+        to: "worker",
+        latency: { kind: "deterministic", value: 0 },
+      },
+    ]) {
+      const result = await call("studio_apply_architecture_patch", {
+        candidateId,
+        expectedRevision: 1,
+        operations: [{ op: "add-edge", edge }],
+      });
+      expect(result.isError).toBe(true);
+      expect(String(result.content.error)).toMatch(/latency/);
+      expect(host.study.candidates[0]!.revision).toBe(1);
+    }
   });
 
   it("refuses an import that names both a design and a drawn candidate, or neither", async () => {
@@ -970,7 +1129,7 @@ describe("repository-backed architecture", () => {
   });
 
   it("returns a blocker until a person approves, then exposes the pinned implementation delta", async () => {
-    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput(true));
     const created = await call("studio_create_candidate", {
       label: "admission-control experiment",
       copyFrom: imported.content.candidateId,
@@ -1033,6 +1192,18 @@ describe("validating a draft", () => {
     const { content } = await call("studio_validate_draft", { design });
     expect(content.valid).toBe(true);
     expect(content.designHash).toBeTruthy();
+  });
+
+  it("reports dangerous inherited defaults before an agent tries to store them", async () => {
+    const design = structuredClone(host.study.candidates[6]!.design) as {
+      edges: Array<Record<string, unknown>>;
+    };
+    delete design.edges[0]!.latency;
+    const { content } = await call("studio_validate_draft", { design });
+    expect(content.valid).toBe(false);
+    expect(content.errors).toContainEqual(
+      expect.objectContaining({ layer: "agent-policy", code: "edge-latency-required" })
+    );
   });
 
   it("separates schema, topology and workflow errors, because the fixes differ", async () => {
@@ -1221,6 +1392,48 @@ describe("running and reading an evaluation", () => {
       performance: false,
       scenarios: false,
     });
+  });
+
+  it("defaults performance off", async () => {
+    await call("studio_run_evaluation", { candidateId: "c6-serializable-transaction" });
+    expect(host.runCalls.at(-1)?.performance).toBe(false);
+  });
+
+  it("withholds repository load results until every target is calibrated", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const candidateId = imported.content.candidateId as string;
+
+    const correctness = await call("studio_run_evaluation", { candidateId });
+    expect(correctness.isError).toBeFalsy();
+    expect(correctness.content.performance).toBeNull();
+    expect(String(correctness.content.performanceWithheld)).toContain("uncalibrated");
+    expect(host.runCalls.at(-1)).toMatchObject({ correctness: true, performance: false });
+
+    const before = host.runCalls.length;
+    const performance = await call("studio_run_evaluation", { candidateId, performance: true });
+    expect(performance.isError).toBe(true);
+    expect(String(performance.content.error)).toContain("Performance is uncalibrated");
+    const scenarios = await call("studio_run_production_scenarios", { candidateId });
+    expect(scenarios.isError).toBe(true);
+    expect(host.runCalls).toHaveLength(before);
+
+    const architecture = await call("studio_get_architecture", { candidateId });
+    expect(architecture.content.performanceCalibration).toMatchObject({
+      required: true,
+      calibrated: false,
+    });
+  });
+
+  it("allows repository performance after every target has observed measurements", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput(true));
+    const result = await call("studio_run_evaluation", {
+      candidateId: imported.content.candidateId,
+      performance: true,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(host.runCalls.at(-1)?.performance).toBe(true);
   });
 
   it("runs the named production suite without rerunning the ordinary evaluation", async () => {

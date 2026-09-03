@@ -15,7 +15,12 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { EdgeSchema, type ArchitectureEvidence, type Design } from "@sds/schema";
+import {
+  EdgeSchema,
+  performanceCalibration,
+  type ArchitectureEvidence,
+  type Design,
+} from "@sds/schema";
 import { protocolFreeEdgeId } from "../ids";
 import { NODE_HEIGHT, NODE_WIDTH } from "./geometry";
 import { nodeTypes } from "./nodes";
@@ -126,6 +131,14 @@ function Canvas() {
     }
     return grouped;
   }, [activeCandidate]);
+  const uncalibratedTargets = useMemo(() => {
+    if (!activeCandidate) return new Set<string>();
+    return new Set(
+      performanceCalibration(study, activeCandidate).gaps.map(
+        (gap) => `${gap.targetKind}:${gap.targetId}`
+      )
+    );
+  }, [activeCandidate, study]);
   const notesByTarget = useMemo(() => {
     const grouped = new Map<string, Annotation[]>();
     for (const note of annotations) {
@@ -236,6 +249,7 @@ function Canvas() {
         position: { x: n.x, y: n.y },
         data: {
           repositoryLinked: study.repository !== null,
+          performanceCalibrated: !uncalibratedTargets.has(`node:${n.id}`),
           evidenceCount: evidenceByTarget.get(`node:${n.id}`)?.length ?? 0,
           evidenceTone: evidenceTone(evidenceByTarget.get(`node:${n.id}`) ?? []),
           noteCount: notesByTarget.get(`node:${n.id}`)?.length ?? 0,
@@ -264,6 +278,7 @@ function Canvas() {
       notesByTarget,
       selection,
       study.repository,
+      uncalibratedTargets,
     ]
   );
 
@@ -289,11 +304,21 @@ function Canvas() {
               : "muted"
             : "none",
           repositoryLinked: study.repository !== null,
+          performanceCalibrated: !uncalibratedTargets.has(`edge:${e.id}`),
           evidenceCount: evidenceByTarget.get(`edge:${e.id}`)?.length ?? 0,
           evidenceTone: evidenceTone(evidenceByTarget.get(`edge:${e.id}`) ?? []),
         },
       })),
-    [design.edges, diffEdgeStatus, evidenceByTarget, exploration, highlightedEdgeIds, selection, study.repository]
+    [
+      design.edges,
+      diffEdgeStatus,
+      evidenceByTarget,
+      exploration,
+      highlightedEdgeIds,
+      selection,
+      study.repository,
+      uncalibratedTargets,
+    ]
   );
 
   const allNodes = useMemo(() => (ghostNodes.length ? [...nodes, ...ghostNodes] : nodes), [ghostNodes, nodes]);

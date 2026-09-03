@@ -65,6 +65,14 @@ function Verdict({ result }: { result: CorrectnessResult }) {
       <p className="verdict-headline">{headline.text}</p>
       <p className="verdict-claim">{result.claim}</p>
 
+      {result.counterexample?.scope === "safety" && result.counterexample.steps.length === 1 && (
+        <p className="note warn">
+          This rule failed after one intermediate operation. If later work is allowed to restore
+          the relationship, “always” is the wrong contract: use an end-state postcondition and
+          enable the relevant crash fault. This trace alone does not establish lost work.
+        </p>
+      )}
+
       {result.modelErrors.length > 0 && (
         <ul className="issue-list">
           {result.modelErrors.map((e, i) => (

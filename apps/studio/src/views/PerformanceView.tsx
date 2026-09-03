@@ -5,6 +5,7 @@ import type {
   PerformanceSummary,
   ProductionScenarioResult,
 } from "@sds/schema";
+import { performanceCalibration } from "@sds/schema";
 import { PRODUCTION_SCENARIO_RECIPES } from "@sds/study";
 import { useStudyStore } from "../study/store";
 
@@ -38,13 +39,31 @@ export function PerformanceView() {
     return <div className="dock-empty">Create a version first.</div>;
   }
 
-  const p = evaluation?.performance ?? null;
-  const b = evaluation?.business ?? null;
+  const calibration = performanceCalibration(study, active);
+  const disabledReason = calibration.calibrated ? null : calibration.message;
+  const p = disabledReason ? null : (evaluation?.performance ?? null);
+  const b = disabledReason ? null : (evaluation?.business ?? null);
 
   return (
     <div className="view view-performance load-dock">
       <div className="view-main">
-        <ProductionSuite candidateId={active.id} candidateLabel={active.label} />
+        {disabledReason && (
+          <section className="section">
+            <div className="verdict verdict-warn">
+              <div className="verdict-status">performance not calibrated</div>
+              <p className="verdict-claim">
+                {disabledReason} Load measurements, scenarios and resource conclusions are withheld;
+                correctness remains available in Behaviour.
+              </p>
+            </div>
+          </section>
+        )}
+
+        <ProductionSuite
+          candidateId={active.id}
+          candidateLabel={active.label}
+          disabledReason={disabledReason}
+        />
 
         <section className="section">
           <header className="section-head">
@@ -54,7 +73,12 @@ export function PerformanceView() {
                 cancel
               </button>
             ) : (
-              <button className="btn primary" onClick={() => void evaluate(active.id)}>
+              <button
+                className="btn primary"
+                onClick={() => void evaluate(active.id)}
+                disabled={disabledReason !== null}
+                title={disabledReason ?? undefined}
+              >
                 Run {study.workload.seeds.length} seeds
               </button>
             )}
@@ -66,7 +90,11 @@ export function PerformanceView() {
 
           {running && <p className="muted">Running {study.workload.seeds.length} replications…</p>}
           {!p && !running && (
-            <p className="muted">No measurements yet. Results include 95% intervals.</p>
+            <p className="muted">
+              {disabledReason
+                ? "Measurements become available after every component and link has observed performance evidence."
+                : "No measurements yet. Results include 95% intervals."}
+            </p>
           )}
 
           {p && <PerformanceTable performance={p} slo={study.targets.slo} />}
@@ -74,7 +102,7 @@ export function PerformanceView() {
 
         {b && <BusinessTable business={b} study={study} />}
 
-        {evaluation && evaluation.warnings.length > 0 && (
+        {!disabledReason && evaluation && evaluation.warnings.length > 0 && (
           <section className="section">
             <header className="section-head">
               <h2>caveats</h2>
@@ -115,9 +143,11 @@ export function PerformanceView() {
 function ProductionSuite({
   candidateId,
   candidateLabel,
+  disabledReason,
 }: {
   candidateId: string;
   candidateLabel: string;
+  disabledReason: string | null;
 }) {
   const evaluation = useStudyStore((state) => state.evaluationFor(candidateId));
   const evaluate = useStudyStore((state) => state.evaluate);
@@ -125,7 +155,7 @@ function ProductionSuite({
   const workerRunning = useStudyStore((state) => state.running.has(candidateId));
   const requestFocus = useStudyStore((state) => state.requestFocus);
   const [requested, setRequested] = useState(false);
-  const results = evaluation?.scenarios ?? [];
+  const results = disabledReason ? [] : (evaluation?.scenarios ?? []);
   const running = requested && workerRunning;
 
   const run = async () => {
@@ -159,13 +189,21 @@ function ProductionSuite({
         {running ? (
           <button className="btn" onClick={cancel}>cancel</button>
         ) : (
-          <button className="btn primary" onClick={() => void run()} disabled={workerRunning}>
+          <button
+            className="btn primary"
+            onClick={() => void run()}
+            disabled={workerRunning || disabledReason !== null}
+            title={disabledReason ?? undefined}
+          >
             {results.length > 0 ? "Run suite again" : "Run production suite"}
           </button>
         )}
       </header>
 
       {running && <p className="muted" aria-live="polite">Running four deterministic probes in the worker…</p>}
+      {disabledReason && (
+        <p className="muted">Production scenarios require calibrated timing and capacity inputs.</p>
+      )}
 
       {results.length > 0 && !running && (
         <div className="scenario-rollup" aria-label="Production scenario summary">
@@ -426,8 +464,10 @@ function BusinessTable({
  */
 function ResourcePanel() {
   const active = useStudyStore((s) => s.activeCandidate());
+  const study = useStudyStore((s) => s.study);
   const evaluation = useStudyStore((s) => (active ? s.evaluationFor(active.id) : null));
-  const r = evaluation?.resources;
+  const calibrated = active ? performanceCalibration(study, active).calibrated : true;
+  const r = calibrated ? evaluation?.resources : null;
 
   return (
     <section className="section">
@@ -439,7 +479,7 @@ function ResourcePanel() {
       </p>
 
       {!r ? (
-        <p className="muted">not measured yet</p>
+        <p className="muted">{calibrated ? "not measured yet" : "withheld until calibrated"}</p>
       ) : (
         <>
           <dl className="stat-grid">

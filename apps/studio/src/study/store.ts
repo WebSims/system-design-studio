@@ -10,6 +10,7 @@ import {
   applyStudyContract,
   blankStudy,
   clearStudyResults,
+  performanceCalibration,
   studyContractLock,
   type Candidate,
   type CandidateEvaluation,
@@ -540,6 +541,22 @@ export const useStudyStore = create<StudioState>((set, get) => {
       const correctness = opts?.correctness ?? true;
       const performance = opts?.performance ?? true;
       const scenarios = opts?.scenarios ?? false;
+      const candidate = get().study.candidates.find((item) => item.id === candidateId);
+      if (!candidate) {
+        set({ error: `no candidate "${candidateId}"` });
+        return null;
+      }
+      if (performance || scenarios) {
+        const calibration = performanceCalibration(get().study, candidate);
+        if (!calibration.calibrated) {
+          set({
+            error:
+              `${calibration.message} Load simulation and production scenarios stay unavailable until those inputs are measured. ` +
+              "Correctness search remains available.",
+          });
+          return null;
+        }
+      }
       set((s) => ({ running: new Set(s.running).add(candidateId), error: null }));
       try {
         const evaluation = await evaluateInWorker(get().study, candidateId, {

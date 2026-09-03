@@ -1,6 +1,8 @@
 import type { NodeResult, RunResult } from "@sds/core";
 import type { DesignPreview } from "@sds/analytic";
+import { performanceCalibration } from "@sds/schema";
 import { useStudio } from "../store";
+import { useStudyStore } from "../study/store";
 import { AnalyzerPanel } from "./AnalyzerPanel";
 import { Chart } from "./Chart";
 import { Transport } from "./Transport";
@@ -664,6 +666,12 @@ export function ResultsRail() {
   const error = useStudio((s) => s.error);
   const issues = useStudio((s) => s.issues);
   const execute = useStudio((s) => s.execute);
+  const study = useStudyStore((s) => s.study);
+  const active =
+    study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ??
+    study.candidates[0];
+  const calibration = active ? performanceCalibration(study, active) : null;
+  const uncalibrated = calibration !== null && !calibration.calibrated;
 
   const blocking = issues.filter((i) => i.severity === "error");
 
@@ -682,37 +690,50 @@ export function ResultsRail() {
         </div>
       )}
 
-      <PreviewPanel preview={preview} />
-
-      <button className="btn primary run" onClick={execute} disabled={running || blocking.length > 0}>
-        {running ? "Running…" : "Run simulation"}
-      </button>
-
-      {error && (
-        <div className="verdict bad">
-          <div className="verdict-title">simulation refused</div>
-          <div className="verdict-body">{error}</div>
+      {uncalibrated ? (
+        <div className="verdict verdict-warn">
+          <div className="verdict-title">performance not calibrated</div>
+          <div className="verdict-body">{calibration?.message}</div>
+          <div className="verdict-body">
+            The canvas shows ?ms and withholds utilization, latency, throughput, scenarios and
+            recommendations. Correctness search is still available in Behaviour.
+          </div>
         </div>
-      )}
-
-      {run && runStale && (
-        <p className="note warn">
-          The design changed after this run. Figures below describe the previous
-          version; run again to refresh them.
-        </p>
-      )}
-
-      {run ? (
-        <ResultPanel result={run} />
       ) : (
-        !error && (
-          <p className="note">
-            Run a simulation for tail latency, queue behavior, and trace playback.
-          </p>
-        )
-      )}
+        <>
+          <PreviewPanel preview={preview} />
 
-      <AnalyzerPanel />
+          <button className="btn primary run" onClick={execute} disabled={running || blocking.length > 0}>
+            {running ? "Running…" : "Run simulation"}
+          </button>
+
+          {error && (
+            <div className="verdict bad">
+              <div className="verdict-title">simulation refused</div>
+              <div className="verdict-body">{error}</div>
+            </div>
+          )}
+
+          {run && runStale && (
+            <p className="note warn">
+              The design changed after this run. Figures below describe the previous
+              version; run again to refresh them.
+            </p>
+          )}
+
+          {run ? (
+            <ResultPanel result={run} />
+          ) : (
+            !error && (
+              <p className="note">
+                Run a simulation for tail latency, queue behavior, and trace playback.
+              </p>
+            )
+          )}
+
+          <AnalyzerPanel />
+        </>
+      )}
     </aside>
   );
 }

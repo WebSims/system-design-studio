@@ -331,11 +331,14 @@ describe("check-then-write versus an atomic conditional decrement", () => {
   });
 
   it("the counterexample is minimal in transition count", () => {
-    const ce = run(checkThenWrite).counterexample!;
+    const result = run(checkThenWrite);
+    const ce = result.counterexample!;
     // read, read, write, write... plus the claim insert that makes the second allocation
     // observable. Anything longer would mean breadth-first order was not respected.
     expect(ce.minimal).toBe(true);
     expect(ce.steps.length).toBeLessThanOrEqual(6);
+    expect(result.claim).toContain("authored contract");
+    expect(result.claim).not.toMatch(/production bug exists|explanation of this bug/i);
   });
 
   it("it names two distinct actor lanes, so the trace is readable as a race", () => {

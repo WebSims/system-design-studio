@@ -279,6 +279,7 @@ export function StudioNode({ id, selected, data }: NodeProps) {
   const raceRole = useRaceRole(id);
   const evidence = data as {
     repositoryLinked?: boolean;
+    performanceCalibrated?: boolean;
     evidenceCount?: number;
     evidenceTone?: "observed" | "inferred" | "assumed" | "uncovered";
     noteCount?: number;
@@ -287,11 +288,13 @@ export function StudioNode({ id, selected, data }: NodeProps) {
 
   if (!node) return null;
   const isClient = node.kind === "client";
+  const performanceUnavailable =
+    Boolean(evidence.repositoryLinked) && evidence.performanceCalibrated === false;
 
   const rho = measured ? measured.utilization : (preview?.rho ?? 0);
   // Show rho above 1 rather than clamping: how far past capacity matters.
   const displayRho = !measured && preview && preview.rho > 1 ? preview.rho : rho;
-  const tone = utilTone(displayRho);
+  const tone = performanceUnavailable ? "ok" : utilTone(displayRho);
   const detail = detailOf(node.kind, measured);
   const backlogGrowing = (measured?.queue?.backlogGrowthPerSec ?? 0) > 0.05;
   // Refusing connections is a hard failure, so it gets the same treatment as a queue
@@ -301,7 +304,7 @@ export function StudioNode({ id, selected, data }: NodeProps) {
   return (
     <div
       className={`node kind-${node.kind} ${selected ? "selected" : ""} tone-${tone} ${
-        backlogGrowing || refusingConnections ? "async-alert" : ""
+        !performanceUnavailable && (backlogGrowing || refusingConnections) ? "async-alert" : ""
       } ${raceRole}`}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT, "--accent-node": KIND_ACCENT[node.kind] } as React.CSSProperties}
     >
@@ -341,11 +344,20 @@ export function StudioNode({ id, selected, data }: NodeProps) {
         <KindCaption kind={node.kind} />
       </div>
 
-      <div className="node-service">{summaryOf(node)}</div>
+      <div
+        className="node-service"
+        title={
+          performanceUnavailable
+            ? "Capacity, traffic and timing values have no observed runtime or user performance evidence yet."
+            : undefined
+        }
+      >
+        {performanceUnavailable ? "performance inputs uncalibrated" : summaryOf(node)}
+      </div>
 
       <StateStrip nodeId={id} />
 
-      {!isClient && (
+      {!isClient && !performanceUnavailable && (
         <div className="util-row">
           <div className="util-bar">
             <div className="util-fill" style={{ width: `${Math.min(100, displayRho * 100)}%` }} />
@@ -356,7 +368,9 @@ export function StudioNode({ id, selected, data }: NodeProps) {
       )}
 
       <div className="node-foot">
-        {occ ? (
+        {performanceUnavailable ? (
+          <span className="node-src">uncalibrated</span>
+        ) : occ ? (
           <span className="occ tnum">
             {occ.inService} in service &middot; {occ.queued} queued
           </span>
@@ -371,7 +385,7 @@ export function StudioNode({ id, selected, data }: NodeProps) {
         )}
       </div>
 
-      <ChipStrip nodeId={id} />
+      {!performanceUnavailable && <ChipStrip nodeId={id} />}
 
       <Handle type="source" position={Position.Right} />
     </div>

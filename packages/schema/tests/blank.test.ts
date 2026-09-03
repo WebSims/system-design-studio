@@ -57,6 +57,7 @@ describe("the empty study", () => {
     expect(() =>
       ArchitectureEvidenceSchema.parse({ ...base, path: "src/api.ts", lineStart: 20, lineEnd: 10 })
     ).toThrow(/lineEnd/);
+    expect(ArchitectureEvidenceSchema.parse(base).aspect).toBe("architecture");
   });
 
   it("compares to a claim that says what to do, not that everything failed", () => {

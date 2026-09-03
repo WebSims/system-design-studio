@@ -95,7 +95,7 @@ pnpm sim        # CLI: --check, --portfolio
 - [Correctness](docs/correctness.md) — what the explorer searches, and what it refuses to claim
 - [One kernel, two engines](docs/kernel.md) — why the explorer and simulator share one implementation
 - [Comparison](docs/portfolio.md) — the gates, the frontier, why no prices
-- [Agent surface](docs/agent.md) — the 19 tools, approval boundary, and code handoff
+- [Agent surface](docs/agent.md) — the 21 tools, approval boundary, and code handoff
 - [Engine](docs/engine.md) — components, uncertainty, the analyzer
 - [Testing](docs/testing.md) — how to check the engine yourself
 - [Design rules](docs/design-rules.md) — rules it holds itself to, and what is out of scope

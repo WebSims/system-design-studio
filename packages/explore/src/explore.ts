@@ -782,8 +782,8 @@ export function assumptionsFor(design: Design, faults: FaultModel): string[] {
 function violatedClaim(inv: Invariant, steps: number, bounds: ExplorationBounds): string {
   return (
     `Invariant "${inv.label}" is violated. The counterexample below is ${steps} transition${steps === 1 ? "" : "s"} long ` +
-    `and is minimal in transition count: breadth-first search found no shorter one, so no simpler explanation of this bug exists ` +
-    `within ${bounds.actors} initial requests.`
+    `and is minimal in transition count: breadth-first search found no shorter trace that violates this authored contract ` +
+    `within ${bounds.actors} initial requests. A contract violation is evidence about the model; whether it represents a production bug depends on the contract and modeled faults.`
   );
 }
 

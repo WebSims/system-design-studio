@@ -1,4 +1,5 @@
 import type { Catalog } from "./tools";
+import { NETWORK_LATENCIES } from "@sds/models";
 import { LAYOUT_STEP, NODE_GAP } from "../canvas/layout";
 import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry";
 
@@ -21,7 +22,8 @@ export function buildCatalog(): Catalog {
     componentKinds: [
       {
         kind: "client",
-        whatItModels: "Where work comes from. Carries the arrival process and the caller's timeout.",
+        whatItModels:
+          "Where work comes from. This includes users and APIs, but also autonomous timers, pollers, cron ticks and external deliveries. Every independent workload origin needs its own client so HTTP traffic is not made to trigger background work.",
         capabilities: ["originates requests", "holds long-lived connections"],
       },
       {
@@ -216,11 +218,30 @@ export function buildCatalog(): Catalog {
       ],
     },
 
+    performanceGuide: {
+      requirement:
+        "Repository performance is calibrated only when every modeled node and link has observed performance evidence from runtime measurements or the user. Code evidence that a call exists does not measure its latency.",
+      edgeLatency:
+        "Every link needs an explicit positive one-way latency. Zero is an unknown-value sentinel used by old/test documents, never a physical default. Pick a benchmark only when its locality matches the available evidence, attach aspect=performance with confidence=assumed, and do not run load evaluation until measured.",
+      placeholders: NETWORK_LATENCIES.map((benchmark) => ({
+        id: benchmark.id,
+        label: benchmark.label,
+        note: benchmark.note,
+        distribution: benchmark.distribution,
+        rangeMs: benchmark.citation.range ?? null,
+        source: benchmark.citation.source,
+        asOf: benchmark.citation.asOf ?? "",
+      })),
+    },
+
     notes: [
       "Choose graph granularity from runtime, capacity and failure boundaries. Do not turn every source module, HTTP handler, goroutine, class or cron callback into a server. Keep ordinary responsibilities as workflow handlers on their deployed host; split an in-process subsystem only when an independently bounded resource is important to the question, label it '(in-process)', and cite the shared lifecycle.",
+      "A link is executed work: every request reaching its source may traverse it according to classes and probability. Never draw an ownership, startup or shared-process relationship as a link. Give autonomous polling, timers, cron and queue delivery a separate client/work source instead of routing them from an HTTP service.",
+      "For every server with more than one outgoing dependency, read the implementation and set fanout deliberately. Sequential adds dependency time; parallel is fork-join and waits for the slowest. Never inherit parallel merely because it is the schema default.",
       "A codebase may support mutually exclusive providers. Draw the provider selected by checked-in deployment configuration; if no deployed choice is known, use the documented default and record alternatives as an evidence gap rather than drawing every option as active at once.",
-      "Repository structure can establish topology but cannot establish production traffic, replica count, service time or dependency latency. Any schema-required placeholder for an unknown value is assumed input, must be cited as such, and is not a basis for running or reporting performance results.",
+      "Repository structure can establish topology but cannot establish production traffic, replica count, service time or dependency latency. Any schema-required placeholder for an unknown value is performance evidence with confidence assumed, and is not a basis for running or reporting performance results.",
       "An invariant is a required property of system state, not a description of the current mechanism. Do not encode 'uses a mutex' or 'one importer in this process' as safety goals. State the intended system-wide outcome when the source supports it; otherwise record the process-local guarantee as a risk or evidence gap.",
+      "Safety invariants are checked after every workflow operation. If two values are allowed to differ while a handler is in flight and only have to agree once work finishes or crashes, use a postcondition and enable the relevant fault. A one-step safety failure before a later compensating operation is a contract mismatch, not by itself evidence of a production bug.",
       "A correctness invariant without a workflow that can change the state it reads is not executable evidence. For a code-derived baseline, trace at least one highest-risk state-changing flow when the source supports it; otherwise say that correctness has not been modeled and do not run the search.",
       "Operations are a closed set. There are no loops, no function calls and no recursion, because a workflow that could loop an unbounded number of times has no bounded state space and the only possible verdict would be 'inconclusive'.",
       "`read` followed by `write` is TWO transitions and another actor may run in between. That is the point of the model, not a limitation of it.",

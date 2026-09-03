@@ -223,8 +223,8 @@ export function explain(ce: Counterexample, lanes: readonly ActorLane[]): string
   out.push(
     `The invariant "${ce.invariantLabel}" became false ${scope}. ` +
       `The trace below is ${ce.steps.length} transition${ce.steps.length === 1 ? "" : "s"} long and no shorter one exists ` +
-      `within these bounds \u2014 breadth-first search found this before anything longer, so there is no simpler ` +
-      `explanation of this bug to look for.`
+      `within these bounds \u2014 breadth-first search found this before anything longer. This establishes a minimal ` +
+      `counterexample to the authored contract, not by itself a production bug.`
   );
 
   const actors = lanes.filter((l) => l.kind === "request");

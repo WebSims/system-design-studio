@@ -1,18 +1,19 @@
 # Comparing candidates
 
-The five eligibility gates, the Pareto frontier, business outcomes, and why there are no prices.
+The six eligibility gates, the Pareto frontier, business outcomes, and why there are no prices.
 
 [< back to the README](../README.md)
 
-## The portfolio: five gates, then a frontier
+## The portfolio: six gates, then a frontier
 
-A candidate is compared only if it opens all five, in order:
+A candidate is compared only if it opens all six, in order:
 
 1. `schema-valid` — the design and its workflow validate
 2. `correctness-exhausted` — the search **finished** rather than running out of budget
 3. `no-violation` — and found nothing
-4. `slo-satisfied` — the **conservative end** of the interval meets every SLO
-5. `business-goals-satisfied` — likewise for the business goals
+4. `performance-calibrated` — a repository model has observed runtime or user performance evidence for every node and link
+5. `slo-satisfied` — the **conservative end** of the interval meets every SLO
+6. `business-goals-satisfied` — likewise for the business goals
 
 Gate 2 precedes gate 3 because "we did not find a problem" and "we finished looking
 and there was no problem" are different claims, and collapsing them produces the
