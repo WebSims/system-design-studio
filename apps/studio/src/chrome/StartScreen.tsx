@@ -21,7 +21,7 @@ import {
   type IconComponent,
 } from "../ui/icons"
 
-/** The loop the product is built around, in the order the brand line says it. */
+/** The loop the product is built around, in the order the brand line says it. The detail is a tooltip. */
 const LOOP: Array<{ icon: IconComponent; label: string; detail: string }> = [
   { icon: PencilIcon, label: "Draw", detail: "the components, the links, the request steps" },
   { icon: PlayIcon, label: "Play", detail: "every order the requests can run in" },
@@ -102,7 +102,7 @@ const RecentStudies = () => {
   if (recent.length === 0) return null
 
   return (
-    <section className="start-section start-recent" aria-label="Recent studies">
+    <section className="start-recent" aria-label="Recent studies">
       <h2 className="start-section-title">
         <HistoryIcon size={14} />
         Continue
@@ -111,11 +111,9 @@ const RecentStudies = () => {
         {recent.map((study) => (
           <li key={study.id}>
             <button className="recent-item" onClick={() => void openStudy(study.id)}>
-              <span className="recent-body">
-                <strong>{study.name}</strong>
-                <span className="recent-meta tnum">
-                  {study.candidateCount} version{study.candidateCount === 1 ? "" : "s"} {"\u00b7"} {relativeTime(study.updatedAt)}
-                </span>
+              <strong>{study.name}</strong>
+              <span className="recent-meta tnum">
+                {study.candidateCount} version{study.candidateCount === 1 ? "" : "s"} {"\u00b7"} {relativeTime(study.updatedAt)}
               </span>
               <ChevronRightIcon size={14} className="recent-chevron" />
             </button>
@@ -188,14 +186,11 @@ export const StartScreen = () => {
           </p>
           <ol className="start-loop" aria-label="How it works">
             {LOOP.map(({ icon: Glyph, label, detail }, index) => (
-              <li key={label}>
+              <li key={label} title={`${label}: ${detail}`}>
                 <span className="loop-glyph">
-                  <Glyph size={15} />
+                  <Glyph size={14} />
                 </span>
-                <span className="loop-body">
-                  <b>{label}</b>
-                  <span>{detail}</span>
-                </span>
+                <b>{label}</b>
                 {index < LOOP.length - 1 && <ArrowRightIcon size={12} className="loop-arrow" aria-hidden="true" />}
               </li>
             ))}
@@ -219,8 +214,9 @@ export const StartScreen = () => {
                   <span className="start-kicker">worked scenario</span>
                 </span>
                 <strong>{scenario.label}</strong>
-                <span className="start-blurb">{scenario.summary}</span>
-                <span className="start-teaches">{scenario.teaches}</span>
+                <span className="start-blurb" title={scenario.teaches}>
+                  {scenario.summary}
+                </span>
                 <span className="start-cta">
                   Open and play the race
                   <ArrowRightIcon size={13} />
@@ -237,8 +233,8 @@ export const StartScreen = () => {
               </span>
               <strong>Let your coding agent draw the current system</strong>
               <span className="start-blurb">
-                Paste one request into a WebMCP-capable agent. It reads the repository, imports the
-                current architecture with a citation per component, and stops.
+                Paste one request into a WebMCP-capable agent. It reads the repository and imports
+                the architecture with a citation per component.
               </span>
               <div className="start-actions">
                 <button className="btn primary with-icon" disabled={copyState === "copying"} onClick={() => void copySelected()}>
@@ -289,29 +285,25 @@ export const StartScreen = () => {
         )}
 
         <footer className="start-scope" aria-label="What this can find">
-          <div className="scope-group">
-            <span className="scope-label finds">
-              <CheckIcon size={12} />
-              Finds
-            </span>
-            <ul className="chip-row" aria-label="Finds">
-              {FINDS.map((item) => (
-                <li key={item} className="chip static">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="scope-group">
-            <span className="scope-label">Not yet</span>
-            <ul className="chip-row" aria-label="Not yet">
-              {NOT_YET.map((item) => (
-                <li key={item} className="chip static muted">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </div>
+          <span className="scope-label finds">
+            <CheckIcon size={12} />
+            Finds
+          </span>
+          <ul className="chip-row" aria-label="Finds">
+            {FINDS.map((item) => (
+              <li key={item} className="chip static">
+                {item}
+              </li>
+            ))}
+          </ul>
+          <span className="scope-label">Not yet</span>
+          <ul className="chip-row" aria-label="Not yet">
+            {NOT_YET.map((item) => (
+              <li key={item} className="chip static muted">
+                {item}
+              </li>
+            ))}
+          </ul>
         </footer>
       </div>
     </div>
