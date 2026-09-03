@@ -27,8 +27,10 @@ design or prove that one is globally best.
 - Approval receipts pinned to both the as-is and experiment revisions; editing either withdraws approval.
 - Read-only implementation handoff with source hints, acceptance criteria, unresolved findings, and a copyable Codex request.
 - Local save, import and export.
-- Pizza scenario is not exposed by the app; the README is its user-facing entry.
-- AI-first empty state; no hardcoded project generator.
+- Retired bundled-demo projects are removed by exact legacy ID and cannot reappear.
+- Two honest start paths: one codebase-reconstruction prompt through WebMCP, or a
+  schema-valid manual canvas with no invented components or assumptions.
+- No empty project switcher or follow-up template gallery in the MVP surface.
 - Canvas topology explorer: search, authored upstream/downstream reach and shortest routes.
 - Exact-ID architecture delta between candidates, with explicit comparison limits.
 

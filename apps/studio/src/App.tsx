@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PRESETS, EXAMPLES } from "@sds/models";
+import { PRESETS } from "@sds/models";
+import { blankDesign } from "@sds/schema";
 import { FlowCanvas } from "./canvas/FlowCanvas";
 import { Inspector } from "./panels/Inspector";
 import { ResultsRail } from "./panels/ResultsRail";
@@ -16,6 +17,7 @@ import { registerWebmcpTools } from "./webmcp/register";
 import { buildCatalog } from "./webmcp/catalog";
 import type { ToolHost } from "./webmcp/tools";
 import { cancelWorker, portfolioInWorker } from "./engine/client";
+import { CODEBASE_PROMPT, CODEBASE_PROMPT_ROUTE } from "./codebase-prompt";
 
 /**
  * The component palette.
@@ -66,163 +68,107 @@ function Palette({ onClose }: { onClose: () => void }) {
   );
 }
 
-function ExampleMenu({ onClose }: { onClose: () => void }) {
-  const load = useStudio((s) => s.loadDesign);
-  return (
-    <div className="palette" onClick={(e) => e.stopPropagation()}>
-      <div className="palette-title">load example</div>
-      {EXAMPLES.map((e) => (
-        <button
-          key={e.id}
-          className="palette-item"
-          onClick={() => {
-            load(e.build());
-            onClose();
-          }}
-        >
-          <span className="palette-body">
-            <span className="palette-label">{e.label}</span>
-            <span className="palette-blurb">{e.blurb}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
+/**
+ * Copy is the only action this prompt takes. The agent remains responsible for deciding which
+ * registered tools to call, and the user can edit the visible request before sending it.
+ */
+async function copyPrompt(prompt: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(prompt);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/**
- * Saved projects. `Study` remains the internal document type, but it is not a user concept.
- */
-function ProjectMenu({ onClose }: { onClose: () => void }) {
-  const openStudy = useStudyStore((s) => s.openStudy);
-  const storedStudies = useStudyStore((s) => s.storedStudies);
-  const currentId = useStudyStore((s) => s.study.id);
-  const [saved, setSaved] = useState<Array<{ id: string; name: string; candidateCount: number }> | null>(null);
-
-  useEffect(() => {
-    void storedStudies().then((list) =>
-      setSaved(list.map((l) => ({ id: l.id, name: l.name, candidateCount: l.candidateCount })))
-    );
-  }, [storedStudies]);
-
+function PromptRoute() {
   return (
-    <div className="palette palette-wide" onClick={(e) => e.stopPropagation()}>
-      <div className="palette-title">projects</div>
-      {saved && saved.length > 0 && (
-        <>
-          <div className="palette-title">saved</div>
-          {saved.map((st) => (
-            <button
-              key={st.id}
-              className="palette-item"
-              disabled={st.id === currentId}
-              onClick={() => {
-                void openStudy(st.id);
-                onClose();
-              }}
-            >
-              <span className="palette-body">
-                <span className="palette-label">
-                  {st.name}
-                  {st.id === currentId && <span className="muted"> &middot; open</span>}
-                </span>
-                <span className="palette-blurb">
-                  {st.candidateCount} candidate{st.candidateCount === 1 ? "" : "s"}
-                </span>
-              </span>
-            </button>
-          ))}
-        </>
-      )}
-      {saved?.length === 0 && <p className="muted">No saved projects yet.</p>}
-    </div>
+    <ol className="prompt-route" aria-label="Create system design from codebase workflow">
+      {CODEBASE_PROMPT_ROUTE.map((step) => (
+        <li key={step}>{step}</li>
+      ))}
+    </ol>
   );
 }
 
 /**
  * What the studio shows before there is anything to show.
  *
- * The app opens empty, so this is the first screen and it has one job: say what to do next. Three
- * routes, in the order they are likely to be wanted -- describe the problem, hand it to an agent,
- * or read an example first. It is not a marketing panel; every line is an action or the reason to
- * take it.
+ * There is deliberately no sample system here. A person either asks the agent to reconstruct the
+ * current codebase through WebMCP or starts with a genuinely empty manual canvas.
  */
-const REPOSITORY_PROMPT =
-  "Inspect this repository and reconstruct its current as-is architecture in System Design Studio. " +
-  "Cite code or configuration for every observed component and connection, label deductions as inferred, " +
-  "and keep unknown production behavior as explicit assumptions. Then create experiments for the highest-risk " +
-  "bottlenecks or concurrency issues and evaluate them. Do not change the code yet.";
-
-function EmptyProject() {
+function EmptyWorkspace() {
   const webmcp = useStudyStore((s) => s.webmcp);
   const addCandidate = useStudyStore((s) => s.addCandidate);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+  const webmcpReady = webmcp.status.includes("tools");
 
-  const copyPrompt = async () => {
-    try {
-      await navigator.clipboard.writeText(REPOSITORY_PROMPT);
-      setCopyState("copied");
-      window.setTimeout(() => setCopyState("idle"), 1800);
-    } catch {
-      setCopyState("failed");
-    }
+  const copySelected = async () => {
+    setCopyState("copying");
+    setCopyState((await copyPrompt(CODEBASE_PROMPT)) ? "copied" : "failed");
+  };
+
+  const startManualDesign = () => {
+    addCandidate({
+      label: "manual design",
+      intent: "Created manually from an empty canvas.",
+      design: blankDesign(),
+      origin: "human",
+    });
   };
 
   return (
     <div className="empty-study">
       <div className="empty-card">
-        <div className="empty-kicker">Architecture twin for your codebase</div>
-        <h1>See the system your code actually builds.</h1>
+        <div className="empty-kicker">System Design Studio</div>
+        <h1>Model a real system.</h1>
         <p className="empty-lede">
-          Ask Codex to inspect a repository. It will map the current architecture with source
-          evidence, then this studio can stress it, expose failure paths, and compare fixes.
+          Ask your coding agent to reconstruct this codebase through WebMCP, or open an empty canvas
+          and draw the architecture yourself. No demo project is loaded.
         </p>
 
-        <ol className="onboarding-steps">
-          <li>
-            <span>01</span>
-            <div><b>Inspect code</b><small>Routes, services, stores, queues, config and deployment.</small></div>
-          </li>
-          <li>
-            <span>02</span>
-            <div><b>Build the as-is twin</b><small>Observed facts stay separate from inference and assumptions.</small></div>
-          </li>
-          <li>
-            <span>03</span>
-            <div><b>Break it safely</b><small>Test load, faults and races before changing production code.</small></div>
-          </li>
-        </ol>
-
         <div className="starter-prompt">
-          <span>Repository handoff prompt</span>
-          <p>{REPOSITORY_PROMPT}</p>
+          <div className="starter-prompt-head">
+            <span>Paste into your agent</span>
+            <strong>Create system design from codebase</strong>
+          </div>
+          <p>{CODEBASE_PROMPT}</p>
+          <PromptRoute />
         </div>
 
         <div className="empty-actions">
-          <button className="btn primary" onClick={() => void copyPrompt()}>
-            {copyState === "copied" ? "Prompt copied" : copyState === "failed" ? "Copy unavailable" : "Copy agent prompt"}
-          </button>
           <button
-            className="btn"
-            onClick={() => {
-              const example = EXAMPLES[0];
-              if (!example) return;
-              addCandidate({
-                label: example.label,
-                intent: `Worked example: ${example.blurb}`,
-                design: example.build(),
-                origin: "human",
-              });
-            }}
+            className="btn primary"
+            disabled={copyState === "copying"}
+            onClick={() => void copySelected()}
           >
-            Explore worked example
+            {copyState === "copying"
+              ? "Copying…"
+              : copyState === "copied"
+                ? "Prompt copied"
+                : copyState === "failed"
+                  ? "Copy unavailable"
+                  : "Copy agent prompt"}
+          </button>
+          <button className="btn manual-design-action" onClick={startManualDesign}>
+            Design manually
           </button>
         </div>
+        <div className="empty-action-help">
+          <span className="copy-feedback" aria-live="polite">
+            {copyState === "copied"
+              ? "Ready to paste. You can edit the request before sending."
+              : copyState === "failed"
+                ? "Select the visible prompt and copy it manually."
+                : "The prompt is visible and editable after you paste it."}
+          </span>
+          <span>Manual design starts with an empty canvas; add components from the toolbar.</span>
+        </div>
 
-        <p className="muted empty-agent">
-          {webmcp.status.includes("tools")
-            ? "Codex is connected. It can write the model; you approve what becomes real."
-            : "Open this page in Codex's browser to expose the studio tools."}
+        <p className={`muted empty-agent ${webmcpReady ? "ready" : ""}`}>
+          {webmcpReady
+            ? `WebMCP is ready · ${webmcp.status} · the agent can write the model, not approve it.`
+            : "Open this page beside a WebMCP-capable coding agent to expose the Studio tools."}
         </p>
       </div>
     </div>
@@ -247,7 +193,7 @@ function ViewTabs() {
   const view = useStudyStore((s) => s.view);
   const setView = useStudyStore((s) => s.setView);
   return (
-    <nav className="tabs" aria-label="Project views">
+    <nav className="tabs" aria-label="Design views">
       {VIEWS.map((v) => (
         <button
           key={v.id}
@@ -271,7 +217,8 @@ function Topbar() {
   const persistence = useStudyStore((s) => s.persistence);
   const webmcp = useStudyStore((s) => s.webmcp);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [menu, setMenu] = useState<"palette" | "examples" | "projects" | "activity" | null>(null);
+  const [menu, setMenu] = useState<"palette" | "activity" | null>(null);
+  const hasCandidates = study.candidates.length > 0;
   const webmcpReady = webmcp.status.includes("tools");
   const activeCandidate =
     study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ??
@@ -313,7 +260,7 @@ function Topbar() {
             <div className="brand-sub">Code → model → test → code</div>
           </div>
         </div>
-        <ViewTabs />
+        {hasCandidates ? <ViewTabs /> : null}
         <div className="tb-spacer" />
         <div className="topbar-status">
           {study.candidates.length > 0 && (
@@ -340,7 +287,7 @@ function Topbar() {
               }}
             >
               <span className={`status-dot ${webmcpReady ? "ready" : ""}`} />
-              {webmcpReady ? "Codex ready" : `Codex ${webmcp.status}`}
+              {webmcpReady ? "WebMCP ready" : `WebMCP ${webmcp.status}`}
             </button>
             {menu === "activity" && <ActivityLog onClose={() => setMenu(null)} />}
           </div>
@@ -348,51 +295,23 @@ function Topbar() {
       </div>
 
       <div className="topbar-secondary">
-        <div className="tb-group">
-          <div className="menu-anchor">
-            <button
-              className="btn"
-              aria-expanded={menu === "projects"}
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenu(menu === "projects" ? null : "projects");
-              }}
-            >
-              Projects
-            </button>
-            {menu === "projects" && <ProjectMenu onClose={() => setMenu(null)} />}
+        {hasCandidates ? (
+          <div className="tb-group">
+            <div className="menu-anchor">
+              <button
+                className="btn"
+                aria-expanded={menu === "palette"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenu(menu === "palette" ? null : "palette");
+                }}
+              >
+                Add component
+              </button>
+              {menu === "palette" && <Palette onClose={() => setMenu(null)} />}
+            </div>
           </div>
-          {study.candidates.length > 0 && (
-            <>
-              <div className="menu-anchor">
-                <button
-                  className="btn"
-                  aria-expanded={menu === "palette"}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMenu(menu === "palette" ? null : "palette");
-                  }}
-                >
-                  Add component
-                </button>
-                {menu === "palette" && <Palette onClose={() => setMenu(null)} />}
-              </div>
-              <div className="menu-anchor">
-                <button
-                  className="btn"
-                  aria-expanded={menu === "examples"}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMenu(menu === "examples" ? null : "examples");
-                  }}
-                >
-                  Examples
-                </button>
-                {menu === "examples" && <ExampleMenu onClose={() => setMenu(null)} />}
-              </div>
-            </>
-          )}
-        </div>
+        ) : null}
 
         {study.repository && (
           <div
@@ -412,9 +331,11 @@ function Topbar() {
         <div className="tb-spacer" />
 
         <div className="tb-group file-actions">
-          <button className="btn" onClick={download}>
-            Export
-          </button>
+          {hasCandidates ? (
+            <button className="btn" onClick={download}>
+              Export
+            </button>
+          ) : null}
           <button className="btn" onClick={() => fileRef.current?.click()}>
             Import
           </button>
@@ -441,7 +362,7 @@ function Topbar() {
 
 function DesignView() {
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
-  if (!hasCandidates) return <EmptyProject />;
+  if (!hasCandidates) return <EmptyWorkspace />;
   return (
     <>
       <ResultsRail />
@@ -568,6 +489,7 @@ function useWebmcp() {
 export function App() {
   const view = useStudyStore((s) => s.view);
   const error = useStudyStore((s) => s.error);
+  const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
   useWebmcp();
 
   useEffect(() => {
@@ -577,7 +499,7 @@ export function App() {
   return (
     <div className={`shell shell-${view}`}>
       <Topbar />
-      <CandidateBar />
+      {hasCandidates ? <CandidateBar /> : null}
       {error && <div className="banner banner-error">{error}</div>}
       {view === "design" && <DesignView />}
       {view === "correctness" && <CorrectnessView />}

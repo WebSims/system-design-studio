@@ -4,9 +4,11 @@ import {
   CorrectnessContractSchema,
   StudySchema,
   applyStudyContract,
+  blankDesign,
   blankStudy,
   clearStudyResults,
   studyContractLock,
+  validateDesign,
   validateStudy,
   type Study,
 } from "@sds/schema";
@@ -70,6 +72,27 @@ describe("the empty study", () => {
     const study = blankStudy({ id: "s1", name: "seats", problem: "sell each seat once" });
     expect(study.name).toBe("seats");
     expect(study.problem).toBe("sell each seat once");
+  });
+});
+
+describe("the manual design", () => {
+  it("starts as a schema-valid canvas without inventing a system", () => {
+    const design = blankDesign();
+    expect(design.name).toBe("manual design");
+    expect(design.nodes).toEqual([]);
+    expect(design.edges).toEqual([]);
+    expect(design.classes).toEqual([]);
+    expect(design.workflow).toBeNull();
+    expect(design.slo).toEqual({ p99LatencyMs: null, maxErrorRatePct: null });
+    expect(design.scenario).toEqual({
+      durationSec: 1200,
+      warmupSec: 200,
+      seed: 1,
+      traceLimit: 5000,
+    });
+    expect(validateDesign(design)).toEqual([
+      expect.objectContaining({ severity: "warning", code: "no-client" }),
+    ]);
   });
 });
 

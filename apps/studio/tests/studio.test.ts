@@ -383,6 +383,15 @@ describe("nothing in the app is wired to one domain", () => {
     expect(importers).toEqual([]);
   });
 
+  it("offers one codebase prompt and a manual canvas instead of empty product chrome", () => {
+    const app = appSources().find((file) => file.path === "App.tsx")?.text ?? "";
+    expect(app).not.toMatch(/\bEXAMPLES\b|ExampleMenu|AgentPromptMenu|ProjectMenu/);
+    expect(app).toContain("CODEBASE_PROMPT");
+    expect(app).toContain("Design manually");
+    expect(app).toContain("blankDesign");
+    expect(app).toContain("WebMCP");
+  });
+
   it("creates an empty study with no invariants, candidates or domain assumptions", () => {
     const study = blankStudy({ id: "s1", name: "ticket sales", problem: "each seat once" });
     expect(study.candidates).toEqual([]);

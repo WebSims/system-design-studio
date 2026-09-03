@@ -3,6 +3,7 @@ import { produce } from "immer";
 import { previewDesign, type DesignPreview } from "@sds/analytic";
 import type { RunResult } from "@sds/core";
 import {
+  blankDesign,
   DesignSchema,
   migrateAndParse,
   validateDesign,
@@ -133,7 +134,7 @@ function activeDesign(): Design {
   const study = useStudyStore.getState().study;
   const active =
     study.candidates.find((c) => c.id === study.activeCandidateId) ?? study.candidates[0];
-  return active ? active.design : DesignSchema.parse({ version: 6, nodes: [], edges: [], scenario: {}, slo: {} });
+  return active ? active.design : blankDesign();
 }
 
 /**

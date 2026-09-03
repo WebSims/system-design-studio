@@ -135,12 +135,19 @@ async function text(selector: string): Promise<string> {
 
 /** Import the README's development scenario without exposing it in the application UI. */
 async function importDevelopmentScenario(): Promise<void> {
-  const json = JSON.stringify(JSON.stringify(pizzaStudy()));
+  const fixture = {
+    ...pizzaStudy(),
+    // The retired product-demo id is deliberately not persisted. This remains a private browser
+    // fixture and reload coverage still exercises an ordinary user-project identity.
+    id: "browser-acceptance-fixture",
+    name: "browser acceptance fixture",
+  };
+  const json = JSON.stringify(JSON.stringify(fixture));
   await evaluate(`(() => {
     const input = document.querySelector('input[type="file"]');
     if (!input) throw new Error("no project import input");
     const transfer = new DataTransfer();
-    transfer.items.add(new File([${json}], "pizza.sds-project.json", { type: "application/json" }));
+    transfer.items.add(new File([${json}], "browser-fixture.sds-project.json", { type: "application/json" }));
     Object.defineProperty(input, "files", { value: transfer.files, configurable: true });
     input.dispatchEvent(new Event("change", { bubbles: true }));
   })()`);
@@ -165,18 +172,29 @@ const checks: Check[] = [
     // The product's actual first screen. It used to boot into the pizza example, which taught that
     // the problem ships with the tool and only the architecture is yours -- backwards, since the
     // problem is the input.
-    name: "it opens on an empty project, and says what to do next",
+    name: "it offers codebase reconstruction and a working manual canvas",
     async run() {
       const chips = await count(".candidate-chip:not(.candidate-add)");
       if (chips !== 0) return `expected an empty project, found ${chips} candidate chips`;
       await waitFor(`document.querySelector(".empty-study")`, "the empty state");
       const body = await text(".empty-card");
-      // An empty state that only says "nothing here" leaves the reader to guess which of four
-      // views fixes it.
-      if (!/describe (the )?(real )?problem/i.test(body)) {
-        return `the empty state offers no next step: ${body.slice(0, 120)}`;
+      if (!/create system design from codebase/i.test(body)) return "the codebase prompt is missing";
+      if (!/coding agent/i.test(body)) return "the empty state never says that a coding agent does the work";
+      if (!/webmcp/i.test(body)) return "the empty state never names the shared WebMCP path";
+      if ((await count(".starter-prompt")) !== 1) return "expected exactly one MVP agent prompt";
+      const topbar = await text(".topbar");
+      if (/projects|agent prompts/i.test(topbar)) return "empty project controls remain in the top bar";
+      if (/pizza|worked example/i.test(body)) return "the empty state still offers a bundled example";
+
+      await click(".manual-design-action");
+      await waitFor(
+        `document.querySelectorAll(".candidate-chip:not(.candidate-add)").length === 1`,
+        "the manual design candidate"
+      );
+      if ((await count(".react-flow__node")) !== 0) return "the manual canvas invented components";
+      if ((await count("button")) === 0 || !/add component/i.test(await text(".topbar"))) {
+        return "the manual canvas has no way to add its first component";
       }
-      if (!/codex/i.test(body)) return "the empty state never says that Codex can do this";
       return null;
     },
   },
@@ -467,12 +485,12 @@ const checks: Check[] = [
     name: "the agent surface reports its own availability rather than failing silently",
     async run() {
       const label = await evaluate<string>(`
-        [...document.querySelectorAll(".btn")].map((b) => b.textContent.trim()).find((t) => t.startsWith("Codex ")) ?? ""
+        [...document.querySelectorAll(".btn")].map((b) => b.textContent.trim()).find((t) => t.startsWith("WebMCP ")) ?? ""
       `);
       if (!label) return "no agent status is shown anywhere";
       // Either a tool count, or a stated reason. Both are acceptable; silence is not.
-      if (!/Codex (ready|unsupported|failed|idle)/.test(label)) {
-        return `Codex status is uninformative: "${label}"`;
+      if (!/WebMCP (ready|unsupported|failed|idle|unknown)/.test(label)) {
+        return `WebMCP status is uninformative: "${label}"`;
       }
       return null;
     },

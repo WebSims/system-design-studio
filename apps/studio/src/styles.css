@@ -2169,6 +2169,7 @@ summary:focus-visible {
 
 .empty-study {
   grid-column: 1 / -1;
+  grid-row: 3;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2182,7 +2183,7 @@ summary:focus-visible {
 }
 
 .empty-card {
-  width: min(860px, 100%);
+  width: min(920px, 100%);
   text-align: left;
 }
 
@@ -2228,48 +2229,6 @@ summary:focus-visible {
   line-height: 1.65;
 }
 
-.onboarding-steps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: 24px 0 14px;
-  padding: 0;
-  list-style: none;
-}
-
-.onboarding-steps li {
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  gap: 10px;
-  min-height: 96px;
-  padding: 13px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-2);
-}
-
-.onboarding-steps li > span {
-  color: var(--accent);
-  font: 600 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.onboarding-steps b,
-.onboarding-steps small {
-  display: block;
-}
-
-.onboarding-steps b {
-  margin-bottom: 4px;
-  color: var(--fg);
-  font-size: 12px;
-}
-
-.onboarding-steps small {
-  color: var(--fg-3);
-  font-size: 10.5px;
-  line-height: 1.45;
-}
-
 .starter-prompt {
   margin: 0 auto 18px;
   padding: 16px 18px;
@@ -2280,31 +2239,96 @@ summary:focus-visible {
   text-align: left;
 }
 
-.starter-prompt > span {
-  display: block;
-  margin-bottom: 7px;
+.starter-prompt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.starter-prompt-head > span {
   color: var(--fg-3);
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
 }
 
+.starter-prompt-head > strong {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 650;
+}
+
 .starter-prompt p {
   margin: 0;
   color: var(--fg);
-  font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.prompt-route {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 15px 0 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  list-style: none;
+  counter-reset: prompt-step;
+}
+
+.prompt-route li {
+  position: relative;
+  min-height: 48px;
+  padding: 9px 8px 9px 29px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  font-size: 9.5px;
+  line-height: 1.35;
+  counter-increment: prompt-step;
+}
+
+.prompt-route li::before {
+  content: counter(prompt-step);
+  position: absolute;
+  top: 9px;
+  left: 10px;
+  color: var(--accent);
+  font: 650 9px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .empty-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   justify-content: center;
   margin-bottom: 22px;
 }
 
 .empty-actions .btn {
-  min-width: 120px;
+  min-width: 150px;
+  min-height: 44px;
+}
+
+.empty-action-help {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: -14px 0 22px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.copy-feedback {
+  min-height: 17px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.5;
 }
 
 .empty-agent {
@@ -2323,17 +2347,11 @@ summary:focus-visible {
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  background: var(--fg-3);
+}
+
+.empty-agent.ready::before {
   background: var(--ok);
-}
-
-.empty-guided {
-  position: relative;
-  width: min(560px, 100%);
-}
-
-.empty-guided .palette {
-  position: static;
-  width: 100%;
 }
 
 /* ---------- topology explorer ---------- */
@@ -3191,14 +3209,6 @@ summary:focus-visible {
     overscroll-behavior-inline: contain;
   }
 
-  .onboarding-steps {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .onboarding-steps li {
-    min-height: 0;
-  }
-
   .empty-study {
     justify-content: flex-start;
     padding: 36px 16px;
@@ -3207,6 +3217,21 @@ summary:focus-visible {
   .empty-actions {
     align-items: stretch;
     flex-direction: column;
+    text-align: center;
+  }
+
+  .empty-action-help {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .prompt-route {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .starter-prompt-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
   }
 
   .topology-divider,

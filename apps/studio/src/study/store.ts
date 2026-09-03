@@ -32,7 +32,9 @@ import {
 import {
   loadStudy,
   listStudies,
+  isRetiredDevelopmentStudyId,
   readActiveStudyId,
+  removeRetiredDevelopmentStudies,
   saveStudy,
   writeActiveStudyId,
   importStudy,
@@ -275,7 +277,8 @@ export const useStudyStore = create<StudioState>((set, get) => {
    * An empty study, not an example.
    *
    * The tool is for the user's problem. Booting into a pizza giveaway would teach that the
-   * problem ships with the product, and the examples menu covers the demo case in one click.
+   * problem ships with the product. The MVP starts either from repository reconstruction or a
+   * manual empty canvas.
    */
   const initial = blankStudy({ id: `study-${Date.now().toString(36)}` });
 
@@ -560,10 +563,23 @@ if (typeof window !== "undefined") {
   });
 }
 
-/** Restore whichever study was open. With nothing saved, the empty study stands. */
+/**
+ * Restore whichever real study was open. With nothing saved, the empty study stands.
+ *
+ * Old builds persisted their bundled demo as if it were the user's project. Retire that exact id
+ * before restore so upgrading cannot bring the demo back into the repository-first experience.
+ */
 export async function restoreStudy(): Promise<void> {
   const id = readActiveStudyId();
-  if (!id) return;
+  const retiredActive = id !== null && isRetiredDevelopmentStudyId(id);
+  if (retiredActive) writeActiveStudyId(null);
+  try {
+    await removeRetiredDevelopmentStudies();
+  } catch {
+    // Listing and loading also filter retired ids. Cleanup failure must not prevent the app from
+    // opening when IndexedDB is unavailable; it can be retried on the next launch.
+  }
+  if (!id || retiredActive) return;
   const result = await loadStudy(id);
   if (result.status === "ok") {
     useStudyStore.getState().loadStudyDocument(result.study);

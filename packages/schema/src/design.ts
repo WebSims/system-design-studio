@@ -1086,6 +1086,26 @@ export const DesignSchema = z.object({
 });
 export type Design = z.infer<typeof DesignSchema>;
 
+/**
+ * A schema-valid empty canvas for a person who wants to draw from scratch.
+ *
+ * This is intentionally not a sample topology: it contains no client, service, data store, SLO,
+ * or domain assumption. Validation reports the missing client as a warning while the design is
+ * being assembled, which lets the editor stay usable from the first component onward.
+ */
+export function blankDesign(input: { name?: string } = {}): Design {
+  return DesignSchema.parse({
+    version: DESIGN_SCHEMA_VERSION,
+    name: input.name ?? "manual design",
+    nodes: [],
+    edges: [],
+    classes: [],
+    scenario: {},
+    slo: {},
+    workflow: null,
+  });
+}
+
 /** The implicit class used when a design declares none. */
 export const DEFAULT_CLASS: RequestClass = {
   id: "default",

@@ -8,9 +8,9 @@ pnpm install
 pnpm dev        # localhost:5173
 ```
 
-The app opens empty. Open it in Codex's browser and ask Codex to inspect the repository
-in its workspace. Codex reads the source with its normal repository tools, then uses
-[WebMCP](https://developers.openai.com/codex/webmcp) to put the as-is architecture,
+The app opens empty. Keep it open beside a WebMCP-capable coding agent and ask the agent
+to inspect the repository in its workspace. The agent reads source with its normal repository tools, then uses
+[WebMCP](https://learn.chatgpt.com/docs/webmcp) to put the as-is architecture,
 source evidence, experiments, and measured results onto the same live canvas you see.
 
 The intended round trip is:
@@ -37,7 +37,8 @@ coordinates the visual model; Codex's normal sandbox and approvals govern code c
 | **Comparison** | Shows an exact authored delta, filters broken designs, then presents Pareto trade-offs. |
 | **Human approval** | AI cannot approve or delete; approval is pinned to exact baseline and experiment revisions. |
 | **Implementation handoff** | A read-only receipt carries before/after values, evidence, acceptance criteria, and unresolved findings back to Codex. |
-| **Local storage** | Projects stay in your browser. |
+| **Focused onboarding** | Start with one codebase-reconstruction prompt or a genuinely empty manual canvas. |
+| **Local storage** | Real projects stay in your browser; the retired bundled demo is removed on upgrade. |
 
 ## What it will and will not say
 
@@ -50,32 +51,27 @@ coordinates the visual model; Codex's normal sandbox and approvals govern code c
 Out of budget reports `INCONCLUSIVE`, never good news. A false safe verdict is the one
 failure that looks exactly like success.
 
-## Demo
+## Start a design
 
-```bash
-pnpm sim -- --check --study-example limited-free-pizza      # find the race
-pnpm sim -- --portfolio --study-example limited-free-pizza  # compare seven designs
-```
+The MVP has two explicit entry paths:
 
-The pizza scenario is a development fixture: seven architectures, four broken on
-purpose. It is not loaded automatically and is not used to create repository models.
-Real as-is designs come from repository inspection through WebMCP.
+- **Create system design from codebase** copies one complete request for the coding
+  agent. It asks the agent to inspect the repository, define the system yardstick,
+  import an evidence-backed as-is design through WebMCP, and stop before redesigning
+  or editing code.
+- **Design manually** opens a blank canvas with no invented components or assumptions.
+  Add the first component from the toolbar and build the design directly.
 
-```
-VIOLATED   26 states, 132 transitions, 9ms
-the remaining count never goes below zero
-4 transitions, no injected fault
+Follow-up work—risk analysis, incident modelling, approval, and implementation—is a
+conversation about the current design, not a gallery of startup templates. See the
+[MVP workflow](docs/usage.md). The old pizza project is not product content; existing
+copies with its exact legacy demo ID are retired from browser storage. Internal engine
+tests may still use domain fixtures.
 
-  a1                          a2
-  read into "left"
-    saw left = 1
-                              read into "left"
-                                saw left = 1
-  add to "inventory"
-    inventory: 1 -> 0
-                              add to "inventory"
-                                inventory: 0 -> -1
-```
+The document model still calls the saved unit a *study* (and older code may say
+*project*) because it keeps the architecture, workload, SLOs, invariants, candidates,
+and results together. The MVP does not show a project switcher until there is a real
+multi-project workflow to switch between.
 
 ## Views
 
@@ -103,7 +99,7 @@ pnpm sim        # CLI: --check, --portfolio
 - [Engine](docs/engine.md) — components, uncertainty, the analyzer
 - [Testing](docs/testing.md) — how to check the engine yourself
 - [Design rules](docs/design-rules.md) — rules it holds itself to, and what is out of scope
-- [Example](docs/examples.md) — 200 pizzas, seven ways
+- [MVP workflow](docs/usage.md) — codebase reconstruction, manual design, and follow-up work
 - [Archify review](docs/archify-review.md) — what we adopted, adapted and deliberately left out
 
 ## Layout
@@ -116,6 +112,6 @@ packages/core       the simulator
 packages/analytic   closed-form solver, validates the simulator
 packages/study      gates, resource accounting, Pareto frontier
 packages/analyze    knobs, knees, sensitivity
-packages/models     presets and examples
+packages/models     cited presets and internal engine fixtures
 apps/studio         React + React Flow, engine in a worker
 ```

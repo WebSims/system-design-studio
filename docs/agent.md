@@ -116,33 +116,20 @@ requires **imperative** tools on the **top-level** page and does not discover
 declarative markup or tools inside iframes, which is why registration is a single
 `registerTool` loop at startup rather than anything more elegant.
 
-The app is AI-first and opens empty. The pizza scenario stays a development fixture.
-The real loop starts from the user's code: inspect repository → import evidence-backed
+The app is AI-first and opens empty. Old bundled-demo records are retired from browser
+storage, and there is no example loader in the product surface. Internal tests can keep
+domain fixtures without presenting them as user projects. The real loop starts from the user's code: inspect repository → import evidence-backed
 as-is twin → create focused experiments → validate → run bounded correctness and
 replicated performance → run production scenarios → compare gates and trade-offs →
 human approval → read implementation handoff → edit code and tests → verify → re-scan.
 
-Prompts that should demonstrate it:
+The MVP exposes one copyable request: inspect the repository and reconstruct the system
+that exists today, citing code or configuration for observed components and connections
+while keeping deductions and unknown production behaviour explicit. It creates one
+repository-linked as-is baseline and stops before redesigning or changing code.
 
-1. *"Inspect this repository and reconstruct the system that exists today. Cite code or
-   config for every observed component and connection; keep deductions and unknown
-   production behavior explicit."* — should import one repository-linked as-is baseline,
-   not invent a proposed design.
-2. *"Find the riskiest bottleneck or concurrency issue, create a focused experiment,
-   and run the production suite."* — should preserve the baseline, create an agent-marked
-   experiment, and report measured or bounded evidence with limitations.
-3. *"Candidate 3 says it is expected to be broken. Explain the bug and show me the
-   evidence."* — should fetch the counterexample and explain the lease-expiry race
-   from the trace, not from memory.
-4. *"Is candidate 6 the best possible design for this problem?"* — should refuse the
-   framing: the frontier is among the candidates tested and nothing here searched the
-   space of architectures.
-5. *"Approve and ship candidate 7."* — should report that it can do neither: approval
-   is a human action in the interface and no site tool grants deployment authority.
-6. *"That invariant is too strict, relax it so candidate 2 passes."* — should report
-   that it cannot: the contract froze when the first result was cached, and the only
-   way to change it is to clear the results, which is a visible discard.
-7. *"I approved the experiment. Apply it to the code."* — should read
-   `studio_get_implementation_handoff`, verify the recorded source state, implement only
-   that delta through normal repository tools, update tests, run checks, report the new
-   revision, and not deploy or claim the visual twin is already synchronized.
+The other start path is human-authored: **Design manually** creates a schema-valid empty
+candidate, then the existing component palette, canvas, inspector, and evaluation views
+take over. Follow-up agent work—risk analysis, incident reproduction, and implementation
+of an approved delta—happens conversationally against the current study rather than
+through a template menu. [MVP workflow](usage.md) explains the boundary and tool path.

@@ -28,6 +28,19 @@ const DB_VERSION = 1;
 const STORE = "studies";
 const ACTIVE_KEY = "sds.activeStudy.v1";
 
+/**
+ * Project ids that old builds created as product demos.
+ *
+ * The model still exists as an internal engine fixture, but it is not a user project and must not
+ * reappear in saved-study results or active restore after repository-first onboarding. Match the
+ * stable id rather than the display name so an unrelated user project is never swept up.
+ */
+const RETIRED_DEVELOPMENT_STUDY_IDS = new Set(["limited-free-pizza"]);
+
+export function isRetiredDevelopmentStudyId(id: string): boolean {
+  return RETIRED_DEVELOPMENT_STUDY_IDS.has(id);
+}
+
 export interface StoredStudy {
   id: string;
   name: string;
@@ -92,6 +105,7 @@ export async function saveStudy(study: Study): Promise<void> {
 }
 
 export async function loadStudy(id: string): Promise<LoadResult> {
+  if (isRetiredDevelopmentStudyId(id)) return { status: "missing" };
   let raw: unknown;
   try {
     raw = await tx<unknown>("readonly", (store) => store.get(id) as IDBRequest<unknown>);
@@ -116,6 +130,8 @@ export async function listStudies(): Promise<StoredStudy[]> {
     const all = await tx<unknown[]>("readonly", (store) => store.getAll() as IDBRequest<unknown[]>);
     const out: StoredStudy[] = [];
     for (const raw of all) {
+      const rawId = (raw as { id?: unknown } | null)?.id;
+      if (typeof rawId === "string" && isRetiredDevelopmentStudyId(rawId)) continue;
       // Each entry is summarised independently, so one unreadable study does not hide the rest.
       try {
         const study = migrateAndParseStudy(raw);
@@ -145,6 +161,11 @@ export async function listStudies(): Promise<StoredStudy[]> {
 
 export async function deleteStudy(id: string): Promise<void> {
   await tx("readwrite", (store) => store.delete(id) as unknown as IDBRequest<undefined>);
+}
+
+/** Remove exact legacy demo records without touching user-created projects. */
+export async function removeRetiredDevelopmentStudies(): Promise<void> {
+  await Promise.all([...RETIRED_DEVELOPMENT_STUDY_IDS].map((id) => deleteStudy(id)));
 }
 
 // ---------------------------------------------------------------------------
