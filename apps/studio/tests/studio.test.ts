@@ -398,11 +398,15 @@ describe("nothing in the app is wired to one domain", () => {
   it("offers the codebase prompt, a manual canvas and worked scenarios on the start screen", () => {
     const app = appSources().find((file) => file.path === "App.tsx")?.text ?? "";
     expect(app).not.toMatch(/ExampleMenu|AgentPromptMenu|ProjectMenu/);
-    expect(app).toContain("CODEBASE_PROMPT");
-    expect(app).toContain("Design manually");
-    expect(app).toContain("DEMO_SCENARIOS");
-    expect(app).toContain("blankDesign");
-    expect(app).toContain("WebMCP");
+    const start = appSources().find((file) => file.path === "chrome/StartScreen.tsx")?.text ?? "";
+    expect(start).toContain("CODEBASE_PROMPT");
+    expect(start).toContain("Design manually");
+    expect(start).toContain("DEMO_SCENARIOS");
+    expect(start).toContain("blankDesign");
+    expect(start).toContain("WebMCP");
+    // An agent at work with nothing drawn yet is told so, and told which step draws.
+    expect(start).toContain("Nothing is drawn yet");
+    expect(start).toContain("studio_create_candidate");
   });
 
   it("creates an empty study with no invariants, candidates or domain assumptions", () => {

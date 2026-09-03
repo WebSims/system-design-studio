@@ -502,6 +502,24 @@ function define<S extends z.ZodTypeAny>(spec: ToolSpec<S>, host: ToolHost): Tool
 }
 
 // ---------------------------------------------------------------------------
+// the drawing
+// ---------------------------------------------------------------------------
+
+/**
+ * An experiment in a project that has no as-is baseline yet is "the drawing": the architecture
+ * being put on the canvas one patch at a time, which the import will seal. Experiments forked
+ * from a baseline are redesigns and get no such hint.
+ */
+const isDrawing = (study: Study, candidate: Candidate): boolean =>
+  candidate.role === "experiment" && !study.candidates.some((c) => c.role === "baseline");
+
+/** The next step while drawing, with the ids and revision filled in so nothing has to be re-read. */
+const drawingNext = (candidate: Candidate): string =>
+  `Keep drawing with studio_apply_architecture_patch { candidateId: "${candidate.id}", expectedRevision: ${candidate.revision} }: ` +
+  "add-node per component (x and y optional), add-edge once both ends exist, set-workflow if the code shows the request steps; " +
+  `each accepted patch appears on the canvas. When complete, seal it with studio_import_architecture { fromCandidateId: "${candidate.id}", expectedRevision, repository, evidence }.`;
+
+// ---------------------------------------------------------------------------
 // the tools
 // ---------------------------------------------------------------------------
 
@@ -832,6 +850,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             designHash: contentHash(result.candidate.design),
             changed: result.changed,
             evidenceCount: result.candidate.evidence.length,
+            ...(isDrawing(host.getStudy(), result.candidate) ? { next: drawingNext(result.candidate) } : {}),
           };
         },
       },
@@ -927,6 +946,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             designHash: contentHash(candidate.design),
             note:
               "This candidate is isolated and marked as agent-authored in the interface. Promoting it is a human-only action.",
+            ...(isDrawing(host.getStudy(), candidate) ? { next: drawingNext(candidate) } : {}),
           };
         },
       },
