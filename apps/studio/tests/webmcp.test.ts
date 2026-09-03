@@ -1006,8 +1006,15 @@ describe("the activity log", () => {
 
 describe("promotion and deletion are human-only", () => {
   it("promotion is reachable only through the mutation module, not through any tool", () => {
-    const promoted = promoteCandidate(pizzaStudy(), "c7-atomic-decrement-unique-claim");
+    const promoted = promoteCandidate(pizzaStudy(), "c7-atomic-decrement-unique-claim", 1234);
     expect(promoted.promotedCandidateId).toBe("c7-atomic-decrement-unique-claim");
+    expect(promoted.approval).toEqual({
+      candidateId: "c7-atomic-decrement-unique-claim",
+      candidateRevision: 0,
+      baselineCandidateId: null,
+      baselineRevision: null,
+      approvedAt: 1234,
+    });
     const toolNames = buildTools(host).map((t) => t.name);
     expect(toolNames).not.toContain("studio_promote_candidate");
   });
@@ -1042,14 +1049,14 @@ describe("promotion and deletion are human-only", () => {
 
   it("a human may edit the promoted candidate; an agent may not", () => {
     const study = promoteCandidate(pizzaStudy(), "c1-check-then-write");
-    expect(() =>
-      replaceCandidateDraft(study, {
-        candidateId: "c1-check-then-write",
-        expectedRevision: 0,
-        design: study.candidates[6]!.design,
-        by: "human",
-      })
-    ).not.toThrow();
+    const humanEdit = replaceCandidateDraft(study, {
+      candidateId: "c1-check-then-write",
+      expectedRevision: 0,
+      design: study.candidates[6]!.design,
+      by: "human",
+    });
+    expect(humanEdit.study.promotedCandidateId).toBeNull();
+    expect(humanEdit.study.approval).toBeNull();
     expect(() =>
       replaceCandidateDraft(study, {
         candidateId: "c1-check-then-write",
@@ -1058,6 +1065,85 @@ describe("promotion and deletion are human-only", () => {
         by: "agent",
       })
     ).toThrow(/promoted candidate/);
+  });
+
+  it("pins the as-is revision and withdraws approval when that baseline changes", () => {
+    const imported = importRepositoryArchitecture(blankStudy({ id: "repo-study" }), {
+      repository: {
+        name: "checkout",
+        rootHint: "services/checkout",
+        branch: "main",
+        revision: "abc123",
+        dirty: false,
+        scope: ["src"],
+        capturedAt: 100,
+      },
+      label: "As-is",
+      design: pizzaStudy().candidates[0]!.design,
+      origin: "human",
+    });
+    const experiment = createCandidate(imported.study, {
+      label: "Proposed",
+      copyFrom: imported.candidate.id,
+      origin: "human",
+    });
+    const approved = promoteCandidate(experiment.study, experiment.candidate.id, 200);
+
+    expect(approved.approval).toMatchObject({
+      candidateId: experiment.candidate.id,
+      candidateRevision: 0,
+      baselineCandidateId: imported.candidate.id,
+      baselineRevision: 0,
+    });
+
+    const baselineEdit = replaceCandidateDraft(approved, {
+      candidateId: imported.candidate.id,
+      expectedRevision: 0,
+      design: imported.candidate.design,
+      by: "human",
+    });
+    expect(baselineEdit.study.promotedCandidateId).toBeNull();
+    expect(baselineEdit.study.approval).toBeNull();
+  });
+
+  it("does not let an agent change either side of an approved comparison", () => {
+    const imported = importRepositoryArchitecture(blankStudy({ id: "repo-study" }), {
+      repository: {
+        name: "checkout",
+        rootHint: "services/checkout",
+        branch: "main",
+        revision: "abc123",
+        dirty: false,
+        scope: ["src"],
+        capturedAt: 100,
+      },
+      label: "As-is",
+      design: pizzaStudy().candidates[0]!.design,
+      origin: "human",
+    });
+    const experiment = createCandidate(imported.study, {
+      label: "Proposed",
+      copyFrom: imported.candidate.id,
+      origin: "human",
+    });
+    const approved = promoteCandidate(experiment.study, experiment.candidate.id);
+
+    expect(() =>
+      attachArchitectureEvidence(approved, {
+        candidateId: imported.candidate.id,
+        expectedRevision: imported.candidate.revision,
+        evidence: [],
+        by: "agent",
+      })
+    ).toThrow(/human-approved comparison/);
+    expect(() =>
+      importRepositoryArchitecture(approved, {
+        repository: { ...approved.repository!, revision: "def456", capturedAt: 300 },
+        label: "New as-is",
+        design: imported.candidate.design,
+        origin: "agent",
+      })
+    ).toThrow(/human-approved design/);
   });
 
   it("a study round-trips after agent edits, so nothing an agent does corrupts the document", async () => {

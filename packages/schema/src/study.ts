@@ -930,6 +930,34 @@ export type PortfolioResult = z.infer<typeof PortfolioResultSchema>;
 
 export const STUDY_SCHEMA_VERSION = 2 as const;
 
+/**
+ * The exact architecture revisions a person approved.
+ *
+ * `promotedCandidateId` answers which option was chosen. This receipt answers the more important
+ * implementation question: which version of that option was reviewed, and which as-is revision it
+ * was compared with. Keeping both prevents a later edit from silently inheriting an earlier human
+ * decision.
+ */
+export const DesignApprovalSchema = z
+  .object({
+    candidateId: z.string().min(1).max(64),
+    candidateRevision: z.number().int().nonnegative(),
+    baselineCandidateId: z.string().min(1).max(64).nullable().default(null),
+    baselineRevision: z.number().int().nonnegative().nullable().default(null),
+    approvedAt: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((approval, ctx) => {
+    if ((approval.baselineCandidateId === null) !== (approval.baselineRevision === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [approval.baselineCandidateId === null ? "baselineRevision" : "baselineCandidateId"],
+        message: "baseline candidate and revision must either both be present or both be null",
+      });
+    }
+  });
+export type DesignApproval = z.infer<typeof DesignApprovalSchema>;
+
 export const StudySchema = z
   .object({
     version: z.literal(STUDY_SCHEMA_VERSION),
@@ -969,6 +997,8 @@ export const StudySchema = z
      * agent may create, test and argue; it may not decide.
      */
     promotedCandidateId: z.string().nullable().default(null),
+    /** Revision-pinned receipt created by the same human-only promotion action. */
+    approval: DesignApprovalSchema.nullable().default(null),
     createdAt: z.number().int().nonnegative().default(0),
     updatedAt: z.number().int().nonnegative().default(0),
   })
@@ -1206,6 +1236,7 @@ export function clearStudyResults(study: Study, now = Date.now()): Study {
     ...study,
     evaluations: {},
     promotedCandidateId: null,
+    approval: null,
     updatedAt: now,
   });
 }

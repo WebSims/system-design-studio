@@ -137,6 +137,7 @@ describe("the yardstick freezes once results exist", () => {
     expect(cleared.evaluations).toEqual({});
     // A promotion is a decision about results that are being deleted, so it cannot survive them.
     expect(cleared.promotedCandidateId).toBeNull();
+    expect(cleared.approval).toBeNull();
     expect(studyContractLock(cleared).locked).toBe(false);
   });
 });

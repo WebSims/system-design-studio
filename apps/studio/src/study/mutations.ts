@@ -40,6 +40,40 @@ export class MutationRefused extends Error {
   }
 }
 
+/** Follow explicit candidate ancestry to the repository-derived as-is model, if one exists. */
+export function baselineAncestor(study: Study, candidateId: string): Candidate | null {
+  const candidates = new Map(study.candidates.map((candidate) => [candidate.id, candidate]));
+  const seen = new Set<string>();
+  let current = candidates.get(candidateId);
+
+  while (current && !seen.has(current.id)) {
+    if (current.role === "baseline") return current;
+    seen.add(current.id);
+    current = current.basedOnCandidateId
+      ? candidates.get(current.basedOnCandidateId)
+      : undefined;
+  }
+  return null;
+}
+
+function approvalAfterCandidateEdit(
+  study: Study,
+  candidateId: string
+): Pick<Study, "promotedCandidateId" | "approval"> {
+  const promotedBaseline = study.promotedCandidateId
+    ? baselineAncestor(study, study.promotedCandidateId)
+    : null;
+  const invalidatesDecision =
+    study.promotedCandidateId === candidateId ||
+    promotedBaseline?.id === candidateId ||
+    study.approval?.candidateId === candidateId ||
+    study.approval?.baselineCandidateId === candidateId;
+
+  return invalidatesDecision
+    ? { promotedCandidateId: null, approval: null }
+    : { promotedCandidateId: study.promotedCandidateId, approval: study.approval };
+}
+
 export interface CreateCandidateInput {
   label: string;
   intent?: string;
@@ -257,6 +291,7 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
   };
   const next = StudySchema.parse({
     ...study,
+    ...approvalAfterCandidateEdit(study, existing.id),
     candidates: study.candidates.map((c) => (c.id === candidate.id ? candidate : c)),
     updatedAt: Date.now(),
   });
@@ -273,9 +308,19 @@ export function importRepositoryArchitecture(
   study: Study,
   input: ImportRepositoryArchitectureInput
 ): { study: Study; candidate: Candidate } {
+  if (input.origin === "agent" && study.promotedCandidateId !== null) {
+    throw new MutationRefused(
+      "this project has a human-approved design. Import the new source snapshot into a new project, or have a person clear the existing decision first.",
+      "approved-study"
+    );
+  }
   const linked = StudySchema.parse({
     ...study,
     repository: input.repository,
+    // A new source snapshot changes the meaning of "as-is". Any prior decision must be reviewed
+    // against the new baseline rather than silently carried across the import.
+    promotedCandidateId: null,
+    approval: null,
     updatedAt: Date.now(),
   });
   const created = createCandidate(linked, {
@@ -391,6 +436,15 @@ export function attachArchitectureEvidence(
 ): { study: Study; candidate: Candidate } {
   const existing = study.candidates.find((candidate) => candidate.id === input.candidateId);
   if (!existing) throw new MutationRefused(`no candidate "${input.candidateId}"`, "no-such-candidate");
+  if (
+    input.by === "agent" &&
+    (study.promotedCandidateId === existing.id || study.approval?.baselineCandidateId === existing.id)
+  ) {
+    throw new MutationRefused(
+      `"${existing.label}" is part of the human-approved comparison and cannot be changed through this interface.`,
+      "approved-candidate"
+    );
+  }
   if (input.by === "agent" && existing.revision !== input.expectedRevision) {
     throw new MutationRefused(
       `"${existing.label}" is at revision ${existing.revision}, not ${input.expectedRevision}. Re-read it with studio_get_architecture and try again.`,
@@ -410,6 +464,7 @@ export function attachArchitectureEvidence(
   return {
     study: StudySchema.parse({
       ...study,
+      ...approvalAfterCandidateEdit(study, existing.id),
       candidates: study.candidates.map((item) => (item.id === candidate.id ? candidate : item)),
       updatedAt: Date.now(),
     }),
@@ -431,11 +486,24 @@ function patchTargetMissing(kind: "node" | "edge", id: string): MutationRefused 
  * It also requires the candidate to be eligible, which is checked by the caller rather than here,
  * because eligibility depends on evaluations this module deliberately knows nothing about.
  */
-export function promoteCandidate(study: Study, candidateId: string): Study {
-  if (!study.candidates.some((c) => c.id === candidateId)) {
+export function promoteCandidate(study: Study, candidateId: string, now = Date.now()): Study {
+  const candidate = study.candidates.find((item) => item.id === candidateId);
+  if (!candidate) {
     throw new MutationRefused(`no candidate "${candidateId}"`, "no-such-candidate");
   }
-  return StudySchema.parse({ ...study, promotedCandidateId: candidateId, updatedAt: Date.now() });
+  const baseline = baselineAncestor(study, candidateId);
+  return StudySchema.parse({
+    ...study,
+    promotedCandidateId: candidateId,
+    approval: {
+      candidateId,
+      candidateRevision: candidate.revision,
+      baselineCandidateId: baseline?.id ?? null,
+      baselineRevision: baseline?.revision ?? null,
+      approvedAt: now,
+    },
+    updatedAt: now,
+  });
 }
 
 /** Remove a candidate. Human only, and refused for the promoted one. */
@@ -444,6 +512,12 @@ export function deleteCandidate(study: Study, candidateId: string): Study {
     throw new MutationRefused(
       "the promoted candidate cannot be removed. Promote something else first.",
       "promoted-candidate"
+    );
+  }
+  if (study.approval?.baselineCandidateId === candidateId) {
+    throw new MutationRefused(
+      "the baseline used by the approved candidate cannot be removed. Clear the decision first.",
+      "approved-baseline"
     );
   }
   const candidates = study.candidates
@@ -484,6 +558,7 @@ export function editActiveDesign(study: Study, mutate: (candidate: Candidate) =>
   if (!id) return study;
   return {
     ...study,
+    ...approvalAfterCandidateEdit(study, id),
     candidates: study.candidates.map((c) =>
       c.id === id ? { ...mutate(c), revision: c.revision + 1 } : c
     ),

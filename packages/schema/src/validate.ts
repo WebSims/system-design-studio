@@ -1356,6 +1356,47 @@ export function validateStudy(study: Study): StudyIssue[] {
       message: `the promoted candidate "${study.promotedCandidateId}" is not in this project`,
     });
   }
+  if (study.approval) {
+    const approved = candidateById(study, study.approval.candidateId);
+    if (!approved) {
+      issues.push({
+        severity: "error",
+        code: "approved-candidate-missing",
+        message: `the approved candidate "${study.approval.candidateId}" is not in this project`,
+      });
+    } else if (approved.revision !== study.approval.candidateRevision) {
+      issues.push({
+        severity: "error",
+        code: "approved-candidate-revision-mismatch",
+        message: `the approved candidate is at revision ${approved.revision}, not approved revision ${study.approval.candidateRevision}`,
+        candidateId: approved.id,
+      });
+    }
+    if (study.promotedCandidateId !== study.approval.candidateId) {
+      issues.push({
+        severity: "error",
+        code: "approval-promotion-mismatch",
+        message: "the approval receipt does not match the promoted candidate",
+      });
+    }
+    if (study.approval.baselineCandidateId !== null) {
+      const baseline = candidateById(study, study.approval.baselineCandidateId);
+      if (!baseline) {
+        issues.push({
+          severity: "error",
+          code: "approved-baseline-missing",
+          message: `the approved baseline "${study.approval.baselineCandidateId}" is not in this project`,
+        });
+      } else if (baseline.revision !== study.approval.baselineRevision) {
+        issues.push({
+          severity: "error",
+          code: "approved-baseline-revision-mismatch",
+          message: `the approved baseline is at revision ${baseline.revision}, not approved revision ${study.approval.baselineRevision}`,
+          candidateId: baseline.id,
+        });
+      }
+    }
+  }
 
   // ---- invariants ----
   const invariantIds = new Set<string>();
