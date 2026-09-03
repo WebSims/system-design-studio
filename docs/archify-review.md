@@ -8,7 +8,7 @@ for different jobs. Archify turns a repository into a deterministic communicatio
 artifact: typed JSON intermediate representations are rendered as static HTML/SVG
 diagrams and exports. System Design Studio is an executable decision lab: candidates
 share a study contract, are searched for races, simulated under the same scenarios,
-filtered by evidence and finally promoted by a human.
+filtered by evidence and finally approved by a human.
 
 ## Adopted now
 
@@ -46,20 +46,26 @@ Several gaps that Archify calls out are already first-class in this app:
 - repairable diagnostics with paths and stable entity IDs;
 - bounded correctness claims rather than proof language;
 - a shared study contract for fair candidate evaluation; and
-- human-only promotion and deletion.
+- human-only approval and deletion.
 
 These are important because the studio does more than explain a system: it produces
 evidence that can influence a design decision.
 
-## Useful gaps, deliberately deferred
+## Adopted since this review
 
 ### Repository evidence and provenance
 
-Archify's strongest idea is traceability from a visual claim back to source evidence.
-For this studio, repository ingestion should not be added as a loose prompt feature.
-It needs a versioned evidence schema containing repository, revision, source path,
-symbol or line anchor, extraction method and freshness. Claims without a pinned
-revision would become stale silently.
+Repository ingestion is now a first-class product path rather than a loose prompt
+feature. The study records repository, branch, source revision, dirty state, scope,
+and capture time. Every node/link claim can cite a source kind, path, symbol, line
+anchor, confidence, and claim. Agent-facing baselines are immutable; experiments are
+linked by ancestry; implementation approval pins the exact baseline and experiment
+revisions.
+
+The remaining gap is runtime freshness: a commit pins source, but production traces
+and metrics still need their own capture identity and expiry policy.
+
+## Useful gaps, deliberately deferred
 
 ### Guided views
 
