@@ -388,6 +388,11 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     ],
     "type": "object",
   },
+  "studio_get_implementation_handoff": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
   "studio_get_study": {
     "additionalProperties": false,
     "properties": {},

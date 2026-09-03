@@ -19,6 +19,7 @@ import {
   type StudyContractPatch,
 } from "@sds/schema";
 import type { ArchitecturePatchOperation } from "../study/mutations";
+import { buildImplementationHandoff } from "../implementation-handoff";
 import { toJsonSchema, type JsonSchema } from "./json-schema";
 
 /**
@@ -989,6 +990,39 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       },
       host
     ),
+
+    define(
+      {
+        name: "studio_get_implementation_handoff",
+        description:
+          "Read the exact revision-pinned architecture change a person approved for implementation: repository source state, " +
+          "before/after component and workflow values, source evidence, acceptance criteria, and unresolved production findings. " +
+          "Returns a blocker until a repository-backed experiment has been approved in the interface. This tool does not approve, " +
+          "edit repository files, run tests, deploy, or mark the visual model synchronized.",
+        input: EmptyInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run() {
+          const handoff = buildImplementationHandoff(host.getStudy());
+          host.log({
+            tool: "studio_get_implementation_handoff",
+            at: Date.now(),
+            ok: true,
+            summary:
+              handoff.status === "ready"
+                ? `read implementation handoff for ${handoff.approvedDesign.candidateId}@r${handoff.approvedDesign.revision}`
+                : `implementation handoff blocked: ${handoff.code}`,
+            ...(handoff.status === "ready"
+              ? {
+                  candidateId: handoff.approvedDesign.candidateId,
+                  revision: handoff.approvedDesign.revision,
+                }
+              : {}),
+          });
+          return handoff;
+        },
+      },
+      host
+    ),
   ];
 }
 
@@ -1087,6 +1121,7 @@ export function summariseStudy(study: Study) {
       isActive: study.activeCandidateId === c.id,
     })),
     promotedCandidateId: study.promotedCandidateId,
+    approval: study.approval,
     notes: [
       "The workload, SLOs, invariants and exploration bounds are project-level. A candidate's local copies are overwritten from the project before every evaluation, so a candidate cannot improve its results by changing the workload.",
       "There is no tool to delete or promote a candidate. Promotion is a human-only action in the interface.",

@@ -1,0 +1,196 @@
+import { describe, expect, it } from "vitest";
+import { pizzaStudy } from "@sds/models";
+import { StudySchema, blankStudy, evaluationKey, type Study } from "@sds/schema";
+import { evaluateCandidate } from "@sds/study";
+import { buildImplementationHandoff } from "../src/implementation-handoff";
+import {
+  createCandidate,
+  importRepositoryArchitecture,
+  promoteCandidate,
+  replaceCandidateDraft,
+} from "../src/study/mutations";
+
+type RepositoryFixture = {
+  study: Study;
+  baselineId: string;
+  experimentId: string;
+  changedNodeId: string;
+};
+
+let cachedFixture: RepositoryFixture | null = null;
+
+function repositoryStudy(): RepositoryFixture {
+  if (cachedFixture) return structuredClone(cachedFixture);
+  const template = pizzaStudy();
+  const sourceDesign = structuredClone(
+    template.candidates.find(
+      (candidate) => candidate.id === "c7-atomic-decrement-unique-claim"
+    )!.design
+  );
+  const changedNodeId = sourceDesign.nodes[0]!.id;
+  const study = StudySchema.parse({
+    ...blankStudy({ id: "checkout-study" }),
+    name: "checkout-service",
+    problem: template.problem,
+    contract: template.contract,
+    workload: template.workload,
+    targets: template.targets,
+    correctness: template.correctness,
+  });
+  const imported = importRepositoryArchitecture(study, {
+    repository: {
+      name: "checkout-service",
+      rootHint: "services/checkout",
+      branch: "main",
+      revision: "abc123",
+      dirty: false,
+      scope: ["src"],
+      capturedAt: 100,
+    },
+    label: "As-is checkout",
+    design: sourceDesign,
+    evidence: [
+      {
+        id: "ev-entry",
+        targetKind: "node",
+        targetId: changedNodeId,
+        confidence: "observed",
+        source: "code",
+        path: "src/checkout.ts",
+        lineStart: 20,
+        lineEnd: 38,
+        symbol: "checkout",
+        claim: "The request enters this component.",
+      },
+    ],
+    origin: "human",
+  });
+  const created = createCandidate(imported.study, {
+    label: "Approved checkout",
+    copyFrom: imported.candidate.id,
+    origin: "human",
+  });
+  const nextDesign = structuredClone(created.candidate.design);
+  nextDesign.nodes[0] = {
+    ...nextDesign.nodes[0]!,
+    label: `${nextDesign.nodes[0]!.label} with admission control`,
+  };
+  const changed = replaceCandidateDraft(created.study, {
+    candidateId: created.candidate.id,
+    expectedRevision: created.candidate.revision,
+    design: nextDesign,
+    by: "human",
+  });
+  const evaluation = evaluateCandidate(changed.study, changed.candidate);
+  const key = evaluationKey({
+    candidateHash: evaluation.candidateHash,
+    engineVersion: evaluation.engineVersion,
+    seeds: evaluation.seeds,
+    boundsHash: evaluation.boundsHash,
+  });
+  cachedFixture = {
+    study: {
+      ...changed.study,
+      evaluations: { ...changed.study.evaluations, [key]: evaluation },
+    },
+    baselineId: imported.candidate.id,
+    experimentId: changed.candidate.id,
+    changedNodeId,
+  };
+  return structuredClone(cachedFixture);
+}
+
+describe("implementation handoff", () => {
+  it("stays blocked until a repository-backed experiment is approved", () => {
+    expect(buildImplementationHandoff(blankStudy({ id: "blank" }))).toMatchObject({
+      status: "blocked",
+      code: "repository-unlinked",
+    });
+
+    const fixture = repositoryStudy();
+    expect(buildImplementationHandoff(fixture.study)).toMatchObject({
+      status: "blocked",
+      code: "approval-required",
+    });
+  });
+
+  it("returns the exact revision-pinned delta, evidence, and acceptance contract", () => {
+    const fixture = repositoryStudy();
+    const approved = promoteCandidate(fixture.study, fixture.experimentId, 500);
+    const result = buildImplementationHandoff(approved);
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+
+    expect(result.approval).toEqual({
+      candidateId: fixture.experimentId,
+      candidateRevision: 1,
+      baselineCandidateId: fixture.baselineId,
+      baselineRevision: 0,
+      approvedAt: 500,
+    });
+    expect(result.repository.revision).toBe("abc123");
+    expect(result.delta.summary.implementationChanges).toBe(1);
+    expect(result.delta.nodes).toEqual([
+      expect.objectContaining({
+        id: fixture.changedNodeId,
+        status: "changed",
+        changedFields: ["label"],
+        implementationRelevant: true,
+      }),
+    ]);
+    expect(result.delta.nodes[0]!.before?.label).not.toBe(result.delta.nodes[0]!.after?.label);
+    expect(result.sourcePaths).toEqual(["src/checkout.ts"]);
+    expect(result.sourceHints[0]).toMatchObject({ from: ["baseline", "approved"] });
+    expect(result.acceptance.problem).toBe(approved.problem);
+    expect(result.acceptance.currentEvaluation.correctness?.status).toBe(
+      "NO_VIOLATION_WITHIN_BOUNDS"
+    );
+    expect(result.implementationPrompt).toContain("studio_get_implementation_handoff");
+    expect(result.implementationPrompt).toContain("Do not deploy");
+  });
+
+  it("refuses stale receipts and experiments with no code-facing delta", () => {
+    const fixture = repositoryStudy();
+    const approved = promoteCandidate(fixture.study, fixture.experimentId);
+    const stale: Study = {
+      ...approved,
+      candidates: approved.candidates.map((candidate) =>
+        candidate.id === fixture.experimentId
+          ? { ...candidate, revision: candidate.revision + 1 }
+          : candidate
+      ),
+    };
+    expect(buildImplementationHandoff(stale)).toMatchObject({
+      status: "blocked",
+      code: "approval-stale",
+    });
+
+    const imported = importRepositoryArchitecture(blankStudy({ id: "unchanged" }), {
+      repository: approved.repository!,
+      label: "As-is",
+      design: pizzaStudy().candidates[0]!.design,
+      origin: "human",
+    });
+    const copy = createCandidate(imported.study, {
+      label: "Identical experiment",
+      copyFrom: imported.candidate.id,
+      origin: "human",
+    });
+    expect(
+      buildImplementationHandoff(promoteCandidate(copy.study, copy.candidate.id))
+    ).toMatchObject({
+      status: "blocked",
+      code: "no-code-delta",
+    });
+  });
+
+  it("does not turn an unevaluated approval receipt into implementation authority", () => {
+    const fixture = repositoryStudy();
+    const withoutResults: Study = { ...fixture.study, evaluations: {} };
+    const approved = promoteCandidate(withoutResults, fixture.experimentId);
+    expect(buildImplementationHandoff(approved)).toMatchObject({
+      status: "blocked",
+      code: "evaluation-required",
+    });
+  });
+});

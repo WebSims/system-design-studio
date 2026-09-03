@@ -4,11 +4,13 @@ import {
   StudySchema,
   applyStudyContract,
   blankStudy,
+  evaluationKey,
   type CandidateEvaluation,
   type PortfolioResult,
   type Study,
   type StudyContractPatch,
 } from "@sds/schema";
+import { evaluateCandidate } from "@sds/study";
 import { registerWebmcpTools, type RegistrationState } from "../src/webmcp/register";
 import { buildTools, type ActivityEntry, type ToolHost, type ToolResult } from "../src/webmcp/tools";
 import { buildCatalog } from "../src/webmcp/catalog";
@@ -302,7 +304,11 @@ async function call(name: string, input: unknown, ctx?: { signal?: AbortSignal }
 }
 
 function repositoryArchitectureInput() {
-  const design = structuredClone(pizzaStudy().candidates[0]!.design);
+  const design = structuredClone(
+    pizzaStudy().candidates.find(
+      (candidate) => candidate.id === "c7-atomic-decrement-unique-claim"
+    )!.design
+  );
   const nodeId = design.nodes[0]!.id;
   return {
     repository: {
@@ -359,6 +365,7 @@ describe("registration", () => {
       "studio_run_production_scenarios",
       "studio_get_evaluation",
       "studio_compare_candidates",
+      "studio_get_implementation_handoff",
     ]);
   });
 
@@ -392,6 +399,7 @@ describe("registration", () => {
       "studio_run_production_scenarios",
       "studio_get_evaluation",
       "studio_compare_candidates",
+      "studio_get_implementation_handoff",
     ]);
   });
 
@@ -413,6 +421,7 @@ describe("registration", () => {
       "studio_attach_code_evidence",
       "studio_run_production_scenarios",
       "studio_get_evaluation",
+      "studio_get_implementation_handoff",
     ]);
   });
 
@@ -436,7 +445,7 @@ describe("registration", () => {
       expect(r.state.reason).toContain("remains usable by hand");
     }
     // And the tool definitions still exist, so the UI can list what an agent WOULD be able to do.
-    expect(r.tools.length).toBe(18);
+    expect(r.tools.length).toBe(19);
   });
 
   it("reports unsupported when registerTool is present but not a function", () => {
@@ -696,6 +705,59 @@ describe("repository-backed architecture", () => {
     const after = host.study.candidates.find((candidate) => candidate.id === experiment.id)!;
     expect(after.revision).toBe(0);
     expect(JSON.stringify(after.design)).toBe(before);
+  });
+
+  it("returns a blocker until a person approves, then exposes the pinned implementation delta", async () => {
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const created = await call("studio_create_candidate", {
+      label: "admission-control experiment",
+      copyFrom: imported.content.candidateId,
+    });
+    const experiment = host.study.candidates.find(
+      (candidate) => candidate.id === created.content.candidateId
+    )!;
+    const target = experiment.design.nodes[0]!;
+    await call("studio_apply_architecture_patch", {
+      candidateId: experiment.id,
+      expectedRevision: 0,
+      operations: [
+        {
+          op: "update-node",
+          nodeId: target.id,
+          patch: { label: `${target.label} with admission control` },
+        },
+      ],
+    });
+
+    const blocked = await call("studio_get_implementation_handoff", {});
+    expect(blocked.content).toMatchObject({ status: "blocked", code: "approval-required" });
+
+    const approvedCandidate = host.study.candidates.find(
+      (candidate) => candidate.id === experiment.id
+    )!;
+    const actualEvaluation = evaluateCandidate(host.study, approvedCandidate);
+    const key = evaluationKey({
+      candidateHash: actualEvaluation.candidateHash,
+      engineVersion: actualEvaluation.engineVersion,
+      seeds: actualEvaluation.seeds,
+      boundsHash: actualEvaluation.boundsHash,
+    });
+    host.study = StudySchema.parse({
+      ...host.study,
+      evaluations: { ...host.study.evaluations, [key]: actualEvaluation },
+    });
+    host.study = promoteCandidate(host.study, experiment.id, 500);
+    const ready = await call("studio_get_implementation_handoff", {});
+    expect(ready.isError).toBeFalsy();
+    expect(ready.content.status).toBe("ready");
+    expect((ready.content.approval as { candidateRevision: number }).candidateRevision).toBe(1);
+    expect((ready.content.repository as { revision: string }).revision).toBe("abc123");
+    expect((ready.content.sourcePaths as string[])).toEqual(["src/server.ts"]);
+    expect(
+      (ready.content.delta as { summary: { implementationChanges: number } }).summary
+        .implementationChanges
+    ).toBe(1);
+    expect(String(ready.content.implementationPrompt)).toContain("Do not deploy");
   });
 });
 

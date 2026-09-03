@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { EligibilityDecision, PortfolioResult } from "@sds/schema";
+import { buildImplementationHandoff } from "../implementation-handoff";
+import { baselineAncestor } from "../study/mutations";
 import { useStudyStore } from "../study/store";
 import { compareDesignTopology, type EdgeDelta, type NodeDelta } from "../topology";
 
@@ -80,30 +82,42 @@ export function CompareView() {
             <p className="muted">Candidates must pass all five gates to enter the comparison.</p>
 
             <div className="gate-grid">
-              {portfolio.decisions.map((decision) => (
-                <GateCard
-                  key={decision.candidateId}
-                  decision={decision}
-                  portfolio={portfolio}
-                  label={study.candidates.find((c) => c.id === decision.candidateId)?.label ?? decision.candidateId}
-                  origin={study.candidates.find((c) => c.id === decision.candidateId)?.origin ?? "human"}
-                  intent={study.candidates.find((c) => c.id === decision.candidateId)?.intent ?? ""}
-                  isPromoted={study.promotedCandidateId === decision.candidateId}
-                  busy={running.has(decision.candidateId)}
-                  onOpen={() => {
-                    select(decision.candidateId);
-                    setView("design");
-                  }}
-                  onInspect={() => {
-                    select(decision.candidateId);
-                    setView("correctness");
-                  }}
-                  onPromote={() => promote(decision.candidateId)}
-                />
-              ))}
+              {portfolio.decisions.map((decision) => {
+                const candidate = study.candidates.find(
+                  (item) => item.id === decision.candidateId
+                );
+                return (
+                  <GateCard
+                    key={decision.candidateId}
+                    decision={decision}
+                    portfolio={portfolio}
+                    label={candidate?.label ?? decision.candidateId}
+                    origin={candidate?.origin ?? "human"}
+                    intent={candidate?.intent ?? ""}
+                    role={candidate?.role ?? "experiment"}
+                    isPromoted={study.promotedCandidateId === decision.candidateId}
+                    isApproved={
+                      study.approval?.candidateId === decision.candidateId &&
+                      study.approval.candidateRevision === candidate?.revision
+                    }
+                    busy={running.has(decision.candidateId)}
+                    onOpen={() => {
+                      select(decision.candidateId);
+                      setView("design");
+                    }}
+                    onInspect={() => {
+                      select(decision.candidateId);
+                      setView("correctness");
+                    }}
+                    onPromote={() => promote(decision.candidateId)}
+                  />
+                );
+              })}
             </div>
           </section>
         )}
+
+        <ImplementationHandoffPanel />
 
         {portfolio && portfolio.axes.length > 0 && (
           <section className="section">
@@ -161,6 +175,180 @@ export function CompareView() {
   );
 }
 
+function ImplementationHandoffPanel() {
+  const study = useStudyStore((state) => state.study);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const handoff = buildImplementationHandoff(study);
+
+  if (handoff.status === "blocked") {
+    const approvalReady =
+      study.approval !== null &&
+      !["approval-stale", "evaluation-required", "approval-ineligible"].includes(handoff.code);
+    const steps = [
+      { label: "Repository snapshot", done: study.repository !== null },
+      { label: "Eligible experiment approved", done: approvalReady },
+      { label: "Handoff ready", done: false },
+    ];
+    return (
+      <section className="section implementation-handoff handoff-blocked">
+        <header className="section-head">
+          <div>
+            <h2>implementation handoff</h2>
+            <p className="section-subtitle">Turn a reviewed experiment into a precise code task.</p>
+          </div>
+          <span className="badge badge-muted">not ready</span>
+        </header>
+        <p className="handoff-message">{handoff.message}</p>
+        <ol className="handoff-steps" aria-label="Implementation handoff readiness">
+          {steps.map((step, index) => (
+            <li key={step.label} className={step.done ? "done" : "waiting"}>
+              <span aria-hidden="true">{step.done ? "✓" : index + 1}</span>
+              {step.label}
+            </li>
+          ))}
+        </ol>
+        <p className="handoff-boundary">
+          WebMCP can read the finished receipt. It cannot approve a design, edit repository files,
+          deploy, or mark the model synchronized.
+        </p>
+      </section>
+    );
+  }
+
+  const componentChanges = handoff.delta.nodes.filter(
+    (change) => change.implementationRelevant
+  ).length;
+  const approvalTime = new Date(handoff.approval.approvedAt);
+  const approvedAt = Number.isNaN(approvalTime.getTime())
+    ? "time unavailable"
+    : approvalTime.toLocaleString();
+
+  const copyPrompt = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(handoff.implementationPrompt);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
+
+  return (
+    <section className="section implementation-handoff handoff-ready">
+      <header className="section-head">
+        <div>
+          <h2>implementation handoff</h2>
+          <p className="section-subtitle">The exact architecture delta a person approved.</p>
+        </div>
+        <span className="badge badge-ok">approved</span>
+      </header>
+
+      <div className="handoff-receipt">
+        <div className="handoff-route-card">
+          <span>From code baseline</span>
+          <strong>{handoff.baseline.label}</strong>
+          <code>
+            {handoff.baseline.candidateId}@r{handoff.baseline.revision}
+          </code>
+        </div>
+        <span className="handoff-route-arrow" aria-hidden="true">→</span>
+        <div className="handoff-route-card approved">
+          <span>To approved experiment</span>
+          <strong>{handoff.approvedDesign.label}</strong>
+          <code>
+            {handoff.approvedDesign.candidateId}@r{handoff.approvedDesign.revision}
+          </code>
+        </div>
+      </div>
+
+      <div className="handoff-meta">
+        <span>
+          source <code>{handoff.repository.revision || "revision not recorded"}</code>
+        </span>
+        <span>
+          {handoff.repository.dirty === true
+            ? "includes uncommitted changes"
+            : handoff.repository.dirty === false
+              ? "clean snapshot"
+              : "dirty state unknown"}
+        </span>
+        <span>approved {approvedAt}</span>
+      </div>
+
+      <div className="handoff-counts" aria-label="Approved implementation change counts">
+        <div>
+          <strong className="tnum">{componentChanges}</strong>
+          <span>components</span>
+        </div>
+        <div>
+          <strong className="tnum">{handoff.delta.edges.length}</strong>
+          <span>links</span>
+        </div>
+        <div>
+          <strong className="tnum">{handoff.delta.workflow.changed ? 1 : 0}</strong>
+          <span>behaviors</span>
+        </div>
+        <div>
+          <strong className="tnum">{handoff.sourcePaths.length}</strong>
+          <span>source paths</span>
+        </div>
+      </div>
+
+      {handoff.sourcePaths.length > 0 && (
+        <div className="handoff-sources">
+          <h3>Where the agent should start</h3>
+          <div>
+            {handoff.sourcePaths.slice(0, 8).map((path) => (
+              <code key={path}>{path}</code>
+            ))}
+            {handoff.sourcePaths.length > 8 && (
+              <span>+{handoff.sourcePaths.length - 8} more</span>
+            )}
+          </div>
+          <p>
+            Evidence-backed starting points only—the agent must re-read current source before
+            editing.
+          </p>
+        </div>
+      )}
+
+      {handoff.unresolvedFindings.length > 0 && (
+        <p className="handoff-findings">
+          <strong>
+            {handoff.unresolvedFindings.length} unresolved production{" "}
+            {handoff.unresolvedFindings.length === 1 ? "finding" : "findings"}
+          </strong>
+          <span> carried into the implementation acceptance criteria.</span>
+        </p>
+      )}
+
+      {handoff.warnings.length > 0 && (
+        <ul className="handoff-warnings">
+          {handoff.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      )}
+
+      <footer className="handoff-actions">
+        <div>
+          <button className="btn primary" onClick={() => void copyPrompt()}>
+            {copyState === "copied" ? "Handoff copied" : "Copy agent handoff"}
+          </button>
+          <span className={`copy-status copy-${copyState}`} aria-live="polite">
+            {copyState === "copied"
+              ? "Ready to paste into Codex."
+              : copyState === "failed"
+                ? "Clipboard access failed."
+                : ""}
+          </span>
+        </div>
+        <p>Approval authorizes this code delta—not deployment.</p>
+      </footer>
+    </section>
+  );
+}
+
 function ArchitectureDelta() {
   const study = useStudyStore((state) => state.study);
   const [baseChoice, setBaseChoice] = useState("");
@@ -168,18 +356,24 @@ function ArchitectureDelta() {
   if (study.candidates.length < 2) return null;
 
   const candidateIds = new Set(study.candidates.map((candidate) => candidate.id));
+  const preferredHead = study.promotedCandidateId ?? study.activeCandidateId;
+  const preferredBaseline = preferredHead ? baselineAncestor(study, preferredHead) : null;
   const defaultBaseId =
-    study.promotedCandidateId && candidateIds.has(study.promotedCandidateId)
-      ? study.promotedCandidateId
-      : study.candidates[0]!.id;
+    preferredBaseline?.id ??
+    study.candidates.find((candidate) => candidate.role === "baseline")?.id ??
+    study.candidates[0]!.id;
   const baseId = candidateIds.has(baseChoice) ? baseChoice : defaultBaseId;
   const activeCandidateId = study.activeCandidateId;
   const defaultHeadId =
-    activeCandidateId !== null &&
-    activeCandidateId !== baseId &&
-    candidateIds.has(activeCandidateId)
-      ? activeCandidateId
-      : (study.candidates.find((candidate) => candidate.id !== baseId)?.id ?? baseId);
+    study.promotedCandidateId !== null &&
+    study.promotedCandidateId !== baseId &&
+    candidateIds.has(study.promotedCandidateId)
+      ? study.promotedCandidateId
+      : activeCandidateId !== null &&
+          activeCandidateId !== baseId &&
+          candidateIds.has(activeCandidateId)
+        ? activeCandidateId
+        : (study.candidates.find((candidate) => candidate.id !== baseId)?.id ?? baseId);
   const headId = candidateIds.has(headChoice) && headChoice !== baseId ? headChoice : defaultHeadId;
   const base = study.candidates.find((candidate) => candidate.id === baseId)!;
   const head = study.candidates.find((candidate) => candidate.id === headId)!;
@@ -323,7 +517,9 @@ function GateCard({
   label,
   origin,
   intent,
+  role,
   isPromoted,
+  isApproved,
   busy,
   onOpen,
   onInspect,
@@ -334,7 +530,9 @@ function GateCard({
   label: string;
   origin: string;
   intent: string;
+  role: "baseline" | "experiment";
   isPromoted: boolean;
+  isApproved: boolean;
   busy: boolean;
   onOpen: () => void;
   onInspect: () => void;
@@ -349,7 +547,8 @@ function GateCard({
         <div className="badges">
           {origin === "agent" && <span className="badge badge-agent">AI draft</span>}
           {origin === "library" && <span className="badge badge-muted">library</span>}
-          {isPromoted && <span className="badge badge-ok">chosen</span>}
+          {isApproved && <span className="badge badge-ok">approved</span>}
+          {isPromoted && !isApproved && <span className="badge badge-warn">review needed</span>}
           {onFrontier && <span className="badge badge-info">frontier</span>}
           {busy && <span className="badge badge-muted">Running…</span>}
         </div>
@@ -373,22 +572,20 @@ function GateCard({
         <button className="btn btn-quiet" onClick={onInspect}>
           Evidence
         </button>
-        {/*
-          Promotion is gated on eligibility AND on being a human click. There is no WebMCP tool that
-          reaches this handler, and there should never be one: this is the only action in the product
-          that says "we are going with this".
-        */}
+        {/* Approval is eligibility-gated and only reachable from this human click. */}
         <button
           className="btn"
-          disabled={!decision.eligible || isPromoted}
+          disabled={!decision.eligible || role !== "experiment" || isApproved}
           title={
-            decision.eligible
-              ? "promote this candidate. Human-only: no agent tool can do this."
-              : "only an eligible candidate can be promoted"
+            role === "baseline"
+              ? "The as-is baseline is the source of a change, not an implementation target."
+              : decision.eligible
+                ? "Approve this exact revision. Human-only: no agent tool can do this."
+                : "Only an eligible experiment can be approved."
           }
           onClick={onPromote}
         >
-          {isPromoted ? "Chosen" : "Choose"}
+          {isApproved ? "Approved" : isPromoted ? "Approve again" : "Approve design"}
         </button>
       </footer>
     </article>
