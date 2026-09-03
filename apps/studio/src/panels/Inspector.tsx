@@ -204,8 +204,9 @@ function PerformanceCalibrationNote({
   if (!missing) return null;
   return (
     <p className="note warn">
-      <b>Performance uncalibrated.</b> Values below are model placeholders, not measurements. Attach
-      observed performance evidence from runtime data or the user before running load analysis.
+      <b>Performance uncalibrated.</b> Positive placeholders below are estimates; 0ms means unknown,
+      not free work. Attach observed performance evidence from runtime data or the user before
+      running load analysis.
     </p>
   );
 }

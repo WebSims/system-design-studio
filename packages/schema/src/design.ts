@@ -833,6 +833,81 @@ export const NodeSchema = z.object({
 });
 export type SdsNode = z.infer<typeof NodeSchema>;
 
+/**
+ * Whether a duration distribution carries a usable, positive mean.
+ *
+ * Deterministic/uniform zeroes remain parseable for backwards compatibility, but they mean
+ * "unknown" at the product boundary. Keeping this helper in the schema package gives validation,
+ * calibration and the agent mutation policy one definition of that sentinel.
+ */
+export function distributionHasPositiveMean(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const distribution = value as Record<string, unknown>;
+  switch (distribution.kind) {
+    case "deterministic":
+      return typeof distribution.value === "number" && distribution.value > 0;
+    case "exponential":
+    case "lognormal":
+      return typeof distribution.mean === "number" && distribution.mean > 0;
+    case "uniform":
+      return (
+        typeof distribution.min === "number" &&
+        typeof distribution.max === "number" &&
+        (distribution.min + distribution.max) / 2 > 0
+      );
+    case "pareto":
+      return (
+        typeof distribution.scale === "number" &&
+        typeof distribution.alpha === "number" &&
+        distribution.scale > 0 &&
+        distribution.alpha > 1
+      );
+    default:
+      return false;
+  }
+}
+
+export interface NodeTimingInput {
+  /** Path relative to the component, used in validation and agent-facing errors. */
+  field: string;
+  distribution: Distribution;
+}
+
+/** Every modeled duration that contributes to one component's performance. */
+export function nodeTimingInputs(node: SdsNode): NodeTimingInput[] {
+  switch (node.kind) {
+    case "client":
+      return [];
+    case "server":
+      return [{ field: "server.serviceTime", distribution: node.server!.serviceTime }];
+    case "loadbalancer":
+      return [{ field: "loadbalancer.serviceTime", distribution: node.loadbalancer!.serviceTime }];
+    case "cache":
+      return [{ field: "cache.serviceTime", distribution: node.cache!.serviceTime }];
+    case "database":
+      return [{ field: "database.serviceTime", distribution: node.database!.serviceTime }];
+    case "queue":
+      return [
+        { field: "queue.consumerServiceTime", distribution: node.queue!.consumerServiceTime },
+        { field: "queue.publishTime", distribution: node.queue!.publishTime },
+      ];
+    case "gateway":
+      return [
+        { field: "gateway.acceptTime", distribution: node.gateway!.acceptTime },
+        { field: "gateway.pushTime", distribution: node.gateway!.pushTime },
+      ];
+    case "lock":
+      return [{ field: "lock.serviceTime", distribution: node.lock!.serviceTime }];
+  }
+}
+
+/** A component can display or calibrate performance only when none of its timings are sentinels. */
+export function nodeHasUsablePerformanceInputs(node: SdsNode): boolean {
+  if (node.kind === "client") return peakRate(node.client!.arrival) > 0;
+  const timings = nodeTimingInputs(node);
+  return timings.length > 0 && timings.every((item) => distributionHasPositiveMean(item.distribution));
+}
+
 // ---------------------------------------------------------------------------
 // call policies
 // ---------------------------------------------------------------------------

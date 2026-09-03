@@ -469,6 +469,7 @@ export interface Catalog {
   };
   performanceGuide: {
     requirement: string;
+    componentTiming: string;
     edgeLatency: string;
     placeholders: Array<{
       id: string;
@@ -572,7 +573,8 @@ const isDrawing = (study: Study, candidate: Candidate): boolean =>
 const drawingNext = (candidate: Candidate): string =>
   `Keep drawing with studio_apply_architecture_patch { candidateId: "${candidate.id}", expectedRevision: ${candidate.revision} }: ` +
   "add-node per component with x/y chosen from studio_get_catalog.layoutGuide (or include auto-layout in the patch and omit them), " +
-  "set fanout explicitly on every server, add-edge once both ends exist with an explicit positive one-way latency, " +
+  "set fanout and positive timing fields explicitly on every service component, add-edge once both ends exist with explicit positive one-way latency and fanoutFactor (1 for one-to-one), " +
+  "make every active component reachable from its real external or autonomous client/work source, " +
   "and set-workflow for a source-backed state-changing flow when the project declares correctness invariants; " +
   `each accepted patch appears on the canvas. When complete, seal it with studio_import_architecture { fromCandidateId: "${candidate.id}", expectedRevision, repository, evidence }.`;
 
@@ -740,7 +742,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "immutable baseline with code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
           "supported by the cited source; mark deductions inferred and unknown production behaviour assumed. " +
           "Evidence must cover every component and link. Mark numeric measurements aspect=performance; code proving that a call " +
-          "exists is architecture evidence, not latency calibration. Every link needs a positive one-way latency; 0ms is refused. " +
+          "exists is architecture evidence, not timing calibration. Every component timing and link latency must be positive; " +
+          "every link must set fanoutFactor (1 for one-to-one), and every active component must be reachable from a client/work source. " +
+          "Zero timings and orphan components are refused. " +
           "If the project declares correctness invariants, the design must contain a workflow handler that can exercise them; " +
           "a vacuous immutable baseline is refused. " +
           "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
@@ -802,8 +806,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_get_architecture",
         description:
-          "Read the active or named architecture as a repository-linked model: role, ancestry, revision, full design and " +
-          "per-node/per-link evidence. Use this before proposing or patching an experiment. Contains repository paths and " +
+          "Read the active or named architecture as a repository-linked model: role, ancestry, revision, full design, topology " +
+          "validation issues and per-node/per-link evidence. Use this before proposing or patching an experiment. Contains repository paths and " +
           "user- or agent-authored claims.",
         input: GetArchitectureInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
@@ -891,7 +895,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "shared dependencies centered): either choose x/y per node from studio_get_catalog.layoutGuide, or include an " +
           "auto-layout operation and the studio computes that layout from the links. Overlapping nodes and missing " +
           "coordinates are otherwise refused, never silently repositioned. Agent-authored servers must set fanout explicitly; " +
-          "agent-authored links must include an explicit positive one-way latency (use a catalog benchmark marked assumed when unmeasured). Requires the revision read from " +
+          "agent-authored service components must set positive timing fields explicitly, and links must include positive one-way " +
+          "latency plus fanoutFactor (1 for one-to-one; use a catalog benchmark marked assumed when timing is unmeasured). Requires the revision read from " +
           "studio_get_architecture or returned by the previous call, and refuses baselines, promoted candidates, stale " +
           "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,
@@ -1389,6 +1394,7 @@ function architecturePayload(study: Study, candidate: Candidate) {
       isPromoted: study.promotedCandidateId === candidate.id,
     },
     design: candidate.design,
+    topologyIssues: validateDesign(candidate.design),
     evidence: candidate.evidence,
     performanceCalibration: performanceCalibration(study, candidate),
     evidenceSummary: {

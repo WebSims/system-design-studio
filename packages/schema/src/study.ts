@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { ExprSchema } from "./domain";
-import { ArrivalProcessSchema, DesignSchema, RequestClassSchema, SloSchema } from "./design";
+import {
+  ArrivalProcessSchema,
+  DesignSchema,
+  RequestClassSchema,
+  SloSchema,
+  distributionHasPositiveMean,
+  nodeHasUsablePerformanceInputs,
+} from "./design";
 
 /**
  * The study document: one problem, many candidate architectures, one shared yardstick.
@@ -1053,29 +1060,35 @@ export function performanceCalibration(
   }
 
   const labels = new Map(candidate.design.nodes.map((node) => [node.id, node.label]));
-  const targets: PerformanceCalibrationGap[] = [
+  const targets: Array<PerformanceCalibrationGap & { usable: boolean }> = [
     ...candidate.design.nodes.map((node) => ({
       targetKind: "node" as const,
       targetId: node.id,
       label: node.label,
+      usable: nodeHasUsablePerformanceInputs(node),
     })),
     ...candidate.design.edges.map((edge) => ({
       targetKind: "edge" as const,
       targetId: edge.id,
       label: `${labels.get(edge.from) ?? edge.from} → ${labels.get(edge.to) ?? edge.to}`,
+      usable: distributionHasPositiveMean(edge.latency),
     })),
   ];
 
-  const gaps = targets.filter((target) =>
-    !candidate.evidence.some(
-      (item) =>
-        item.targetKind === target.targetKind &&
-        item.targetId === target.targetId &&
-        item.aspect === "performance" &&
-        item.confidence === "observed" &&
-        (item.source === "runtime" || item.source === "user")
+  const gaps = targets
+    .filter(
+      (target) =>
+        !target.usable ||
+        !candidate.evidence.some(
+          (item) =>
+            item.targetKind === target.targetKind &&
+            item.targetId === target.targetId &&
+            item.aspect === "performance" &&
+            item.confidence === "observed" &&
+            (item.source === "runtime" || item.source === "user")
+        )
     )
-  );
+    .map(({ usable: _usable, ...target }) => target);
 
   if (gaps.length === 0) {
     return {
@@ -1094,7 +1107,7 @@ export function performanceCalibration(
     gaps,
     message:
       `Performance is uncalibrated: ${gaps.length} modeled component${gaps.length === 1 ? "" : "s"}/link${gaps.length === 1 ? "" : "s"} ` +
-      `need observed performance evidence from runtime measurements or the user (${sample}${more}).`,
+      `need positive model inputs and observed performance evidence from runtime measurements or the user (${sample}${more}).`,
   };
 }
 

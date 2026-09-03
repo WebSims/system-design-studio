@@ -34,12 +34,16 @@ describe("the codebase-to-design prompt", () => {
     expect(CODEBASE_PROMPT).toMatch(/label it '\(in-process\)'/)
     expect(CODEBASE_PROMPT).toMatch(/configured or documented-default provider/)
     expect(CODEBASE_PROMPT).toMatch(/mutually exclusive alternatives as gaps/)
+    expect(CODEBASE_PROMPT).toMatch(/external entrypoint.*client\/work source/)
+    expect(CODEBASE_PROMPT).toMatch(/fanoutFactor from each source event/)
   })
 
   it("requires an executable flow without presenting placeholders as measurements", () => {
     expect(CODEBASE_PROMPT).toMatch(/invariants for required system outcomes/)
     expect(CODEBASE_PROMPT).toMatch(/not implementation mechanisms or process-local guarantees/)
     expect(CODEBASE_PROMPT).toMatch(/highest-risk state-changing flow into a workflow/)
+    expect(CODEBASE_PROMPT).toMatch(/exact checked scope/)
+    expect(CODEBASE_PROMPT).toMatch(/never substitute an easier flow/)
     expect(CODEBASE_PROMPT).toMatch(/Never invent production rates, replicas, latencies, or provider choices/)
     expect(CODEBASE_PROMPT).toMatch(/placeholders assumed/)
     expect(CODEBASE_PROMPT).toMatch(/do not run performance until calibrated/)

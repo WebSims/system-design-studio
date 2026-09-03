@@ -2,14 +2,21 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { describe } from "@sds/core";
 import { CHIP_SIZE, MAX_CHIPS, NODE_HEIGHT, NODE_WIDTH } from "./geometry";
 import { iconDataUrl, visitIcon } from "./identicon";
-import { isTimeVarying, peakRate, type ArrivalProcess, type NodeKind, type SdsNode } from "@sds/schema";
+import {
+  isTimeVarying,
+  nodeHasUsablePerformanceInputs,
+  peakRate,
+  type ArrivalProcess,
+  type NodeKind,
+  type SdsNode,
+} from "@sds/schema";
 import { useStudio } from "../store";
 import { usePlayback } from "../playback";
 import { useNodeState, useRaceModel } from "../raceModel";
 import { useRacePlayback } from "../racePlayback";
 import { useStudyStore } from "../study/store";
 import { KindIcon } from "../ui/icons";
-import { modelInputLabel } from "./provenance";
+import { modelInputLabel, performanceInputState } from "./provenance";
 
 /**
  * NODE HEIGHT IS FIXED, ON PURPOSE.
@@ -280,6 +287,7 @@ export function StudioNode({ id, selected, data }: NodeProps) {
   const evidence = data as {
     repositoryLinked?: boolean;
     performanceCalibrated?: boolean;
+    hasPerformanceEvidence?: boolean;
     evidenceCount?: number;
     evidenceTone?: "observed" | "inferred" | "assumed" | "uncovered";
     noteCount?: number;
@@ -288,13 +296,19 @@ export function StudioNode({ id, selected, data }: NodeProps) {
 
   if (!node) return null;
   const isClient = node.kind === "client";
-  const performanceUnavailable =
+  const performanceWithheld =
     Boolean(evidence.repositoryLinked) && evidence.performanceCalibrated === false;
+  const inputState = performanceInputState({
+    repositoryLinked: Boolean(evidence.repositoryLinked),
+    calibrated: evidence.performanceCalibrated !== false,
+    hasPerformanceEvidence: Boolean(evidence.hasPerformanceEvidence),
+    usable: nodeHasUsablePerformanceInputs(node),
+  });
 
   const rho = measured ? measured.utilization : (preview?.rho ?? 0);
   // Show rho above 1 rather than clamping: how far past capacity matters.
   const displayRho = !measured && preview && preview.rho > 1 ? preview.rho : rho;
-  const tone = performanceUnavailable ? "ok" : utilTone(displayRho);
+  const tone = performanceWithheld ? "ok" : utilTone(displayRho);
   const detail = detailOf(node.kind, measured);
   const backlogGrowing = (measured?.queue?.backlogGrowthPerSec ?? 0) > 0.05;
   // Refusing connections is a hard failure, so it gets the same treatment as a queue
@@ -304,8 +318,8 @@ export function StudioNode({ id, selected, data }: NodeProps) {
   return (
     <div
       className={`node kind-${node.kind} ${selected ? "selected" : ""} tone-${tone} ${
-        !performanceUnavailable && (backlogGrowing || refusingConnections) ? "async-alert" : ""
-      } ${raceRole}`}
+        !performanceWithheld && (backlogGrowing || refusingConnections) ? "async-alert" : ""
+      } input-${inputState} ${raceRole}`}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT, "--accent-node": KIND_ACCENT[node.kind] } as React.CSSProperties}
     >
       {!isClient && <Handle type="target" position={Position.Left} />}
@@ -347,17 +361,23 @@ export function StudioNode({ id, selected, data }: NodeProps) {
       <div
         className="node-service"
         title={
-          performanceUnavailable
-            ? "Capacity, traffic and timing values have no observed runtime or user performance evidence yet."
+          performanceWithheld
+            ? inputState === "estimated"
+              ? "A positive placeholder is shown as an estimate. Load results stay withheld until runtime or user measurements calibrate this component."
+              : "The model has no usable positive performance value with explicit provenance for this component."
             : undefined
         }
       >
-        {performanceUnavailable ? "performance inputs uncalibrated" : summaryOf(node)}
+        {performanceWithheld
+          ? inputState === "estimated"
+            ? `≈ ${summaryOf(node)}`
+            : "performance inputs unknown"
+          : summaryOf(node)}
       </div>
 
       <StateStrip nodeId={id} />
 
-      {!isClient && !performanceUnavailable && (
+      {!isClient && !performanceWithheld && (
         <div className="util-row">
           <div className="util-bar">
             <div className="util-fill" style={{ width: `${Math.min(100, displayRho * 100)}%` }} />
@@ -368,8 +388,10 @@ export function StudioNode({ id, selected, data }: NodeProps) {
       )}
 
       <div className="node-foot">
-        {performanceUnavailable ? (
-          <span className="node-src">uncalibrated</span>
+        {performanceWithheld ? (
+          <span className="node-src">
+            {inputState === "estimated" ? "estimate · not calibrated" : "unknown · not calibrated"}
+          </span>
         ) : occ ? (
           <span className="occ tnum">
             {occ.inService} in service &middot; {occ.queued} queued
@@ -385,7 +407,7 @@ export function StudioNode({ id, selected, data }: NodeProps) {
         )}
       </div>
 
-      {!performanceUnavailable && <ChipStrip nodeId={id} />}
+      {!performanceWithheld && <ChipStrip nodeId={id} />}
 
       <Handle type="source" position={Position.Right} />
     </div>

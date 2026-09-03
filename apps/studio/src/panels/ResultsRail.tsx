@@ -674,6 +674,7 @@ export function ResultsRail() {
   const uncalibrated = calibration !== null && !calibration.calibrated;
 
   const blocking = issues.filter((i) => i.severity === "error");
+  const advisories = issues.filter((i) => i.severity === "warning");
 
   return (
     <aside className="rail left">
@@ -690,13 +691,33 @@ export function ResultsRail() {
         </div>
       )}
 
+      {advisories.length > 0 && (
+        <div className="verdict verdict-warn">
+          <div className="verdict-title">model gaps</div>
+          {advisories.slice(0, 4).map((issue, index) => (
+            <div
+              className="verdict-body"
+              key={`${issue.code}:${issue.nodeId ?? issue.edgeId ?? "design"}:${index}`}
+            >
+              {issue.message}
+            </div>
+          ))}
+          {advisories.length > 4 && (
+            <div className="verdict-body">
+              and {advisories.length - 4} more model gap{advisories.length === 5 ? "" : "s"}
+            </div>
+          )}
+        </div>
+      )}
+
       {uncalibrated ? (
         <div className="verdict verdict-warn">
           <div className="verdict-title">performance not calibrated</div>
           <div className="verdict-body">{calibration?.message}</div>
           <div className="verdict-body">
-            The canvas shows ?ms and withholds utilization, latency, throughput, scenarios and
-            recommendations. Correctness search is still available in Behaviour.
+            The canvas marks explicit placeholders with ≈ and truly unknown timings with ?. It
+            withholds utilization, latency, throughput, scenarios and recommendations until every
+            target is calibrated. Correctness search is still available in Behaviour.
           </div>
         </div>
       ) : (

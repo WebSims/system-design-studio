@@ -124,7 +124,7 @@ const HeroPlay = () => {
     return (
       <button className="btn hero-play passes" onClick={() => void checkOnly(active.id)} title="No break found within the limits. Search again after a change.">
         <CheckIcon size={14} />
-        passes rules {"\u00b7"} search again
+        no break found {"\u00b7"} search again
       </button>
     )
   }

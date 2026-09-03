@@ -100,7 +100,7 @@ function Verdict({ result }: { result: CorrectnessResult }) {
       <details className="assumptions">
         <summary>
           {result.stats.statesVisited.toLocaleString()} states · {result.stats.transitionsApplied.toLocaleString()} transitions ·{" "}
-          {Math.round(result.stats.wallMs)}ms
+          {result.stats.wallMs < 1 ? "<1ms" : `${Math.round(result.stats.wallMs)}ms`}
         </summary>
         <dl className="stat-grid">
           <div>

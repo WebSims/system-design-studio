@@ -3,7 +3,9 @@ import {
   DesignSchema,
   MAX_EFFECTIVE_CONCURRENCY,
   classesOf,
+  distributionHasPositiveMean,
   isTimeVarying,
+  nodeTimingInputs,
   type Design,
   type NodeKind,
   type SdsNode,
@@ -122,6 +124,19 @@ export function validateDesign(design: Design): DesignIssue[] {
         message: `${n.kind} "${n.label}" has no ${n.kind} configuration`,
         nodeId: n.id,
       });
+      continue;
+    }
+
+    for (const timing of nodeTimingInputs(n)) {
+      if (distributionHasPositiveMean(timing.distribution)) continue;
+      issues.push({
+        severity: "warning",
+        code: "zero-node-service-time",
+        message:
+          `component "${n.label}" has no usable positive mean for ${timing.field}. ` +
+          "Treat 0ms as an unknown schema placeholder, not free work; replace it with measured data or an explicitly assumed non-zero benchmark before load testing.",
+        nodeId: n.id,
+      });
     }
   }
 
@@ -195,6 +210,38 @@ export function validateDesign(design: Design): DesignIssue[] {
   // ---- per-kind topology rules ----
   const outgoing = new Map<string, number>();
   for (const e of design.edges) outgoing.set(e.from, (outgoing.get(e.from) ?? 0) + 1);
+
+  // Every active station needs a causal path from a work source. An orphan service may look
+  // connected to its own dependencies while still receiving exactly zero simulated load.
+  const clientIds = design.nodes.filter((node) => node.kind === "client").map((node) => node.id);
+  if (clientIds.length > 0) {
+    const adjacency = new Map<string, string[]>();
+    for (const edge of design.edges) {
+      if (!byId.has(edge.from) || !byId.has(edge.to) || edge.probability <= 0) continue;
+      adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge.to]);
+    }
+    const reachable = new Set(clientIds);
+    const pending = [...clientIds];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      for (const next of adjacency.get(current) ?? []) {
+        if (reachable.has(next)) continue;
+        reachable.add(next);
+        pending.push(next);
+      }
+    }
+    for (const node of design.nodes) {
+      if (node.kind === "client" || reachable.has(node.id)) continue;
+      issues.push({
+        severity: "warning",
+        code: "unreachable-from-client",
+        message:
+          `component "${node.label}" is not reachable from any client/work source, so it receives no simulated load. ` +
+          "Connect its real external entrypoint, timer, poller or consumer source, or remove it from the active topology.",
+        nodeId: node.id,
+      });
+    }
+  }
 
   for (const n of design.nodes) {
     const out = outgoing.get(n.id) ?? 0;

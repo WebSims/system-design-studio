@@ -294,6 +294,8 @@ function Canvas() {
         data: {
           repositoryLinked: study.repository !== null,
           performanceCalibrated: !uncalibratedTargets.has(`node:${n.id}`),
+          hasPerformanceEvidence:
+            evidenceByTarget.get(`node:${n.id}`)?.some((item) => item.aspect === "performance") ?? false,
           evidenceCount: evidenceByTarget.get(`node:${n.id}`)?.length ?? 0,
           evidenceTone: evidenceTone(evidenceByTarget.get(`node:${n.id}`) ?? []),
           noteCount: notesByTarget.get(`node:${n.id}`)?.length ?? 0,
@@ -355,6 +357,8 @@ function Canvas() {
             : "none",
           repositoryLinked: study.repository !== null,
           performanceCalibrated: !uncalibratedTargets.has(`edge:${e.id}`),
+          hasPerformanceEvidence:
+            evidenceByTarget.get(`edge:${e.id}`)?.some((item) => item.aspect === "performance") ?? false,
           evidenceCount: evidenceByTarget.get(`edge:${e.id}`)?.length ?? 0,
           evidenceTone: evidenceTone(evidenceByTarget.get(`edge:${e.id}`) ?? []),
         },

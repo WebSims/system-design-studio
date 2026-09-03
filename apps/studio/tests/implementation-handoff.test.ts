@@ -274,9 +274,10 @@ describe("implementation handoff", () => {
     expect(Object.keys(released.evaluations)).toEqual(Object.keys(approved.evaluations));
     expect(buildImplementationHandoff(released)).toMatchObject({ status: "blocked", code: "approval-required" });
 
-    // The agent built almost what was approved, but dropped one link.
+    // The agent built almost what was approved, but the measured shape of one link differs.
     const asBuiltDesign = structuredClone(approvedCandidate.design);
-    const droppedEdge = asBuiltDesign.edges.pop()!;
+    const changedEdge = asBuiltDesign.edges.at(-1)!;
+    changedEdge.latency = { kind: "deterministic", value: 0.75 };
     const reimported = importRepositoryArchitecture(released, {
       repository: { ...released.repository!, revision: "def456", capturedAt: 900 },
       label: "as built @def456",
@@ -293,8 +294,8 @@ describe("implementation handoff", () => {
 
     const delta = compareDesignTopology(approvedCandidate.design, reimported.candidate.design);
     expect(delta.comparable).toBe(true);
-    expect(delta.summary.edgesRemoved).toBe(1);
-    expect(delta.edges.find((e) => e.status === "removed")?.id).toBe(droppedEdge.id);
+    expect(delta.summary.edgesChanged).toBe(1);
+    expect(delta.edges.find((e) => e.status === "changed")?.id).toBe(changedEdge.id);
     expect(delta.summary.nodesAdded + delta.summary.nodesRemoved + delta.summary.nodesChanged).toBe(0);
   });
 

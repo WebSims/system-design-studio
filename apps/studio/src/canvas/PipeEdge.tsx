@@ -1,6 +1,7 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from "@xyflow/react";
 import { mean as distMean } from "@sds/core";
 import { useStudio } from "../store";
+import { latencyLabel, performanceInputState } from "./provenance";
 
 /**
  * A "pipe" edge: a wide dark casing with a lighter core, plus a mid-edge label.
@@ -40,10 +41,17 @@ export function PipeEdge({
     | {
         repositoryLinked?: boolean;
         performanceCalibrated?: boolean;
+        hasPerformanceEvidence?: boolean;
         evidenceCount?: number;
         evidenceTone?: "observed" | "inferred" | "assumed" | "uncovered";
       }
     | undefined;
+  const inputState = performanceInputState({
+    repositoryLinked: Boolean(evidence?.repositoryLinked),
+    calibrated: evidence?.performanceCalibrated !== false,
+    hasPerformanceEvidence: Boolean(evidence?.hasPerformanceEvidence),
+    usable: Number.isFinite(latencyMs) && latencyMs > 0,
+  });
 
   return (
     <>
@@ -51,20 +59,20 @@ export function PipeEdge({
       <BaseEdge id={id} path={path} className={`pipe-core ${selected ? "selected" : ""}`} />
       <EdgeLabelRenderer>
         <div
-          className={`edge-chip ${topology ? `topology-${topology}` : ""}`}
+          className={`edge-chip edge-latency-${inputState} ${topology ? `topology-${topology}` : ""}`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
           <span
             className="tnum"
             title={
               evidence?.repositoryLinked && evidence.performanceCalibrated === false
-                ? "Latency is a placeholder until supported by observed runtime or user performance evidence."
+                ? inputState === "estimated"
+                  ? "Estimated one-way latency. Load results stay withheld until runtime or user measurements calibrate this link."
+                  : "One-way latency is unknown. Add a positive estimate with explicit provenance, then calibrate it with runtime or user measurements."
                 : undefined
             }
           >
-            {evidence?.repositoryLinked && evidence.performanceCalibrated === false
-              ? "?ms"
-              : `${latencyMs}ms`}
+            {latencyLabel(latencyMs, inputState)}
           </span>
           {evidence?.repositoryLinked && (
             <span

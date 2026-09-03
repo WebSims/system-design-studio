@@ -2,7 +2,9 @@ import {
   CandidateSchema,
   StudySchema,
   blankDesign,
+  distributionHasPositiveMean,
   migrateAndParse,
+  nodeTimingInputs,
   validateDesign,
   validateWorkflow,
   type ArchitectureEvidence,
@@ -66,51 +68,66 @@ const hasPosition = (node: Record<string, unknown>): boolean =>
   typeof node.x === "number" && typeof node.y === "number";
 
 /** A repository model must never inherit semantic defaults the agent did not choose. */
-const assertAgentNodeFields = (raw: Record<string, unknown>): void => {
-  if (raw.kind !== "server") return;
-  const server = raw.server;
-  if (
-    typeof server !== "object" ||
-    server === null ||
-    !("fanout" in server) ||
-    !["parallel", "sequential"].includes(String((server as Record<string, unknown>).fanout))
-  ) {
-    throw new MutationRefused(
-      `server "${String(raw.id ?? raw.label ?? "unknown")}" must set fanout explicitly to ` +
-        '"parallel" or "sequential". Inspect the call ordering; do not inherit the schema default.',
-      "server-fanout-required"
-    );
-  }
+const AGENT_NODE_TIMINGS: Record<string, { config: string; fields: string[] }> = {
+  server: { config: "server", fields: ["serviceTime"] },
+  loadbalancer: { config: "loadbalancer", fields: ["serviceTime"] },
+  cache: { config: "cache", fields: ["serviceTime"] },
+  database: { config: "database", fields: ["serviceTime"] },
+  queue: { config: "queue", fields: ["consumerServiceTime", "publishTime"] },
+  gateway: { config: "gateway", fields: ["acceptTime", "pushTime"] },
+  lock: { config: "lock", fields: ["serviceTime"] },
 };
 
-const distributionHasPositiveMean = (raw: unknown): boolean => {
-  if (typeof raw !== "object" || raw === null) return false;
-  const value = raw as Record<string, unknown>;
-  switch (value.kind) {
-    case "deterministic":
-      return typeof value.value === "number" && value.value > 0;
-    case "exponential":
-    case "lognormal":
-      return typeof value.mean === "number" && value.mean > 0;
-    case "uniform":
-      return (
-        typeof value.min === "number" &&
-        typeof value.max === "number" &&
-        (value.min + value.max) / 2 > 0
+const assertAgentNodeFields = (raw: Record<string, unknown>): void => {
+  const identity = String(raw.id ?? raw.label ?? "unknown");
+  if (raw.kind === "server") {
+    const server = raw.server;
+    if (
+      typeof server !== "object" ||
+      server === null ||
+      !("fanout" in server) ||
+      !["parallel", "sequential"].includes(String((server as Record<string, unknown>).fanout))
+    ) {
+      throw new MutationRefused(
+        `server "${identity}" must set fanout explicitly to ` +
+          '"parallel" or "sequential". Inspect the call ordering; do not inherit the schema default.',
+        "server-fanout-required"
       );
-    case "pareto":
-      return (
-        typeof value.scale === "number" &&
-        typeof value.alpha === "number" &&
-        value.scale > 0 &&
-        value.alpha > 1
+    }
+  }
+
+  const timing = AGENT_NODE_TIMINGS[String(raw.kind ?? "")];
+  if (!timing) return;
+  const config = raw[timing.config];
+  // A missing/wrong config gets the more complete Zod field error later.
+  if (typeof config !== "object" || config === null) return;
+  const values = config as Record<string, unknown>;
+  for (const field of timing.fields) {
+    if (!(field in values)) {
+      throw new MutationRefused(
+        `component "${identity}" must set ${timing.config}.${field} explicitly. ` +
+          "Repository models cannot inherit a generic performance default.",
+        "node-timing-required"
       );
-    default:
-      return false;
+    }
+    if (!distributionHasPositiveMean(values[field])) {
+      throw new MutationRefused(
+        `component "${identity}" has zero or unusable mean ${timing.config}.${field}. ` +
+          "Use a non-zero catalog benchmark marked assumed when no measurement exists; never use 0ms for unknown work.",
+        "node-timing-zero"
+      );
+    }
   }
 };
 
 const assertAgentEdgeFields = (raw: Record<string, unknown>): void => {
+  if (!("fanoutFactor" in raw)) {
+    throw new MutationRefused(
+      `link "${String(raw.id ?? "unknown")}" must set fanoutFactor explicitly (use 1 for one-to-one). ` +
+        "For batches, broadcasts or loops, model how many downstream calls one source event creates.",
+      "edge-fanout-required"
+    );
+  }
   if (!("latency" in raw)) {
     throw new MutationRefused(
       `link "${String(raw.id ?? "unknown")}" must include an explicit one-way latency. ` +
@@ -507,6 +524,47 @@ function assertRepositoryBaselineContract(
   }
 
   if (origin !== "agent") return;
+
+  const topologyIssues = validateDesign(candidate.design);
+  if (topologyIssues.some((issue) => issue.code === "no-client")) {
+    throw new MutationRefused(
+      `cannot seal "${candidate.label}": the topology has no client/work source, so it generates no simulated load. ` +
+        "Add the real external entrypoint, timer, poller or consumer source before sealing.",
+      "baseline-no-work-source"
+    );
+  }
+  const unwiredSources = topologyIssues.filter((issue) => issue.code === "client-unwired");
+  if (unwiredSources.length > 0) {
+    throw new MutationRefused(
+      `cannot seal "${candidate.label}": ${unwiredSources.length} client/work source${unwiredSources.length === 1 ? " is" : "s are"} not connected to any modeled work. ` +
+        "Connect each source to its real entrypoint or remove it before sealing.",
+      "baseline-unwired-source"
+    );
+  }
+  const unreachable = topologyIssues.filter(
+    (issue) => issue.code === "unreachable-from-client"
+  );
+  if (unreachable.length > 0) {
+    throw new MutationRefused(
+      `cannot seal "${candidate.label}": ${unreachable.length} component${unreachable.length === 1 ? " is" : "s are"} unreachable from every client/work source ` +
+        `(${unreachable.slice(0, 4).map((issue) => `"${candidate.design.nodes.find((node) => node.id === issue.nodeId)?.label ?? issue.nodeId}"`).join(", ")}${unreachable.length > 4 ? ", …" : ""}). ` +
+        "Connect each real external entrypoint, timer, poller or consumer source before sealing; orphan nodes receive no simulated load.",
+      "baseline-unreachable"
+    );
+  }
+
+  const zeroTiming = candidate.design.nodes.flatMap((node) =>
+    nodeTimingInputs(node)
+      .filter((input) => !distributionHasPositiveMean(input.distribution))
+      .map((input) => ({ node, field: input.field }))
+  )[0];
+  if (zeroTiming) {
+    throw new MutationRefused(
+      `cannot seal "${candidate.label}": component "${zeroTiming.node.label}" has zero or unusable mean ${zeroTiming.field}. ` +
+        "Use a non-zero catalog benchmark marked assumed, then leave performance uncalibrated until measured.",
+      "baseline-zero-timing"
+    );
+  }
 
   const evidenced = new Set(
     candidate.evidence

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   ArchitectureEvidenceSchema,
   CorrectnessContractSchema,
+  DesignSchema,
   StudySchema,
   applyStudyContract,
   blankDesign,
@@ -94,6 +95,62 @@ describe("the manual design", () => {
     expect(validateDesign(design)).toEqual([
       expect.objectContaining({ severity: "warning", code: "no-client" }),
     ]);
+  });
+
+  it("warns about zero-cost work and components that no work source can reach", () => {
+    const design = DesignSchema.parse({
+      ...blankDesign(),
+      nodes: [
+        {
+          id: "browser",
+          kind: "client",
+          label: "browser",
+          x: 0,
+          y: 0,
+          client: { arrival: { kind: "poisson", ratePerSec: 1 } },
+        },
+        {
+          id: "api",
+          kind: "server",
+          label: "api",
+          x: 320,
+          y: 0,
+          server: {
+            concurrency: 1,
+            fanout: "sequential",
+            serviceTime: { kind: "deterministic", value: 0 },
+          },
+        },
+        {
+          id: "orphan",
+          kind: "server",
+          label: "unreachable worker",
+          x: 320,
+          y: 240,
+          server: {
+            concurrency: 1,
+            fanout: "sequential",
+            serviceTime: { kind: "deterministic", value: 1 },
+          },
+        },
+      ],
+      edges: [
+        {
+          id: "browser-api",
+          from: "browser",
+          to: "api",
+          latency: { kind: "deterministic", value: 0.25 },
+          fanoutFactor: 1,
+        },
+      ],
+    });
+    const issues = validateDesign(design);
+    expect(issues).toContainEqual(
+      expect.objectContaining({ code: "zero-node-service-time", nodeId: "api" })
+    );
+    expect(issues).toContainEqual(
+      expect.objectContaining({ code: "unreachable-from-client", nodeId: "orphan" })
+    );
   });
 });
 

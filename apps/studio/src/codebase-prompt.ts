@@ -15,17 +15,17 @@
  * as the immutable baseline and links the repository revision.
  */
 export const CODEBASE_PROMPT = [
-  "Inspect this repository with workspace tools. Use the open System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; the page cannot read files, so do not drive its UI.",
+  "Inspect this repository. Use the System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; it cannot read files, so do not drive its UI.",
   "Identify entrypoints, processes or containers, dependencies, and synchronous/background flows. A node is a runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
-    "Keep in-process work on its host; for a separate bound, label it '(in-process)' and cite shared lifecycle. Links are per-request causal work, never ownership. " +
-    "Give autonomous pollers, timers, cron, and consumers a client source, not HTTP. Set server fanout from code. Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
+    "Keep in-process work on its host; for a separate bound, label it '(in-process)' and cite shared lifecycle. Links are causal work, never ownership. " +
+    "Give each external entrypoint, poller, timer, cron, or consumer its own client/work source. Set server fanout from code and edge fanoutFactor from each source event (1 for one-to-one; expand batches, loops, or broadcasts). Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
   "Create a study, read its catalog, and record only evidenced workloads, goals, SLOs, and invariants. Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. " +
-    "Safety is checked after every step; use a postcondition for allowed mid-flow divergence and the relevant fault for crash claims. Trace the highest-risk state-changing flow into a workflow.",
-  "Never invent production rates, replicas, latencies, or provider choices. Give each link explicit positive one-way latency; if unmeasured, use locality-matched catalog placeholders assumed, never 0ms. " +
-    "Then do not run performance until calibrated by observed runtime or user evidence on every target. Plan topology and layout from layoutGuide or use auto-layout. " +
+    "Safety is checked after every step; use a postcondition for allowed divergence. Trace the highest-risk state-changing flow into a workflow. If unsupported, state exact checked scope and leave it unmodeled; never substitute an easier flow or imply full coverage.",
+  "Never invent production rates, replicas, latencies, or provider choices. Set component timings, link latency, and fanoutFactor explicitly; use positive locality-matched placeholders assumed for unknown timings, never 0ms. " +
+    "Then do not run performance until calibrated. Plan topology and layout from layoutGuide or use auto-layout. " +
     "Open an empty as-is candidate; add one component or link per patch; carry forward each returned revision.",
   "Seal the immutable as-is baseline with branch, commit, dirty state, scope, and architecture evidence for every element. Mark facts observed, deductions inferred, and unknown production behaviour assumed. " +
-    "Follow the tool schemas and next-step guidance. Read it back, report gaps, annotate and focus the highest risk. Stop before redesigning or editing code.",
+    "Follow the tool schemas and next-step guidance. Read back, report gaps, and focus its highest risk. Stop before redesigning or editing code.",
 ].join("\n\n")
 
 export const CODEBASE_PROMPT_ROUTE = [

@@ -1678,6 +1678,16 @@ summary:focus-visible {
   pointer-events: none;
   font-variant-numeric: tabular-nums;
 }
+.edge-chip.edge-latency-estimated > .tnum,
+.node.input-estimated .node-service,
+.node.input-estimated .node-src {
+  color: var(--warn);
+}
+.edge-chip.edge-latency-unknown > .tnum,
+.node.input-unknown .node-service,
+.node.input-unknown .node-src {
+  color: var(--fg-3);
+}
 .edge-evidence,
 .node-evidence {
   display: inline-flex;

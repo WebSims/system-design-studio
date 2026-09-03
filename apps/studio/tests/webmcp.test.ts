@@ -666,11 +666,14 @@ describe("reading the study", () => {
     const { content } = await call("studio_get_catalog", {});
     const guide = content.performanceGuide as {
       requirement: string;
+      componentTiming: string;
       edgeLatency: string;
       placeholders: Array<{ distribution: { kind: string } }>;
     };
     expect(guide.requirement).toContain("observed performance evidence");
+    expect(guide.componentTiming).toContain("Zero is an unknown-value sentinel");
     expect(guide.edgeLatency).toContain("Zero is an unknown-value sentinel");
+    expect(guide.edgeLatency).toContain("fanoutFactor");
     expect(guide.placeholders.length).toBeGreaterThan(0);
   });
 });
@@ -689,6 +692,37 @@ describe("repository-backed architecture", () => {
     expect(String(result.content.error)).toContain("no evidence");
     expect(host.study.repository).toBeNull();
     expect(host.study.candidates).toEqual([]);
+  });
+
+  it("refuses to seal an active component that no client/work source can reach", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const input = repositoryArchitectureInput();
+    const template = input.design.nodes.find((node) => node.kind === "server")!;
+    input.design.nodes.push({
+      ...structuredClone(template),
+      id: "orphan-worker",
+      label: "orphan worker",
+      x: template.x + 1600,
+      y: template.y + 960,
+    });
+    input.evidence.push({
+      id: "orphan-worker-source",
+      targetKind: "node",
+      targetId: "orphan-worker",
+      aspect: "architecture",
+      confidence: "observed",
+      source: "code",
+      path: "src/worker.ts",
+      lineStart: 1,
+      lineEnd: 10,
+      symbol: "startWorker",
+      claim: "source establishes the worker runtime",
+    });
+
+    const result = await call("studio_import_architecture", input);
+    expect(result.isError).toBe(true);
+    expect(String(result.content.error)).toContain("unreachable from every client/work source");
+    expect(host.study.repository).toBeNull();
   });
 
   it("imports an evidence-backed baseline atomically", async () => {
@@ -721,6 +755,7 @@ describe("repository-backed architecture", () => {
     const baseline = host.study.candidates.find(
       (candidate) => candidate.id === imported.content.candidateId
     )!;
+    expect(result.content.topologyIssues).toEqual([]);
     expect(summary.total).toBe(baseline.design.nodes.length + baseline.design.edges.length);
     expect(summary.observed).toBe(baseline.design.nodes.length);
     expect(summary.inferred).toBe(baseline.design.edges.length);
@@ -826,7 +861,7 @@ describe("repository-backed architecture", () => {
     const dangling = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 2,
-      operations: [{ op: "add-edge", edge: { id: "api-db", from: "api", to: "db", latency: { kind: "deterministic", value: 0.25 } } }],
+      operations: [{ op: "add-edge", edge: { id: "api-db", from: "api", to: "db", latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } }],
     });
     expect(dangling.isError).toBe(true);
     expect(host.study.candidates[0]!.revision).toBe(2);
@@ -834,7 +869,7 @@ describe("repository-backed architecture", () => {
     const link = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 2,
-      operations: [{ op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency: { kind: "deterministic", value: 0.25 } } }],
+      operations: [{ op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } }],
     });
     expect(link.isError).toBeFalsy();
     expect((link.content.changed as string[])[0]).toBe("added link browser → api");
@@ -948,10 +983,10 @@ describe("repository-backed architecture", () => {
         { op: "add-node", node: { id: "api", kind: "server", label: "api", server } },
         { op: "add-node", node: { id: "worker", kind: "server", label: "worker", server } },
         { op: "add-node", node: { id: "pg", kind: "database", label: "postgres", database: { serviceTime: { kind: "deterministic", value: 0.005 } } } },
-        { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency } },
-        { op: "add-edge", edge: { id: "browser-worker", from: "browser", to: "worker", latency } },
-        { op: "add-edge", edge: { id: "api-pg", from: "api", to: "pg", latency } },
-        { op: "add-edge", edge: { id: "worker-pg", from: "worker", to: "pg", latency } },
+        { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency, fanoutFactor: 1 } },
+        { op: "add-edge", edge: { id: "browser-worker", from: "browser", to: "worker", latency, fanoutFactor: 1 } },
+        { op: "add-edge", edge: { id: "api-pg", from: "api", to: "pg", latency, fanoutFactor: 1 } },
+        { op: "add-edge", edge: { id: "worker-pg", from: "worker", to: "pg", latency, fanoutFactor: 1 } },
       ],
     });
     expect(patched.isError).toBeFalsy();
@@ -967,13 +1002,13 @@ describe("repository-backed architecture", () => {
     const unpositioned = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 1,
-      operations: [{ op: "add-node", node: { id: "cache", kind: "cache", label: "cache", cache: {} } }],
+      operations: [{ op: "add-node", node: { id: "cache", kind: "cache", label: "cache", cache: { serviceTime: { kind: "deterministic", value: 0.2 } } } }],
     });
     expect(unpositioned.isError).toBe(true);
     expect(String(unpositioned.content.error)).toContain("auto-layout");
   });
 
-  it("requires explicit server fanout and a positive one-way latency from an agent", async () => {
+  it("requires explicit server fanout, node timing and link multiplicity/latency from an agent", async () => {
     await call("studio_create_study", { name: "checkout" });
     const drawing = await call("studio_create_candidate", { label: "as-is (drawing)" });
     const candidateId = drawing.content.candidateId as string;
@@ -997,6 +1032,30 @@ describe("repository-backed architecture", () => {
     });
     expect(implicitFanout.isError).toBe(true);
     expect(String(implicitFanout.content.error)).toContain("fanout explicitly");
+
+    const zeroTiming = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 0,
+      operations: [
+        {
+          op: "add-node",
+          node: {
+            id: "zero-worker",
+            kind: "server",
+            label: "zero worker",
+            x: 320,
+            y: 0,
+            server: {
+              concurrency: 1,
+              fanout: "sequential",
+              serviceTime: { kind: "deterministic", value: 0 },
+            },
+          },
+        },
+      ],
+    });
+    expect(zeroTiming.isError).toBe(true);
+    expect(String(zeroTiming.content.error)).toContain("never use 0ms");
 
     const nodes = await call("studio_apply_architecture_patch", {
       candidateId,
@@ -1030,12 +1089,13 @@ describe("repository-backed architecture", () => {
     expect(nodes.isError).toBeFalsy();
 
     for (const edge of [
-      { id: "missing", from: "timer", to: "worker" },
+      { id: "missing", from: "timer", to: "worker", fanoutFactor: 1 },
       {
         id: "zero",
         from: "timer",
         to: "worker",
         latency: { kind: "deterministic", value: 0 },
+        fanoutFactor: 1,
       },
     ]) {
       const result = await call("studio_apply_architecture_patch", {
@@ -1047,6 +1107,24 @@ describe("repository-backed architecture", () => {
       expect(String(result.content.error)).toMatch(/latency/);
       expect(host.study.candidates[0]!.revision).toBe(1);
     }
+
+    const implicitMultiplicity = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 1,
+      operations: [
+        {
+          op: "add-edge",
+          edge: {
+            id: "implicit-multiplicity",
+            from: "timer",
+            to: "worker",
+            latency: { kind: "deterministic", value: 0.25 },
+          },
+        },
+      ],
+    });
+    expect(implicitMultiplicity.isError).toBe(true);
+    expect(String(implicitMultiplicity.content.error)).toContain("fanoutFactor explicitly");
   });
 
   it("refuses an import that names both a design and a drawn candidate, or neither", async () => {
@@ -1203,6 +1281,16 @@ describe("validating a draft", () => {
     expect(content.valid).toBe(false);
     expect(content.errors).toContainEqual(
       expect.objectContaining({ layer: "agent-policy", code: "edge-latency-required" })
+    );
+
+    const implicitFanout = structuredClone(host.study.candidates[6]!.design) as {
+      edges: Array<Record<string, unknown>>;
+    };
+    delete implicitFanout.edges[0]!.fanoutFactor;
+    const checked = await call("studio_validate_draft", { design: implicitFanout });
+    expect(checked.content.valid).toBe(false);
+    expect(checked.content.errors).toContainEqual(
+      expect.objectContaining({ layer: "agent-policy", code: "edge-fanout-required" })
     );
   });
 
