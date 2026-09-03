@@ -65,7 +65,7 @@ export async function checkInWorker(
 export async function evaluateInWorker(
   study: Study,
   candidateId: string,
-  opts: { correctness: boolean; performance: boolean }
+  opts: { correctness: boolean; performance: boolean; scenarios: boolean }
 ): Promise<CandidateEvaluation> {
   return ensure().evaluate(study, candidateId, opts);
 }

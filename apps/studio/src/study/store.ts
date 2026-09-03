@@ -130,8 +130,8 @@ export interface StudioState {
   promote(id: string): void;
 
   // ---- evaluation ----
-  evaluate(candidateId: string, opts?: { correctness?: boolean; performance?: boolean }): Promise<CandidateEvaluation | null>;
-  evaluateAll(opts?: { correctness?: boolean; performance?: boolean }): Promise<void>;
+  evaluate(candidateId: string, opts?: { correctness?: boolean; performance?: boolean; scenarios?: boolean }): Promise<CandidateEvaluation | null>;
+  evaluateAll(opts?: { correctness?: boolean; performance?: boolean; scenarios?: boolean }): Promise<void>;
   checkOnly(candidateId: string): Promise<void>;
   refreshPortfolio(): Promise<void>;
   cancel(): void;
@@ -188,7 +188,7 @@ function derive(study: Study): Pick<
 function mergeEvaluation(
   previous: CandidateEvaluation | undefined,
   next: CandidateEvaluation,
-  phases: { correctness: boolean; performance: boolean }
+  phases: { correctness: boolean; performance: boolean; scenarios: boolean }
 ): CandidateEvaluation {
   if (!previous) return next;
   return {
@@ -197,6 +197,9 @@ function mergeEvaluation(
     performance: phases.performance ? next.performance : previous.performance,
     business: phases.performance ? next.business : previous.business,
     resources: phases.performance ? next.resources : previous.resources,
+    // `?? []` also makes hot-reloaded v2 evaluations safe before IndexedDB has reparsed them with
+    // the new schema default.
+    scenarios: phases.scenarios ? next.scenarios : (previous.scenarios ?? []),
     assumptions: [...new Set([...previous.assumptions, ...next.assumptions])],
     warnings: [...new Set([...previous.warnings, ...next.warnings])],
     wallMs: previous.wallMs + next.wallMs,
@@ -430,9 +433,14 @@ export const useStudyStore = create<StudioState>((set, get) => {
     evaluate: async (candidateId, opts) => {
       const correctness = opts?.correctness ?? true;
       const performance = opts?.performance ?? true;
+      const scenarios = opts?.scenarios ?? false;
       set((s) => ({ running: new Set(s.running).add(candidateId), error: null }));
       try {
-        const evaluation = await evaluateInWorker(get().study, candidateId, { correctness, performance });
+        const evaluation = await evaluateInWorker(get().study, candidateId, {
+          correctness,
+          performance,
+          scenarios,
+        });
         const study = get().study;
         const candidate = study.candidates.find((c) => c.id === candidateId);
         if (!candidate) return null;
@@ -442,7 +450,11 @@ export const useStudyStore = create<StudioState>((set, get) => {
           seeds: study.workload.seeds,
           boundsHash: studyBoundsHash(study),
         });
-        const merged = mergeEvaluation(study.evaluations[key], evaluation, { correctness, performance });
+        const merged = mergeEvaluation(study.evaluations[key], evaluation, {
+          correctness,
+          performance,
+          scenarios,
+        });
         // Immediate: an evaluation is minutes of work, and losing it to a reload would send the
         // user back to the beginning of the slowest thing the product does.
         commit({ ...study, evaluations: { ...study.evaluations, [key]: merged } }, true);
@@ -471,7 +483,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
     },
 
     checkOnly: async (candidateId) => {
-      await get().evaluate(candidateId, { correctness: true, performance: false });
+      await get().evaluate(candidateId, { correctness: true, performance: false, scenarios: false });
     },
 
     refreshPortfolio: async () => {

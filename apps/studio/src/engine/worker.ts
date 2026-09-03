@@ -133,12 +133,13 @@ const api = {
   evaluate(
     study: Study,
     candidateId: string,
-    opts: { correctness: boolean; performance: boolean }
+    opts: { correctness: boolean; performance: boolean; scenarios: boolean }
   ): CandidateEvaluation {
     const candidate = requireCandidate(study, candidateId);
     return evaluateCandidate(study, candidate, {
       skipCorrectness: !opts.correctness,
       skipPerformance: !opts.performance,
+      runScenarios: opts.scenarios,
     });
   },
 

@@ -526,6 +526,7 @@ function useWebmcp() {
           const evaluation = await useStudyStore.getState().evaluate(input.candidateId, {
             correctness: input.correctness,
             performance: input.performance,
+            scenarios: input.scenarios,
           });
           if (!evaluation) {
             throw new Error(useStudyStore.getState().error ?? "evaluation failed");

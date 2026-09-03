@@ -614,6 +614,21 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     ],
     "type": "object",
   },
+  "studio_run_production_scenarios": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "description": "Candidate id, from studio_get_study.",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "candidateId",
+    ],
+    "type": "object",
+  },
   "studio_update_study": {
     "additionalProperties": false,
     "properties": {

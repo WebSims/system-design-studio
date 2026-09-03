@@ -754,6 +754,58 @@ export const ResourceAccountingSchema = z
 export type ResourceAccounting = z.infer<typeof ResourceAccountingSchema>;
 
 // ---------------------------------------------------------------------------
+// results: production scenarios
+// ---------------------------------------------------------------------------
+
+/**
+ * The fixed production questions the MVP can answer with executable models.
+ *
+ * These are deliberately product language rather than engine operations. A user wants to know
+ * whether a burst drains or a dependency failure spreads; whether the engine implemented that as
+ * a changed arrival process or an injected failure probability is an internal detail.
+ */
+export const ProductionScenarioKindSchema = z.enum([
+  "concurrency-race",
+  "traffic-spike",
+  "capacity-ramp",
+  "dependency-degradation",
+]);
+export type ProductionScenarioKind = z.infer<typeof ProductionScenarioKindSchema>;
+
+/** `inconclusive` names a missing model or bound; it is never rendered as a pass. */
+export const ProductionScenarioStatusSchema = z.enum([
+  "healthy",
+  "warning",
+  "critical",
+  "inconclusive",
+]);
+export type ProductionScenarioStatus = z.infer<typeof ProductionScenarioStatusSchema>;
+
+/**
+ * One compact, persisted result from the standard production suite.
+ *
+ * The prose is stored with the numbers because a bare metric does not say what was varied or what
+ * action follows. `metrics` stays deliberately open: each scenario measures different quantities,
+ * while the fixed `kind` gives consumers the stable discriminator they need.
+ */
+export const ProductionScenarioResultSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    kind: ProductionScenarioKindSchema,
+    label: z.string().min(1).max(160),
+    status: ProductionScenarioStatusSchema,
+    summary: z.string().min(1).max(2000),
+    evidence: z.string().min(1).max(4000),
+    recommendation: z.string().min(1).max(4000),
+    metrics: z.record(z.number().finite().nullable()).default({}),
+    targetNodeId: z.string().min(1).max(128).nullable().default(null),
+    targetEdgeId: z.string().min(1).max(128).nullable().default(null),
+    assumptions: z.array(z.string().min(1).max(2000)).max(32).default([]),
+  })
+  .strict();
+export type ProductionScenarioResult = z.infer<typeof ProductionScenarioResultSchema>;
+
+// ---------------------------------------------------------------------------
 // results: candidate evaluation and portfolio
 // ---------------------------------------------------------------------------
 
@@ -780,6 +832,8 @@ export const CandidateEvaluationSchema = z
     performance: PerformanceSummarySchema.nullable().default(null),
     business: BusinessSummarySchema.nullable().default(null),
     resources: ResourceAccountingSchema.default({}),
+    /** Results from the explicit, named production suite. Empty means it has not been run. */
+    scenarios: z.array(ProductionScenarioResultSchema).max(16).default([]),
     /** Modelling assumptions in force. Always non-empty in practice. */
     assumptions: z.array(z.string()).default([]),
     warnings: z.array(z.string()).default([]),

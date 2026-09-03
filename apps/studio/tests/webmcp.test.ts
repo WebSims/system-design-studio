@@ -76,7 +76,7 @@ class TestHost implements ToolHost {
   study: Study;
   readonly activity: ActivityEntry[] = [];
   evaluations = new Map<string, CandidateEvaluation>();
-  runCalls: Array<{ candidateId: string; correctness: boolean; performance: boolean }> = [];
+  runCalls: Array<{ candidateId: string; correctness: boolean; performance: boolean; scenarios: boolean }> = [];
   /** Set to make `runEvaluation` wait, so a test can abort it mid-flight. */
   pending: ((abort: boolean) => void) | null = null;
 
@@ -162,12 +162,14 @@ class TestHost implements ToolHost {
     candidateId: string;
     correctness: boolean;
     performance: boolean;
+    scenarios: boolean;
     signal?: AbortSignal;
   }) {
     this.runCalls.push({
       candidateId: input.candidateId,
       correctness: input.correctness,
       performance: input.performance,
+      scenarios: input.scenarios,
     });
     if (this.pending) {
       await new Promise<void>((resolve, reject) => {
@@ -178,6 +180,23 @@ class TestHost implements ToolHost {
       });
     }
     const evaluation = stubEvaluation(input.candidateId);
+    if (input.scenarios) {
+      evaluation.scenarios = [
+        {
+          id: "traffic-spike",
+          kind: "traffic-spike",
+          label: "3× traffic spike",
+          status: "warning",
+          summary: "The backlog recovered slowly.",
+          evidence: "p99 rose from 40ms to 220ms and recovered in 75s.",
+          recommendation: "Add headroom and bound the queue.",
+          metrics: { recoverySec: 75 },
+          targetNodeId: "api",
+          targetEdgeId: null,
+          assumptions: ["three times modeled traffic"],
+        },
+      ];
+    }
     this.evaluations.set(input.candidateId, evaluation);
     return evaluation;
   }
@@ -256,6 +275,7 @@ function stubEvaluation(candidateId: string): CandidateEvaluation {
     performance: null,
     business: null,
     resources: { cpuUnits: null, memoryMb: null, storageMb: null, connectionSlots: null, networkBytes: null, unknownAxes: [], unmeasuredNodes: [] },
+    scenarios: [],
     assumptions: [],
     warnings: [],
     createdAt: 0,
@@ -336,6 +356,7 @@ describe("registration", () => {
       "studio_create_candidate",
       "studio_replace_candidate_draft",
       "studio_run_evaluation",
+      "studio_run_production_scenarios",
       "studio_get_evaluation",
       "studio_compare_candidates",
     ]);
@@ -368,6 +389,7 @@ describe("registration", () => {
       "studio_get_candidate",
       "studio_validate_draft",
       "studio_run_evaluation",
+      "studio_run_production_scenarios",
       "studio_get_evaluation",
       "studio_compare_candidates",
     ]);
@@ -389,6 +411,7 @@ describe("registration", () => {
       "studio_get_architecture",
       "studio_get_candidate",
       "studio_attach_code_evidence",
+      "studio_run_production_scenarios",
       "studio_get_evaluation",
     ]);
   });
@@ -413,7 +436,7 @@ describe("registration", () => {
       expect(r.state.reason).toContain("remains usable by hand");
     }
     // And the tool definitions still exist, so the UI can list what an agent WOULD be able to do.
-    expect(r.tools.length).toBe(17);
+    expect(r.tools.length).toBe(18);
   });
 
   it("reports unsupported when registerTool is present but not a function", () => {
@@ -859,7 +882,23 @@ describe("running and reading an evaluation", () => {
       candidateId: "c6-serializable-transaction",
       correctness: true,
       performance: false,
+      scenarios: false,
     });
+  });
+
+  it("runs the named production suite without rerunning the ordinary evaluation", async () => {
+    const { content } = await call("studio_run_production_scenarios", {
+      candidateId: "c6-serializable-transaction",
+    });
+    expect(host.runCalls.at(-1)).toEqual({
+      candidateId: "c6-serializable-transaction",
+      correctness: false,
+      performance: false,
+      scenarios: true,
+    });
+    expect(content.scenarios).toEqual([
+      expect.objectContaining({ kind: "traffic-spike", status: "warning", targetNodeId: "api" }),
+    ]);
   });
 
   it("returns the full trace from studio_get_evaluation", async () => {

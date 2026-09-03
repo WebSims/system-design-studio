@@ -360,6 +360,175 @@ summary:focus-visible {
 .assumptions summary { cursor: pointer; color: var(--fg-3); }
 .assumptions ul { margin: 8px 0 0 16px; padding: 0; color: var(--fg-2); line-height: 1.6; }
 
+/* ---------- production scenarios ---------- */
+
+.production-suite-head {
+  align-items: flex-start;
+}
+
+.production-suite-head > div {
+  min-width: 0;
+}
+
+.scenario-rollup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: 16px 0 12px;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.scenario-rollup > span,
+.scenario-count {
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.scenario-count.critical { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 45%, var(--line)); }
+.scenario-count.warning { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+.scenario-count.healthy { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.scenario-count.inconclusive { color: var(--fg-2); }
+
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.scenario-card {
+  position: relative;
+  min-width: 0;
+  padding: 15px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--line-2);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-2) 82%, var(--bg-3));
+}
+
+.scenario-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: var(--line-2);
+}
+
+.scenario-card.scenario-healthy { border-top-color: color-mix(in srgb, var(--ok) 72%, var(--line)); }
+.scenario-card.scenario-warning { border-top-color: color-mix(in srgb, var(--warn) 72%, var(--line)); }
+.scenario-card.scenario-critical { border-top-color: color-mix(in srgb, var(--crit) 80%, var(--line)); background: color-mix(in srgb, #23120f 62%, var(--bg-2)); }
+.scenario-card.scenario-inconclusive { border-top-color: var(--fg-3); }
+.scenario-card.scenario-healthy::after { background: var(--ok); }
+.scenario-card.scenario-warning::after { background: var(--warn); }
+.scenario-card.scenario-critical::after { background: var(--crit); }
+.scenario-card.scenario-inconclusive::after { background: var(--fg-3); }
+
+.scenario-card > header {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.scenario-icon {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.scenario-healthy .scenario-icon { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.scenario-warning .scenario-icon { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.scenario-critical .scenario-icon { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 55%, var(--line)); }
+
+.scenario-card h3 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.scenario-status {
+  color: var(--fg-3);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.scenario-healthy .scenario-status { color: var(--ok); }
+.scenario-warning .scenario-status { color: var(--warn); }
+.scenario-critical .scenario-status { color: var(--crit); }
+
+.scenario-card > p,
+.scenario-proof p,
+.scenario-action p {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.scenario-pending > p { color: var(--fg-3); }
+.scenario-summary { min-height: 38px; }
+
+.scenario-proof,
+.scenario-action {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.scenario-proof > span,
+.scenario-action > span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--fg-3);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.scenario-action > span { color: var(--sky); }
+
+.scenario-card > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.scenario-card > footer details {
+  color: var(--fg-3);
+  font-size: 10.5px;
+}
+
+.scenario-card > footer summary { cursor: pointer; }
+.scenario-card > footer ul { margin: 7px 0 0 17px; padding: 0; line-height: 1.55; }
+
+.scenario-caveat {
+  max-width: 76ch;
+  margin: 12px 0 0;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
 /* ---------- swimlanes ---------- */
 
 .counterexample { margin-top: 20px; }
@@ -2813,5 +2982,18 @@ summary:focus-visible {
 
   .delta-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .production-suite-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .production-suite-head .btn {
+    width: 100%;
+  }
+
+  .scenario-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

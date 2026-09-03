@@ -100,6 +100,7 @@ function evaluation(over: Partial<CandidateEvaluation> & { candidateId: string }
       unknownAxes: [],
       unmeasuredNodes: [],
     },
+    scenarios: [],
     assumptions: [],
     warnings: [],
     createdAt: 0,

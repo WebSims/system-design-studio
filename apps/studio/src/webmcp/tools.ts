@@ -316,6 +316,7 @@ export interface ToolHost {
     candidateId: string;
     correctness: boolean;
     performance: boolean;
+    scenarios: boolean;
     signal?: AbortSignal;
   }): Promise<CandidateEvaluation>;
   getEvaluation(candidateId: string): CandidateEvaluation | null;
@@ -878,6 +879,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             candidateId: args.candidateId,
             correctness: args.correctness,
             performance: args.performance,
+            scenarios: false,
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
           host.log({
@@ -888,6 +890,45 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             candidateId: args.candidateId,
           });
           return compactEvaluation(evaluation);
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_run_production_scenarios",
+        description:
+          "Run the standard production suite for one candidate: bounded concurrent requests and retries, a 3x " +
+          "30-second traffic spike with recovery, a load ramp to the project SLO boundary, and 30% degradation " +
+          "of a high-impact dependency. Returns measured evidence and a specific recommendation for every probe. " +
+          "An inconclusive result names the missing workflow, invariant, SLO, dependency or bound; never treat it as a pass.",
+        input: CandidateIdInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run({ candidateId }, ctx) {
+          const evaluation = await host.runEvaluation({
+            candidateId,
+            correctness: false,
+            performance: false,
+            scenarios: true,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          host.log({
+            tool: "studio_run_production_scenarios",
+            at: Date.now(),
+            ok: true,
+            summary: `ran ${evaluation.scenarios.length} production scenarios for ${candidateId}`,
+            candidateId,
+          });
+          return {
+            evaluationId: evaluation.evaluationId,
+            candidateId,
+            candidateRevision: evaluation.candidateRevision,
+            scenarios: evaluation.scenarios,
+            assumptions: evaluation.assumptions,
+            warnings: evaluation.warnings,
+            wallMs: evaluation.wallMs,
+          };
         },
       },
       host
@@ -1089,6 +1130,7 @@ export function compactEvaluation(evaluation: CandidateEvaluation) {
     performance: p,
     business: evaluation.business,
     resources: evaluation.resources,
+    scenarios: evaluation.scenarios,
     assumptions: evaluation.assumptions,
     warnings: evaluation.warnings,
     wallMs: evaluation.wallMs,

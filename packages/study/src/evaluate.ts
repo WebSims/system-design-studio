@@ -20,6 +20,7 @@ import { replicate } from "@sds/analyze";
 import { accountResources, resourceGapNote } from "./resources";
 import { decideEligibility } from "./eligibility";
 import { buildPortfolio } from "./pareto";
+import { runProductionScenarioSuite } from "./production-scenarios";
 
 /**
  * Evaluation, caching and portfolio assembly.
@@ -51,6 +52,8 @@ export interface EvaluateOptions {
   skipCorrectness?: boolean;
   /** Skip the replicated performance run. */
   skipPerformance?: boolean;
+  /** Run the explicit production scenario suite. Off unless requested. */
+  runScenarios?: boolean;
   /** Replications. Defaults to the study's seed count. */
   replications?: number;
   /** Abort cooperatively. Checked between replications and before the search. */
@@ -156,6 +159,13 @@ export function evaluateCandidate(
   const gap = resourceGapNote(resources);
   if (gap) warnings.push(gap);
 
+  // ---- named production scenarios ----
+  abortCheck();
+  const scenarios = opts.runScenarios
+    ? runProductionScenarioSuite({ study, candidate: synced, correctness })
+    : [];
+  abortCheck();
+
   const evaluation: CandidateEvaluation = {
     evaluationId: `${candidate.id}@${candidateHash}`,
     candidateId: candidate.id,
@@ -168,6 +178,7 @@ export function evaluateCandidate(
     performance,
     business,
     resources,
+    scenarios,
     assumptions: dedupe(assumptions.concat(performanceAssumptions(performance))),
     warnings: dedupe(warnings),
     createdAt: startedAt,
@@ -250,6 +261,7 @@ export function assemblePortfolio(study: Study): PortfolioResult {
         design: syncCandidateToStudy(study, candidate).design,
         run: null,
       }),
+      scenarios: [],
       assumptions: [],
       warnings: ["this candidate has not been evaluated at the project's current settings"],
       createdAt: 0,

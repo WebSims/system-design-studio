@@ -1,4 +1,12 @@
-import type { BusinessSummary, Interval, PerformanceSummary } from "@sds/schema";
+import { useState } from "react";
+import type {
+  BusinessSummary,
+  Interval,
+  PerformanceSummary,
+  ProductionScenarioResult,
+} from "@sds/schema";
+import { PRODUCTION_SCENARIO_RECIPES } from "@sds/study";
+import { useStudio } from "../store";
 import { useStudyStore } from "../study/store";
 
 /**
@@ -43,9 +51,11 @@ export function PerformanceView() {
   return (
     <div className="view view-performance">
       <div className="view-main">
+        <ProductionSuite candidateId={active.id} candidateLabel={active.label} />
+
         <section className="section">
           <header className="section-head">
-            <h2>performance</h2>
+            <h2>steady-state measurement</h2>
             {running ? (
               <button className="btn" onClick={cancel}>
                 cancel
@@ -100,6 +110,146 @@ export function PerformanceView() {
         <ResourcePanel />
       </aside>
     </div>
+  );
+}
+
+/**
+ * The production-language front door to the engines.
+ *
+ * A scenario is shown even when it cannot run. That missing workflow, SLO or dependency is itself
+ * useful architecture information, and hiding the card would make absence look like safety.
+ */
+function ProductionSuite({
+  candidateId,
+  candidateLabel,
+}: {
+  candidateId: string;
+  candidateLabel: string;
+}) {
+  const evaluation = useStudyStore((state) => state.evaluationFor(candidateId));
+  const evaluate = useStudyStore((state) => state.evaluate);
+  const cancel = useStudyStore((state) => state.cancel);
+  const workerRunning = useStudyStore((state) => state.running.has(candidateId));
+  const setView = useStudyStore((state) => state.setView);
+  const select = useStudio((state) => state.select);
+  const [requested, setRequested] = useState(false);
+  const results = evaluation?.scenarios ?? [];
+  const running = requested && workerRunning;
+
+  const run = async () => {
+    setRequested(true);
+    try {
+      await evaluate(candidateId, { correctness: false, performance: false, scenarios: true });
+    } finally {
+      setRequested(false);
+    }
+  };
+
+  const inspect = (result: ProductionScenarioResult) => {
+    if (result.targetNodeId) select({ kind: "node", id: result.targetNodeId });
+    else if (result.targetEdgeId) select({ kind: "edge", id: result.targetEdgeId });
+    else return;
+    setView("design");
+  };
+
+  const critical = results.filter((result) => result.status === "critical").length;
+  const warnings = results.filter((result) => result.status === "warning").length;
+  const inconclusive = results.filter((result) => result.status === "inconclusive").length;
+
+  return (
+    <section className="section production-suite">
+      <header className="section-head production-suite-head">
+        <div>
+          <h2>production scenarios</h2>
+          <p className="section-subtitle">
+            Counterfactual tests of the model for {candidateLabel}, not observations from production.
+          </p>
+        </div>
+        {running ? (
+          <button className="btn" onClick={cancel}>cancel</button>
+        ) : (
+          <button className="btn primary" onClick={() => void run()} disabled={workerRunning}>
+            {results.length > 0 ? "Run suite again" : "Run production suite"}
+          </button>
+        )}
+      </header>
+
+      {running && <p className="muted" aria-live="polite">Running four deterministic probes in the worker…</p>}
+
+      {results.length > 0 && !running && (
+        <div className="scenario-rollup" aria-label="Production scenario summary">
+          <span>{results.length}/{PRODUCTION_SCENARIO_RECIPES.length} tested</span>
+          {critical > 0 && <strong className="scenario-count critical">{critical} critical</strong>}
+          {warnings > 0 && <strong className="scenario-count warning">{warnings} warning{warnings === 1 ? "" : "s"}</strong>}
+          {inconclusive > 0 && <strong className="scenario-count inconclusive">{inconclusive} inconclusive</strong>}
+          {critical + warnings + inconclusive === 0 && <strong className="scenario-count healthy">all healthy in-model</strong>}
+        </div>
+      )}
+
+      <div className="scenario-grid">
+        {PRODUCTION_SCENARIO_RECIPES.map((recipe) => {
+          const result = results.find((item) => item.kind === recipe.kind);
+          return result ? (
+            <ScenarioCard key={recipe.kind} result={result} onInspect={() => inspect(result)} />
+          ) : (
+            <article className="scenario-card scenario-pending" key={recipe.kind}>
+              <header>
+                <span className="scenario-icon" aria-hidden="true">◇</span>
+                <h3>{recipe.label}</h3>
+                <span className="scenario-status">not run</span>
+              </header>
+              <p>{recipe.description}</p>
+            </article>
+          );
+        })}
+      </div>
+
+      <p className="scenario-caveat">
+        Result quality follows model quality. Source evidence on the Design canvas shows what came
+        from code and what is still inferred or assumed.
+      </p>
+    </section>
+  );
+}
+
+function ScenarioCard({
+  result,
+  onInspect,
+}: {
+  result: ProductionScenarioResult;
+  onInspect: () => void;
+}) {
+  const canInspect = result.targetNodeId !== null || result.targetEdgeId !== null;
+  return (
+    <article className={`scenario-card scenario-${result.status}`}>
+      <header>
+        <span className="scenario-icon" aria-hidden="true">
+          {result.status === "healthy" ? "✓" : result.status === "critical" ? "!" : result.status === "warning" ? "△" : "?"}
+        </span>
+        <h3>{result.label}</h3>
+        <span className="scenario-status">{result.status}</span>
+      </header>
+      <p className="scenario-summary">{result.summary}</p>
+      <div className="scenario-proof">
+        <span>measured evidence</span>
+        <p>{result.evidence}</p>
+      </div>
+      <div className="scenario-action">
+        <span>next move</span>
+        <p>{result.recommendation}</p>
+      </div>
+      <footer>
+        {canInspect && <button className="btn small" onClick={onInspect}>Inspect target</button>}
+        {result.assumptions.length > 0 && (
+          <details>
+            <summary>{result.assumptions.length} assumption{result.assumptions.length === 1 ? "" : "s"}</summary>
+            <ul>
+              {result.assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}
+            </ul>
+          </details>
+        )}
+      </footer>
+    </article>
   );
 }
 
