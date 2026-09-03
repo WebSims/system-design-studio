@@ -125,7 +125,7 @@ const RecentStudies = () => {
 }
 
 /** The tools that add a candidate, and so replace this screen with the canvas. */
-const RENDERING_TOOLS = ["studio_import_architecture", "studio_create_candidate"] as const
+const RENDERING_TOOLS = ["studio_create_candidate", "studio_import_architecture"] as const
 
 /** The empty human-authored candidate behind every "Design manually" button. */
 const manualCandidate = () => ({
@@ -174,7 +174,7 @@ const AgentProgress = () => {
               <code>{tool}</code>
             </span>
           ))}
-          . Validating a draft stores nothing.
+          ; from then on every accepted patch is drawn here as it lands. Validating a draft stores nothing.
         </span>
       </div>
       <button className="btn with-icon" onClick={() => addCandidate(manualCandidate())}>

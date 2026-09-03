@@ -55,18 +55,23 @@ structured architecture evidence and results into the same live page a person re
 ## The repository loop
 
 1. Codex reads the real workspace and records commit, branch, dirty state, and scope.
-2. `studio_import_architecture` creates an as-is baseline. Observed facts cite source;
+2. Codex draws the as-is design on the canvas: `studio_create_candidate` with no design
+   opens an empty canvas, then one `studio_apply_architecture_patch` per component and
+   link, each drawn as it is accepted. Nodes without coordinates take the next free grid
+   slot.
+3. `studio_import_architecture` with `fromCandidateId` seals that drawing as the as-is
+   baseline (or imports a complete `design` in one call). Observed facts cite source;
    deductions are `inferred`; unknown production behavior stays `assumed`.
-3. Codex creates experiments from that baseline. The baseline cannot be redesigned in
+4. Codex creates experiments from that baseline. The baseline cannot be redesigned in
    place through WebMCP.
-4. Correctness, performance, and named production scenarios produce evidence. Exact-ID
+5. Correctness, performance, and named production scenarios produce evidence. Exact-ID
    comparison shows what was authored, without pretending it proves runtime causality.
-5. A person approves one eligible experiment in Compare. The receipt pins both the
+6. A person approves one eligible experiment in Compare. The receipt pins both the
    experiment revision and its baseline revision.
-6. `studio_get_implementation_handoff` exposes before/after values, source starting
+7. `studio_get_implementation_handoff` exposes before/after values, source starting
    points, the project contract, current evaluation, and unresolved findings. It is
    read-only.
-7. Codex edits code and tests through normal workspace permissions. It does not deploy.
+8. Codex edits code and tests through normal workspace permissions. It does not deploy.
    A fresh repository scan is required before the visual twin can be considered current.
 
 ## The yardstick freezes once results exist

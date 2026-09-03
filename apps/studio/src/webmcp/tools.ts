@@ -111,7 +111,9 @@ const CreateCandidateInput = z
       .unknown()
       .optional()
       .describe(
-        "A complete design document. Omit to copy the project's active candidate as a starting point. Validate with studio_validate_draft first."
+        "A complete design document. Omit to copy the project's active candidate as a starting point, or, in a project " +
+          "with no candidate yet, to open an empty canvas and draw on it with studio_apply_architecture_patch. " +
+          "Validate a supplied design with studio_validate_draft first."
       ),
     copyFrom: z
       .string()
@@ -179,14 +181,39 @@ const ImportArchitectureInput = z
       .default("As-is architecture reconstructed from repository evidence."),
     design: z
       .unknown()
-      .describe("Complete design document for the architecture observed at this repository revision."),
+      .optional()
+      .describe(
+        "Complete design document for the architecture observed at this repository revision. " +
+          "Omit when sealing a candidate you drew step by step with fromCandidateId."
+      ),
+    fromCandidateId: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe(
+        "An experiment drawn on the canvas with studio_create_candidate and studio_apply_architecture_patch. " +
+          "It becomes the as-is baseline in place, keeping its id and everything already drawn."
+      ),
+    expectedRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Required with fromCandidateId: the revision returned by your last patch or evidence call."),
     evidence: z
       .array(ArchitectureEvidenceSchema)
       .max(4096)
       .default([])
-      .describe("Evidence records supporting nodes and links. Keep assumptions explicit."),
+      .describe(
+        "Evidence records supporting nodes and links. Keep assumptions explicit. With fromCandidateId these are " +
+          "appended to the evidence already attached."
+      ),
   })
-  .strict();
+  .strict()
+  .refine((input) => (input.design === undefined) !== (input.fromCandidateId === undefined), {
+    message: "supply exactly one of design or fromCandidateId",
+  });
 
 const GetArchitectureInput = z
   .object({
@@ -323,7 +350,9 @@ export interface ToolHost {
     repository: RepositorySnapshot;
     label: string;
     intent: string;
-    design: unknown;
+    design?: unknown;
+    fromCandidateId?: string;
+    expectedRevision?: number;
     evidence: ArchitectureEvidence[];
   }): Promise<Candidate>;
   /** Create an isolated, visibly-marked agent candidate. Returns the new candidate. */
@@ -485,7 +514,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Create and open a new project. The currently open project remains saved and can be reopened with " +
           "studio_open_study. Set the new project's yardstick with studio_update_study, then add candidates. " +
           "The page keeps showing its start screen until the project has a candidate: nothing is drawn until " +
-          "studio_import_architecture or studio_create_candidate succeeds.",
+          "studio_create_candidate (an empty canvas to draw on) or studio_import_architecture succeeds.",
         input: z
           .object({
             name: z.string().min(1).max(120),
@@ -506,8 +535,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             name: study.name,
             contractLocked: false,
             next:
-              "The canvas stays empty until a candidate exists. Finish with studio_import_architecture " +
-              "(as-is from a repository) or studio_create_candidate (a design without evidence).",
+              "The canvas stays empty until a candidate exists. To draw live, call studio_create_candidate with no design " +
+              "for an empty canvas, add each component and link with studio_apply_architecture_patch, then seal it with " +
+              "studio_import_architecture { fromCandidateId }. Or import a complete design in one call.",
           };
         },
       },
@@ -633,25 +663,26 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Import the current as-is architecture of a repository revision. Atomically links the repository and creates an " +
           "immutable baseline with code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
           "supported by the cited source; mark deductions inferred and unknown production behaviour assumed. " +
-          "This is the step that puts the design on the page: the start screen is replaced by the canvas when it succeeds.",
+          "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
+          "step by step on the canvas (studio_create_candidate, then studio_apply_architecture_patch per component and link). " +
+          "Either way this is what makes the drawing the immutable as-is baseline.",
         input: ImportArchitectureInput,
         annotations: { readOnlyHint: false, untrustedContentHint: true },
         async run(args) {
-          if (args.design === undefined) {
-            throw new Error("design is required: supply the complete as-is architecture document");
-          }
+          const sealing = args.fromCandidateId !== undefined;
           const candidate = await host.importArchitecture({
             repository: { ...args.repository, capturedAt: Date.now() },
             label: args.label,
             intent: args.intent,
-            design: args.design,
+            ...(sealing ? { fromCandidateId: args.fromCandidateId } : { design: args.design }),
+            ...(args.expectedRevision !== undefined ? { expectedRevision: args.expectedRevision } : {}),
             evidence: args.evidence,
           });
           host.log({
             tool: "studio_import_architecture",
             at: Date.now(),
             ok: true,
-            summary: `imported as-is baseline "${candidate.label}" with ${candidate.evidence.length} evidence records`,
+            summary: `${sealing ? "sealed the drawing as" : "imported"} as-is baseline "${candidate.label}" with ${candidate.evidence.length} evidence records`,
             candidateId: candidate.id,
             revision: candidate.revision,
           });
@@ -774,8 +805,11 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_apply_architecture_patch",
         description:
           "Apply a small atomic graph delta to an experiment instead of resending the whole design. Operations can add, " +
-          "update or remove nodes and links, replace the workflow, or rename the design. Requires the revision read from " +
-          "studio_get_architecture and refuses baselines, promoted candidates, stale revisions, missing targets and invalid results.",
+          "update or remove nodes and links, replace the workflow, or rename the design. Every accepted patch is drawn on " +
+          "the canvas immediately, so drawing an architecture one component or link per call lets a person watch it form; " +
+          "an add-node without x and y is placed in the next free grid slot. Requires the revision read from " +
+          "studio_get_architecture or returned by the previous call, and refuses baselines, promoted candidates, stale " +
+          "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,
         annotations: { readOnlyHint: false },
         async run(args) {
@@ -867,8 +901,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_create_candidate",
         description:
                     "Create a new candidate architecture: isolated, marked agent-authored, revision 0. Omit the design to copy " +
-          "the active candidate, which is what you want when changing one aspect of it. Never modifies an existing " +
-          "candidate.",
+          "the active candidate, which is what you want when changing one aspect of it, or to start from an empty canvas " +
+          "when the project has none. The candidate is drawn on the page at once. Never modifies an existing candidate.",
         input: CreateCandidateInput,
         annotations: { readOnlyHint: false },
         async run(args) {

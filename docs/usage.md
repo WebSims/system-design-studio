@@ -10,22 +10,33 @@ Keep the Studio open beside the repository in a WebMCP-capable coding agent and 
 the single request from the start screen. The request tells the agent that the
 `studio_*` tools are site tools of the open page, then walks it through the tools in
 call order: inspect the real repository before writing a graph, create a clean study,
-define its workload and success criteria, validate the design, import one immutable
-as-is baseline with structured source evidence, and show the evidence gaps on the canvas.
+define its workload and success criteria, draw the as-is design on the canvas one
+component and link at a time, seal it as one immutable baseline with structured source
+evidence, and show the evidence gaps on the canvas.
 
 Expected WebMCP path:
 
 ```text
 studio_create_study → studio_get_catalog → studio_update_study
-→ studio_validate_draft → studio_import_architecture
+→ studio_create_candidate (no design: an empty canvas)
+→ studio_apply_architecture_patch × n (add-node, add-edge, set-workflow)
+→ studio_import_architecture { fromCandidateId, expectedRevision, repository, evidence }
 → studio_get_architecture → studio_annotate / studio_focus
 ```
 
-The canvas appears at `studio_import_architecture`. Until then the studio keeps showing the
-start screen: creating the study, setting its contract and validating a draft change the
-project and the activity log in the agent panel, but add no candidate, and the canvas
-renders only candidates. When an agent has started but nothing is drawn yet, the start
-screen says so and names the step that is still missing.
+The canvas appears at `studio_create_candidate`, and from then on every accepted patch is
+drawn as it lands, so you watch the architecture form. An `add-node` without `x` and `y` is
+placed in the next free grid slot, the same rule the palette uses. Each patch is validated
+before it is committed: a link to a node that does not exist yet is refused with a named
+error, a missing client is only a warning. `studio_import_architecture` with
+`fromCandidateId` then turns the drawing into the as-is baseline in place, keeping its id
+and everything on the canvas; passing a complete `design` instead still imports in one call.
+
+Until a candidate exists the studio keeps showing the start screen: creating the study,
+setting its contract and validating a draft change the project and the activity log in the
+agent panel, but add no candidate, and the canvas renders only candidates. When an agent
+has started but nothing is drawn yet, the start screen says so and names the step that is
+still missing.
 
 Every observed component and connection should cite a source path and symbol (with line
 ranges where available). Deductions are labelled inferred; unknown production behaviour

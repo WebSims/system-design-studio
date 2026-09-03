@@ -2,9 +2,10 @@ import { useCallback } from "react"
 import { PRESET_BY_ID } from "@sds/models"
 import { nextNodeId } from "../ids"
 import { useStudio } from "../store"
+import { nextNodePosition } from "../canvas/layout"
 
 /**
- * Drop a preset onto the canvas, to the right of everything already there, and select it.
+ * Drop a preset onto the canvas, in the next free grid slot, and select it.
  *
  * Every preset is assembled from the cited benchmark library, so the new node starts at a defensible
  * number with visible provenance rather than at a placeholder. Shared by the palette menu and the
@@ -20,8 +21,8 @@ export const useAddPreset = () => {
       if (!preset) return
       edit((d) => {
         const id = nextNodeId(preset.kind, d.nodes.map((n) => n.id))
-        const maxX = d.nodes.reduce((m, n) => Math.max(m, n.x), 0)
-        d.nodes.push(preset.build(id, maxX + 300, 240))
+        const { x, y } = nextNodePosition(d.nodes)
+        d.nodes.push(preset.build(id, x, y))
       })
       // Select the new node so the inspector opens on it immediately.
       setTimeout(() => {

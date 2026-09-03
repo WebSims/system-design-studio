@@ -12,9 +12,12 @@
  * the tools expect to be called, because the tool descriptions say what each does but not what
  * comes before it. The two payloads the agent has to author blind -- the `repository` snapshot
  * and an `evidence` record -- are spelled out field by field, so citations land in structured
- * evidence rather than in prose. Validation happens BEFORE the import: the import is atomic and
- * refuses an invalid design, and the validator's messages are the only place the agent can learn
- * the design shape from. Every line is a plain sentence a person can edit before sending.
+ * evidence rather than in prose. The design is DRAWN, not delivered: an empty candidate first,
+ * then one patch per component and link, because a person watching the page should see the
+ * architecture form rather than wait on a blank start screen for one atomic import. Each patch
+ * is validated on arrival and refused with a named error, which is also how the agent learns the
+ * design shape. The import at the end seals the drawing as the immutable baseline and links the
+ * repository revision. Every line is a plain sentence a person can edit before sending.
  */
 export const CODEBASE_PROMPT = [
   "Use the System Design Studio page open in your browser to create a system design from this codebase. " +
@@ -24,12 +27,14 @@ export const CODEBASE_PROMPT = [
     "Note the branch, commit, dirty state (whether uncommitted changes are included) and the directories or packages you actually inspected. Do not add a component you cannot cite.",
   "2. Call studio_create_study with a short name and a problem statement taken from the code or documentation, then studio_get_catalog and use only the component kinds and operations it lists.",
   "3. Call studio_update_study to record only what the code, configuration or documentation supports: workload, SLOs, business outcomes and correctness invariants. Leave a field empty rather than guess; an unknown yardstick is more useful than an invented one.",
-  "4. Write the as-is design as one document. Model callers as a client node, give every node and link a short stable id, and keep the workflow null unless the code shows the request steps. " +
-    "Check it with studio_validate_draft and fix every error it names before importing. Validating stores nothing and draws nothing; do not stop here.",
-  "5. Call studio_import_architecture once, with repository { name, rootHint, branch, revision, dirty, scope }, the validated design, and an evidence record per observed component and connection: " +
+  "4. Draw the as-is design on the canvas step by step, so I can watch it form. Call studio_create_candidate with label \"as-is (drawing)\" and no design to open an empty canvas, " +
+    "then one studio_apply_architecture_patch per component (add-node; omit x and y and the studio places it) and, once both ends exist, one per connection (add-edge), passing the revision each call returns. " +
+    "Model callers as a client node and give every node and link a short stable id. Set the workflow with set-workflow only if the code shows the request steps. " +
+    "If a patch is refused, fix what it names and retry; use studio_validate_draft to check a whole document before sending it.",
+  "5. Seal the drawing: call studio_import_architecture once with repository { name, rootHint, branch, revision, dirty, scope }, fromCandidateId and expectedRevision of the drawing, and an evidence record per observed component and connection: " +
     "{ id, targetKind: node | edge, targetId (the node or link id), confidence, source: code | config | documentation | runtime | user, path, lineStart, lineEnd, symbol, claim }. " +
     "Use confidence observed only for what the cited lines state directly; mark deductions inferred and unknown production behaviour assumed. " +
-    "This import is what puts the design on the page: until it succeeds the studio keeps showing its start screen.",
+    "This turns the drawing into the immutable as-is baseline.",
   "6. Call studio_get_architecture and report its evidenceSummary: uncovered nodes and links, and every inferred or assumed claim. " +
     "Use studio_annotate with tone warn on the components whose evidence is weakest or whose production risk is most likely, and studio_focus on the one that matters most.",
   "Then stop. Do not redesign the system or edit code, and do not create experiments, until I ask.",
@@ -38,7 +43,7 @@ export const CODEBASE_PROMPT = [
 export const CODEBASE_PROMPT_ROUTE = [
   "inspect the codebase",
   "define the system yardstick",
-  "validate and import the as-is design",
+  "draw the as-is design live, then seal it",
   "show evidence gaps",
 ] as const
 

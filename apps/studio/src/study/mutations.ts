@@ -1,6 +1,7 @@
 import {
   CandidateSchema,
   StudySchema,
+  blankDesign,
   migrateAndParse,
   validateDesign,
   validateWorkflow,
@@ -10,6 +11,7 @@ import {
   type RepositorySnapshot,
   type Study,
 } from "@sds/schema";
+import { nextNodePosition, placedBoxes, separateOverlappingNodePositions } from "../canvas/layout"
 
 /**
  * Candidate mutations, as pure functions over a study.
@@ -104,12 +106,20 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
     );
   }
 
-  const source = input.design !== undefined ? null : resolveSource(study, input.copyFrom);
-  const rawDesign = input.design !== undefined ? input.design : structuredClone(source!.design);
+  // No design and nothing to copy means an empty canvas, not a refusal: it is how a drawing starts
+  // in a fresh project, for the palette and for an agent adding one node at a time alike.
+  const startsEmpty = input.design === undefined && input.copyFrom === undefined && study.candidates.length === 0;
+  const source = input.design !== undefined || startsEmpty ? null : resolveSource(study, input.copyFrom);
+  const rawDesign =
+    input.design !== undefined ? input.design : startsEmpty ? blankDesign() : structuredClone(source!.design);
 
   let design;
   try {
-    design = migrateAndParse(rawDesign);
+    const parsedDesign = migrateAndParse(rawDesign)
+    design =
+      input.origin === "agent"
+        ? separateOverlappingNodePositions(parsedDesign)
+        : parsedDesign
   } catch (err) {
     throw new MutationRefused(
       `the design does not parse: ${err instanceof Error ? err.message : String(err)}. ` +
@@ -192,7 +202,12 @@ export interface ImportRepositoryArchitectureInput {
   repository: RepositorySnapshot;
   label: string;
   intent?: string;
-  design: unknown;
+  /** The complete as-is design. Omit when sealing a candidate drawn step by step (`fromCandidateId`). */
+  design?: unknown;
+  /** An experiment drawn on the canvas, to be turned into the baseline in place. */
+  fromCandidateId?: string;
+  /** Required with `fromCandidateId` for an agent: the revision it believes it is sealing. */
+  expectedRevision?: number;
   evidence?: ArchitectureEvidence[];
   origin: "human" | "agent";
 }
@@ -256,7 +271,11 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
 
   let design;
   try {
-    design = migrateAndParse(input.design);
+    const parsedDesign = migrateAndParse(input.design)
+    design =
+      input.by === "agent"
+        ? separateOverlappingNodePositions(parsedDesign)
+        : parsedDesign
   } catch (err) {
     throw new MutationRefused(
       `the design does not parse: ${err instanceof Error ? err.message : String(err)}`,
@@ -323,6 +342,13 @@ export function importRepositoryArchitecture(
     approval: null,
     updatedAt: Date.now(),
   });
+  if (input.fromCandidateId !== undefined) return sealDrawnArchitecture(linked, input, input.fromCandidateId);
+  if (input.design === undefined) {
+    throw new MutationRefused(
+      "supply either the complete as-is design or fromCandidateId of the experiment drawn on the canvas",
+      "design-invalid"
+    );
+  }
   const created = createCandidate(linked, {
     label: input.label,
     intent: input.intent ?? "As-is architecture reconstructed from repository evidence.",
@@ -335,6 +361,63 @@ export function importRepositoryArchitecture(
   return {
     candidate: created.candidate,
     study: StudySchema.parse({ ...created.study, activeCandidateId: created.candidate.id }),
+  };
+}
+
+/**
+ * Turn an experiment that was drawn on the canvas into the as-is baseline, in place.
+ *
+ * The drawing path exists so a person can watch the architecture form one patch at a time; the
+ * design was validated at every patch, so it is not re-validated here. Sealing keeps the candidate
+ * id, so the picture on the canvas does not move, and applies the same rules as a fresh import:
+ * baseline role, no ancestor, every evidence id unique, and the agent's revision guard.
+ */
+function sealDrawnArchitecture(
+  linked: Study,
+  input: ImportRepositoryArchitectureInput,
+  candidateId: string
+): { study: Study; candidate: Candidate } {
+  const existing = linked.candidates.find((candidate) => candidate.id === candidateId);
+  if (!existing) throw new MutationRefused(`no candidate "${candidateId}"`, "no-such-candidate");
+  if (existing.role === "baseline") {
+    throw new MutationRefused(`"${existing.label}" is already an as-is baseline`, "baseline-immutable");
+  }
+  if (input.origin === "agent") {
+    if (input.expectedRevision === undefined) {
+      throw new MutationRefused(
+        "expectedRevision is required with fromCandidateId: pass the revision returned by the last patch",
+        "revision-conflict"
+      );
+    }
+    if (existing.revision !== input.expectedRevision) {
+      throw new MutationRefused(
+        `"${existing.label}" is at revision ${existing.revision}, not ${input.expectedRevision}. Re-read it with studio_get_architecture and try again.`,
+        "revision-conflict"
+      );
+    }
+  }
+  const added = input.evidence ?? [];
+  const ids = new Set(existing.evidence.map((item) => item.id));
+  const duplicate = added.find((item) => ids.has(item.id));
+  if (duplicate) {
+    throw new MutationRefused(`evidence id "${duplicate.id}" already exists`, "duplicate-evidence");
+  }
+  const candidate = CandidateSchema.parse({
+    ...existing,
+    label: input.label,
+    intent: input.intent ?? existing.intent,
+    role: "baseline",
+    basedOnCandidateId: null,
+    evidence: [...existing.evidence, ...structuredClone(added)],
+    revision: existing.revision + 1,
+  });
+  return {
+    candidate,
+    study: StudySchema.parse({
+      ...linked,
+      candidates: linked.candidates.map((c) => (c.id === candidate.id ? candidate : c)),
+      activeCandidateId: candidate.id,
+    }),
   };
 }
 
@@ -361,10 +444,15 @@ export function applyArchitecturePatch(
 
   for (const operation of input.operations) {
     switch (operation.op) {
-      case "add-node":
-        draft.nodes.push(structuredClone(operation.node) as Record<string, unknown>);
-        changed.push("added node");
+      case "add-node": {
+        const node = structuredClone(operation.node) as Record<string, unknown>;
+        // A node drawn without coordinates takes the next free grid slot, so an agent can add
+        // components in the order it finds them and the picture stays readable as it grows.
+        const unplaced = typeof node.x !== "number" || typeof node.y !== "number";
+        draft.nodes.push(unplaced ? { ...node, ...nextNodePosition(placedBoxes(draft.nodes)) } : node);
+        changed.push(`added node${typeof node.id === "string" ? ` ${node.id}` : ""}`);
         break;
+      }
       case "update-node": {
         if ("id" in operation.patch || "kind" in operation.patch) {
           throw new MutationRefused(
@@ -388,10 +476,14 @@ export function applyArchitecturePatch(
         changed.push(`removed node ${operation.nodeId} and its incident links`);
         break;
       }
-      case "add-edge":
-        draft.edges.push(structuredClone(operation.edge) as Record<string, unknown>);
-        changed.push("added link");
+      case "add-edge": {
+        const edge = structuredClone(operation.edge) as Record<string, unknown>;
+        draft.edges.push(edge);
+        changed.push(
+          typeof edge.from === "string" && typeof edge.to === "string" ? `added link ${edge.from} → ${edge.to}` : "added link"
+        );
         break;
+      }
       case "update-edge": {
         if ("id" in operation.patch) {
           throw new MutationRefused("update-edge cannot change id", "patch-identity");
