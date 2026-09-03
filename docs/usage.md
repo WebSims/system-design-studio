@@ -7,15 +7,18 @@ System Design Studio starts without a bundled system. Choose one of two paths.
 ## Create system design from codebase
 
 Keep the Studio open beside the repository in a WebMCP-capable coding agent and copy
-the single request from the start screen. The agent should inspect the real repository
-before writing a graph, create a clean study, define its workload and success criteria,
-and import one immutable as-is baseline with source evidence.
+the single request from the start screen. The request tells the agent that the
+`studio_*` tools are site tools of the open page, then walks it through the tools in
+call order: inspect the real repository before writing a graph, create a clean study,
+define its workload and success criteria, validate the design, import one immutable
+as-is baseline with structured source evidence, and show the evidence gaps on the canvas.
 
 Expected WebMCP path:
 
 ```text
 studio_create_study → studio_get_catalog → studio_update_study
-→ studio_import_architecture
+→ studio_validate_draft → studio_import_architecture
+→ studio_get_architecture → studio_annotate / studio_focus
 ```
 
 Every observed component and connection should cite a source path and symbol (with line

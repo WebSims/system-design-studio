@@ -3,20 +3,43 @@
  *
  * This is visible user text, not a hidden system prompt. Repository inspection remains the
  * agent's job; the registered site tools only carry the evidence-backed model into the page.
+ *
+ * WHY IT IS SHAPED LIKE THIS
+ *
+ * The agent discovers the `studio_*` tools as WebMCP site tools of the page open in its browser,
+ * so the first line says exactly that; without it a coding agent looks for an MCP server or
+ * starts driving the UI by clicking. The steps are numbered and name one tool each, in the order
+ * the tools expect to be called, because the tool descriptions say what each does but not what
+ * comes before it. The two payloads the agent has to author blind -- the `repository` snapshot
+ * and an `evidence` record -- are spelled out field by field, so citations land in structured
+ * evidence rather than in prose. Validation happens BEFORE the import: the import is atomic and
+ * refuses an invalid design, and the validator's messages are the only place the agent can learn
+ * the design shape from. Every line is a plain sentence a person can edit before sending.
  */
-export const CODEBASE_PROMPT =
-  "Use the System Design Studio tools available on this page to create a system design from this codebase. " +
-  "Inspect the repository before drawing anything: identify entry points, services, background jobs, data stores, queues, caches, external APIs, configuration, and deployment boundaries. " +
-  "Create a clean Studio design workspace with studio_create_study, read the modelling vocabulary with studio_get_catalog, and use studio_update_study to record the workload, SLOs, business outcomes, and correctness invariants that the code or documentation supports. " +
-  "Then call studio_import_architecture with the current branch, commit, dirty state, and inspected scope. Cite a source path, symbol, and line range for every observed component and connection; label deductions inferred and unknown production behaviour assumed. " +
-  "Show the as-is architecture on the canvas, summarise evidence gaps and likely production risks, and stop. Do not redesign the system or edit code until I ask.";
+export const CODEBASE_PROMPT = [
+  "Use the System Design Studio page open in your browser to create a system design from this codebase. " +
+    "The page registers WebMCP site tools named studio_*; call those directly rather than looking for an MCP server or clicking the interface. " +
+    "Read the repository with your own workspace tools; the page cannot see files.",
+  "1. Inspect the repository before drawing anything: entry points, services, background jobs, data stores, queues, caches, external APIs, configuration and deployment boundaries. " +
+    "Note the branch, commit, dirty state (whether uncommitted changes are included) and the directories or packages you actually inspected. Do not add a component you cannot cite.",
+  "2. Call studio_create_study with a short name and a problem statement taken from the code or documentation, then studio_get_catalog and use only the component kinds and operations it lists.",
+  "3. Call studio_update_study to record only what the code, configuration or documentation supports: workload, SLOs, business outcomes and correctness invariants. Leave a field empty rather than guess; an unknown yardstick is more useful than an invented one.",
+  "4. Write the as-is design as one document. Model callers as a client node, give every node and link a short stable id, and keep the workflow null unless the code shows the request steps. " +
+    "Check it with studio_validate_draft and fix every error it names before importing.",
+  "5. Call studio_import_architecture once, with repository { name, rootHint, branch, revision, dirty, scope }, the validated design, and an evidence record per observed component and connection: " +
+    "{ id, targetKind: node | edge, targetId (the node or link id), confidence, source: code | config | documentation | runtime | user, path, lineStart, lineEnd, symbol, claim }. " +
+    "Use confidence observed only for what the cited lines state directly; mark deductions inferred and unknown production behaviour assumed.",
+  "6. Call studio_get_architecture and report its evidenceSummary: uncovered nodes and links, and every inferred or assumed claim. " +
+    "Use studio_annotate with tone warn on the components whose evidence is weakest or whose production risk is most likely, and studio_focus on the one that matters most.",
+  "Then stop. Do not redesign the system or edit code, and do not create experiments, until I ask.",
+].join("\n\n")
 
 export const CODEBASE_PROMPT_ROUTE = [
   "inspect the codebase",
   "define the system yardstick",
-  "import the as-is design",
+  "validate and import the as-is design",
   "show evidence gaps",
-] as const;
+] as const
 
 /**
  * What the composer knows about where the person is standing. Every field is optional because
