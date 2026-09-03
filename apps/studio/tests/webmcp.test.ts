@@ -280,6 +280,14 @@ describe("registration", () => {
     ]);
   });
 
+  it("describes project creation as a recoverable switch", () => {
+    register();
+    const tool = mc.registered.find((candidate) => candidate.name === "studio_create_study")!;
+    expect(tool.description).toContain("remains saved");
+    expect(tool.description).toContain("studio_open_study");
+    expect(tool.description).not.toContain("Replaces whatever is open");
+  });
+
   it("exposes NO tool that could delete or promote a candidate", () => {
     register();
     const names = mc.registered.map((t) => t.name).join(" ");

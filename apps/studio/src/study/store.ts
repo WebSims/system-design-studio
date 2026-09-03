@@ -353,17 +353,25 @@ export const useStudyStore = create<StudioState>((set, get) => {
       commit(
         editActiveDesign(get().study, (candidate) => ({ ...candidate, design: mutate(candidate.design) }))
       );
+      // A topology edit invalidates every portfolio claim derived from the previous revision.
+      // Do not recompute here: node drags and inspector inputs can produce dozens of edits per
+      // second. The compare view keeps an explicit refresh action for that boundary.
+      set({ portfolio: null });
     },
 
     addCandidate: (input) => {
       const { study, candidate } = createCandidate(get().study, input);
       commit(study, true);
+      set({ portfolio: null });
+      void get().refreshPortfolio();
       return candidate;
     },
 
     replaceDraft: (input) => {
       const { study, candidate } = replaceCandidateDraft(get().study, input);
       commit(study, true);
+      set({ portfolio: null });
+      void get().refreshPortfolio();
       return candidate;
     },
 
@@ -381,6 +389,8 @@ export const useStudyStore = create<StudioState>((set, get) => {
         // Immediate. Promotion is THE decision in the product, and a debounce window in which it
         // exists only in memory is a window in which closing the tab undoes it.
         commit(promoteCandidate(get().study, id), true);
+        set({ portfolio: null });
+        void get().refreshPortfolio();
       } catch (err) {
         set({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -435,7 +445,11 @@ export const useStudyStore = create<StudioState>((set, get) => {
 
     refreshPortfolio: async () => {
       try {
-        set({ portfolio: await portfolioInWorker(get().study) });
+        const source = get().study;
+        const portfolio = await portfolioInWorker(source);
+        // A worker response can arrive after an agent or the UI has moved the document to a new
+        // revision. Object identity is sufficient because every mutation creates a new Study.
+        if (get().study === source) set({ portfolio });
       } catch (err) {
         set({ error: err instanceof Error ? err.message : String(err) });
       }

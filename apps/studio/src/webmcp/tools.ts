@@ -164,7 +164,7 @@ const EmptyInput = z.object({}).strict();
 export interface ToolHost {
   getStudy(): Study;
   getCatalog(): Catalog;
-  /** Start a new, empty project document and open it. */
+  /** Start a new, empty project document and open it. The current project remains saved. */
   createStudy(input: { name?: string; problem?: string }): Promise<Study>;
   /** Patch the executable contract. Rejects once results exist. */
   updateStudyContract(patch: StudyContractPatch): Promise<Study>;
@@ -297,8 +297,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_create_study",
         description:
-                    "Start a new project. Set its yardstick with studio_update_study, then add candidates. " +
-          "Replaces whatever is open.",
+          "Create and open a new project. The currently open project remains saved and can be reopened with " +
+          "studio_open_study. Set the new project's yardstick with studio_update_study, then add candidates.",
         input: z
           .object({
             name: z.string().min(1).max(120),
