@@ -17,6 +17,42 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
   )
 }
 
+/** Two (or three) short fields side by side, for numbers that are read as a pair. */
+export const FieldRow = ({ children }: { children: React.ReactNode }) => <div className="field-row">{children}</div>
+
+/**
+ * A glyph-only button. The label is mandatory and becomes both the accessible name and the
+ * tooltip, so an icon never ships without a word behind it.
+ */
+export const IconButton = ({
+  label,
+  tone,
+  size = "md",
+  className,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string
+  tone?: "danger" | "quiet"
+  size?: "sm" | "md"
+  className?: string
+  disabled?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) => (
+  <button
+    type="button"
+    className={["icon-btn", `icon-btn-${size}`, tone ?? "", className ?? ""].filter(Boolean).join(" ")}
+    aria-label={label}
+    title={label}
+    disabled={disabled}
+    onClick={onClick}
+  >
+    {children}
+  </button>
+)
+
 export function NumberInput({
   value,
   onChange,

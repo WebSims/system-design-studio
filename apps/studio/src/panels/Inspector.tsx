@@ -10,8 +10,9 @@ import {
 } from "@sds/schema";
 import { useStudio } from "../store";
 import { useStudyStore } from "../study/store";
+import { CursorIcon, KindIcon, LinkIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { BehaviourEditor, LockEditor, StateEditor } from "./BehaviourEditor";
-import { Field, NumberInput, Select, Toggle } from "./controls";
+import { Field, FieldRow, IconButton, NumberInput, Select, Toggle } from "./controls";
 
 /** Round to an integer and hold it inside the schema's bounds. */
 const clampInt = (v: number, min: number, max: number): number =>
@@ -39,6 +40,58 @@ function CitationNote({ citation }: { citation: Citation | undefined }) {
   );
 }
 
+/**
+ * The panel's masthead: what is selected, its name, and the one destructive action.
+ *
+ * The kind glyph is the same one the palette and the canvas use, so the eye does not have to
+ * re-learn the component when it lands in the inspector. Delete sits here, as a glyph, because
+ * a full-width red button at the bottom of a long form is both easy to miss and easy to hit.
+ */
+function PanelHead({
+  icon,
+  kicker,
+  title,
+  onTitleChange,
+  onDelete,
+  deleteLabel,
+}: {
+  icon: React.ReactNode;
+  kicker: string;
+  title: string;
+  onTitleChange?: (title: string) => void;
+  onDelete: () => void;
+  deleteLabel: string;
+}) {
+  return (
+    <header className="panel-head">
+      {icon}
+      <div className="panel-head-body">
+        <span className="panel-kicker">{kicker}</span>
+        {onTitleChange ? (
+          <input
+            className="panel-title-input"
+            value={title}
+            aria-label="label"
+            placeholder="unnamed"
+            onChange={(e) => onTitleChange(e.target.value)}
+          />
+        ) : (
+          <span className="panel-title">{title}</span>
+        )}
+      </div>
+      <IconButton label={deleteLabel} tone="danger" onClick={onDelete}>
+        <TrashIcon size={15} />
+      </IconButton>
+    </header>
+  );
+}
+
+/**
+ * Source evidence for the selected element, shown only when a repository is linked.
+ *
+ * A freehand model has no evidence by definition; saying so in a card above every node's fields
+ * was noise. That case is a one-line footnote at the bottom instead (`FreehandNote`).
+ */
 function ArchitectureEvidence({
   targetKind,
   targetId,
@@ -49,7 +102,7 @@ function ArchitectureEvidence({
   const study = useStudyStore((state) => state.study);
   const candidate =
     study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
-  if (!candidate) return null;
+  if (!candidate || !study.repository) return null;
   const evidence = candidate.evidence.filter(
     (item) => item.targetKind === targetKind && item.targetId === targetId
   );
@@ -63,10 +116,9 @@ function ArchitectureEvidence({
         </span>
       </div>
       {evidence.length === 0 ? (
-        <p className={`evidence-empty ${study.repository ? "evidence-uncovered" : ""}`}>
-          {study.repository
-            ? "No repository evidence is attached to this element. Treat it as an assumption until the agent cites a source."
-            : "This is a freehand model. Import from a codebase with your coding agent to attach auditable source evidence."}
+        <p className="evidence-empty evidence-uncovered">
+          No repository evidence is attached to this element. Treat it as an assumption until the
+          agent cites a source.
         </p>
       ) : (
         <ul className="evidence-list">
@@ -93,6 +145,18 @@ function ArchitectureEvidence({
         </ul>
       )}
     </section>
+  );
+}
+
+/** One quiet line at the foot of a freehand model's panel: where evidence would come from. */
+function FreehandNote() {
+  const linked = useStudyStore((state) => state.study.repository !== null);
+  if (linked) return null;
+  return (
+    <p className="freehand-note">
+      Freehand model. Import from a codebase with your agent to attach source evidence to this
+      element.
+    </p>
   );
 }
 
@@ -159,34 +223,34 @@ function DistributionEditor({
         </Field>
       )}
       {value.kind === "lognormal" && (
-        <>
+        <FieldRow>
           <Field label="mean" hint="ms">
             <NumberInput value={value.mean} min={0.01} step={0.5} onChange={(v) => onChange({ ...value, mean: Math.max(0.01, v) })} />
           </Field>
           <Field label="p99" hint="ms">
             <NumberInput value={value.p99} min={value.mean} step={1} onChange={(v) => onChange({ ...value, p99: Math.max(value.mean, v) })} />
           </Field>
-        </>
+        </FieldRow>
       )}
       {value.kind === "uniform" && (
-        <>
+        <FieldRow>
           <Field label="min" hint="ms">
             <NumberInput value={value.min} min={0} step={0.5} onChange={(v) => onChange({ ...value, min: Math.max(0, v) })} />
           </Field>
           <Field label="max" hint="ms">
             <NumberInput value={value.max} min={value.min} step={0.5} onChange={(v) => onChange({ ...value, max: Math.max(value.min, v) })} />
           </Field>
-        </>
+        </FieldRow>
       )}
       {value.kind === "pareto" && (
-        <>
+        <FieldRow>
           <Field label="scale" hint="ms">
             <NumberInput value={value.scale} min={0.01} step={0.5} onChange={(v) => onChange({ ...value, scale: Math.max(0.01, v) })} />
           </Field>
           <Field label="alpha" hint="tail index">
             <NumberInput value={value.alpha} min={0.1} step={0.1} onChange={(v) => onChange({ ...value, alpha: Math.max(0.1, v) })} />
           </Field>
-        </>
+        </FieldRow>
       )}
     </div>
   );
@@ -204,6 +268,7 @@ export function Inspector() {
       <aside className="rail right">
         <div className="rail-title">inspector</div>
         <div className="empty">
+          <CursorIcon size={20} className="empty-glyph" />
           Select a component or link to edit it.
           <div className="empty-sub">
             {lens === "behaviour"
@@ -225,10 +290,25 @@ export function Inspector() {
         const e = d.edges.find((x) => x.id === selection.id);
         if (e) fn(e);
       });
+    const labelOf = (id: string) => design.nodes.find((n) => n.id === id)?.label ?? id;
 
     return (
       <aside className="rail right">
-        <div className="rail-title">connection</div>
+        <PanelHead
+          icon={
+            <span className="kind-tile kind-link" aria-hidden="true">
+              <LinkIcon size={16} />
+            </span>
+          }
+          kicker="connection"
+          title={`${labelOf(edge.from)} \u2192 ${labelOf(edge.to)}`}
+          deleteLabel="Delete connection"
+          onDelete={() =>
+            edit((d) => {
+              d.edges = d.edges.filter((x) => x.id !== selection.id);
+            })
+          }
+        />
         <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
 
         <div className="section">network latency</div>
@@ -239,22 +319,24 @@ export function Inspector() {
         </p>
 
         <div className="section">routing</div>
-        <Field label="probability" hint="% of requests">
-          <NumberInput
-            value={Math.round(edge.probability * 1000) / 10}
-            min={0}
-            max={100}
-            step={1}
-            onChange={(v) => patch((e) => { e.probability = Math.min(1, Math.max(0, v / 100)); })}
-          />
-        </Field>
-        <Field label="fan-out" hint="calls per message">
-          <NumberInput
-            value={edge.fanoutFactor}
-            min={1}
-            onChange={(v) => patch((e) => { e.fanoutFactor = Math.max(1, Math.round(v)); })}
-          />
-        </Field>
+        <FieldRow>
+          <Field label="probability" hint="% of requests">
+            <NumberInput
+              value={Math.round(edge.probability * 1000) / 10}
+              min={0}
+              max={100}
+              step={1}
+              onChange={(v) => patch((e) => { e.probability = Math.min(1, Math.max(0, v / 100)); })}
+            />
+          </Field>
+          <Field label="fan-out" hint="per message">
+            <NumberInput
+              value={edge.fanoutFactor}
+              min={1}
+              onChange={(v) => patch((e) => { e.fanoutFactor = Math.max(1, Math.round(v)); })}
+            />
+          </Field>
+        </FieldRow>
         {edge.fanoutFactor > 1 && (
           <p className="note warn">
             One call becomes <b className="tnum">{edge.fanoutFactor}</b> downstream calls. In a
@@ -322,17 +404,7 @@ export function Inspector() {
         </p>
 
         <PolicyEditor edgeId={selection.id} />
-
-        <button
-          className="btn danger"
-          onClick={() =>
-            edit((d) => {
-              d.edges = d.edges.filter((x) => x.id !== selection.id);
-            })
-          }
-        >
-          delete connection
-        </button>
+        <FreehandNote />
         <ClassEditor />
         <ScenarioEditor />
       </aside>
@@ -365,12 +437,24 @@ export function Inspector() {
 
   return (
     <aside className="rail right">
-      <div className="rail-title">{node.kind}</div>
+      <PanelHead
+        icon={
+          <span className={`kind-tile kind-${node.kind}`} aria-hidden="true">
+            <KindIcon kind={node.kind} size={16} />
+          </span>
+        }
+        kicker={node.kind}
+        title={node.label}
+        onTitleChange={(label) => patch((n) => { n.label = label; })}
+        deleteLabel="Delete node"
+        onDelete={() =>
+          edit((d) => {
+            d.nodes = d.nodes.filter((x) => x.id !== selection.id);
+            d.edges = d.edges.filter((e) => e.from !== selection.id && e.to !== selection.id);
+          })
+        }
+      />
       <ArchitectureEvidence targetKind="node" targetId={node.id} />
-
-      <Field label="label">
-        <input className="input" value={node.label} onChange={(e) => patch((n) => { n.label = e.target.value; })} />
-      </Field>
 
       {lens === "behaviour" && behaviour}
 
@@ -500,22 +584,24 @@ export function Inspector() {
       {node.kind === "server" && node.server && (
         <>
           <div className="section">capacity</div>
-          <Field label="concurrency" hint="per replica">
-            <NumberInput
-              value={node.server.concurrency}
-              min={1}
-              max={MAX_CONCURRENCY}
-              onChange={(v) => patch((n) => { if (n.server) n.server.concurrency = clampInt(v, 1, MAX_CONCURRENCY); })}
-            />
-          </Field>
-          <Field label="replicas" hint="identical instances">
-            <NumberInput
-              value={node.server.replicas}
-              min={1}
-              max={MAX_REPLICAS}
-              onChange={(v) => patch((n) => { if (n.server) n.server.replicas = clampInt(v, 1, MAX_REPLICAS); })}
-            />
-          </Field>
+          <FieldRow>
+            <Field label="concurrency" hint="per replica">
+              <NumberInput
+                value={node.server.concurrency}
+                min={1}
+                max={MAX_CONCURRENCY}
+                onChange={(v) => patch((n) => { if (n.server) n.server.concurrency = clampInt(v, 1, MAX_CONCURRENCY); })}
+              />
+            </Field>
+            <Field label="replicas" hint="instances">
+              <NumberInput
+                value={node.server.replicas}
+                min={1}
+                max={MAX_REPLICAS}
+                onChange={(v) => patch((n) => { if (n.server) n.server.replicas = clampInt(v, 1, MAX_REPLICAS); })}
+              />
+            </Field>
+          </FieldRow>
 
           <div className="section">own work</div>
           <DistributionEditor
@@ -586,34 +672,36 @@ export function Inspector() {
           </p>
 
           <div className="section">failure injection</div>
-          <Field label="failure rate" hint="%">
-            <NumberInput
-              value={Math.round(node.server.failureProbability * 1000) / 10}
-              min={0}
-              max={100}
-              step={1}
-              onChange={(v) => patch((n) => { if (n.server) n.server.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
-            />
-          </Field>
-          <Field label="at saturation" hint="%, 0 = constant">
-            <NumberInput
-              value={
-                node.server.failureAtSaturation === null
-                  ? 0
-                  : Math.round(node.server.failureAtSaturation * 1000) / 10
-              }
-              min={0}
-              max={100}
-              step={5}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.server) {
-                    n.server.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
-                  }
-                })
-              }
-            />
-          </Field>
+          <FieldRow>
+            <Field label="failure rate" hint="%">
+              <NumberInput
+                value={Math.round(node.server.failureProbability * 1000) / 10}
+                min={0}
+                max={100}
+                step={1}
+                onChange={(v) => patch((n) => { if (n.server) n.server.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
+              />
+            </Field>
+            <Field label="at saturation" hint="%, 0 = constant">
+              <NumberInput
+                value={
+                  node.server.failureAtSaturation === null
+                    ? 0
+                    : Math.round(node.server.failureAtSaturation * 1000) / 10
+                }
+                min={0}
+                max={100}
+                step={5}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.server) {
+                      n.server.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
+                    }
+                  })
+                }
+              />
+            </Field>
+          </FieldRow>
           <p className="note">
             Failures unrelated to load: bugs, bad deploys, a dependency this model does not
             include. Charged <i>after</i> the work is done, because a server that fails still
@@ -656,29 +744,31 @@ export function Inspector() {
       {node.kind === "gateway" && node.gateway && (
         <>
           <div className="section">connections</div>
-          <Field label="sockets per instance">
-            <NumberInput
-              value={node.gateway.connectionCapacity}
-              min={1}
-              step={1000}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.gateway) n.gateway.connectionCapacity = Math.max(1, Math.round(v));
-                })
-              }
-            />
-          </Field>
-          <Field label="instances">
-            <NumberInput
-              value={node.gateway.replicas}
-              min={1}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.gateway) n.gateway.replicas = clampInt(v, 1, MAX_REPLICAS);
-                })
-              }
-            />
-          </Field>
+          <FieldRow>
+            <Field label="sockets" hint="per instance">
+              <NumberInput
+                value={node.gateway.connectionCapacity}
+                min={1}
+                step={1000}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.gateway) n.gateway.connectionCapacity = Math.max(1, Math.round(v));
+                  })
+                }
+              />
+            </Field>
+            <Field label="instances">
+              <NumberInput
+                value={node.gateway.replicas}
+                min={1}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.gateway) n.gateway.replicas = clampInt(v, 1, MAX_REPLICAS);
+                  })
+                }
+              />
+            </Field>
+          </FieldRow>
           <Field label="memory per socket" hint="KB">
             <NumberInput
               value={node.gateway.memoryPerConnectionKb}
@@ -790,34 +880,36 @@ export function Inspector() {
           </Field>
           {node.cache.keyspace.kind === "zipf" ? (
             <>
-              <Field label="distinct keys">
-                <NumberInput
-                  value={node.cache.keyspace.keys}
-                  min={1}
-                  step={10_000}
-                  onChange={(v) =>
-                    patch((n) => {
-                      if (n.cache?.keyspace.kind === "zipf") {
-                        n.cache.keyspace.keys = Math.max(1, Math.round(v));
-                      }
-                    })
-                  }
-                />
-              </Field>
-              <Field label="skew" hint="0 = uniform, ~1 typical">
-                <NumberInput
-                  value={node.cache.keyspace.skew}
-                  min={0}
-                  step={0.1}
-                  onChange={(v) =>
-                    patch((n) => {
-                      if (n.cache?.keyspace.kind === "zipf") {
-                        n.cache.keyspace.skew = Math.max(0, v);
-                      }
-                    })
-                  }
-                />
-              </Field>
+              <FieldRow>
+                <Field label="distinct keys">
+                  <NumberInput
+                    value={node.cache.keyspace.keys}
+                    min={1}
+                    step={10_000}
+                    onChange={(v) =>
+                      patch((n) => {
+                        if (n.cache?.keyspace.kind === "zipf") {
+                          n.cache.keyspace.keys = Math.max(1, Math.round(v));
+                        }
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="skew" hint="~1 typical">
+                  <NumberInput
+                    value={node.cache.keyspace.skew}
+                    min={0}
+                    step={0.1}
+                    onChange={(v) =>
+                      patch((n) => {
+                        if (n.cache?.keyspace.kind === "zipf") {
+                          n.cache.keyspace.skew = Math.max(0, v);
+                        }
+                      })
+                    }
+                  />
+                </Field>
+              </FieldRow>
               <p className="note">
                 The hit ratio is an <b>output</b>, not an input: keys are drawn from this
                 population and looked up in a real LRU map.
@@ -884,20 +976,22 @@ export function Inspector() {
       {node.kind === "database" && node.database && (
         <>
           <div className="section">connections and execution</div>
-          <Field label="pool size" hint="connections">
-            <NumberInput
-              value={node.database.poolSize}
-              min={1}
-              onChange={(v) => patch((n) => { if (n.database) n.database.poolSize = Math.max(1, Math.round(v)); })}
-            />
-          </Field>
-          <Field label="parallelism" hint="concurrent queries">
-            <NumberInput
-              value={node.database.parallelism}
-              min={1}
-              onChange={(v) => patch((n) => { if (n.database) n.database.parallelism = Math.max(1, Math.round(v)); })}
-            />
-          </Field>
+          <FieldRow>
+            <Field label="pool size" hint="connections">
+              <NumberInput
+                value={node.database.poolSize}
+                min={1}
+                onChange={(v) => patch((n) => { if (n.database) n.database.poolSize = Math.max(1, Math.round(v)); })}
+              />
+            </Field>
+            <Field label="parallelism" hint="queries">
+              <NumberInput
+                value={node.database.parallelism}
+                min={1}
+                onChange={(v) => patch((n) => { if (n.database) n.database.parallelism = Math.max(1, Math.round(v)); })}
+              />
+            </Field>
+          </FieldRow>
           <p className="note">
             <b>These are different limits.</b> The pool caps connections; parallelism caps what
             the engine actually executes at once (cores, or storage queue depth). Throughput is
@@ -920,34 +1014,36 @@ export function Inspector() {
           />
 
           <div className="section">failure injection</div>
-          <Field label="failure rate" hint="%">
-            <NumberInput
-              value={Math.round(node.database.failureProbability * 1000) / 10}
-              min={0}
-              max={100}
-              step={1}
-              onChange={(v) => patch((n) => { if (n.database) n.database.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
-            />
-          </Field>
-          <Field label="at saturation" hint="%, 0 = constant">
-            <NumberInput
-              value={
-                node.database.failureAtSaturation === null
-                  ? 0
-                  : Math.round(node.database.failureAtSaturation * 1000) / 10
-              }
-              min={0}
-              max={100}
-              step={5}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.database) {
-                    n.database.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
-                  }
-                })
-              }
-            />
-          </Field>
+          <FieldRow>
+            <Field label="failure rate" hint="%">
+              <NumberInput
+                value={Math.round(node.database.failureProbability * 1000) / 10}
+                min={0}
+                max={100}
+                step={1}
+                onChange={(v) => patch((n) => { if (n.database) n.database.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
+              />
+            </Field>
+            <Field label="at saturation" hint="%, 0 = constant">
+              <NumberInput
+                value={
+                  node.database.failureAtSaturation === null
+                    ? 0
+                    : Math.round(node.database.failureAtSaturation * 1000) / 10
+                }
+                min={0}
+                max={100}
+                step={5}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.database) {
+                      n.database.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
+                    }
+                  })
+                }
+              />
+            </Field>
+          </FieldRow>
           <p className="note">
             A rate that rises with load closes the feedback loop that turns a slowdown into a
             cascade. Measured from execution occupancy excluding the query itself, so a nearly
@@ -1047,18 +1143,7 @@ export function Inspector() {
         </div>
       )}
 
-      <button
-        className="btn danger"
-        onClick={() =>
-          edit((d) => {
-            d.nodes = d.nodes.filter((x) => x.id !== selection.id);
-            d.edges = d.edges.filter((e) => e.from !== selection.id && e.to !== selection.id);
-          })
-        }
-      >
-        delete node
-      </button>
-
+      <FreehandNote />
       <ClassEditor />
       <ScenarioEditor />
     </aside>
@@ -1181,30 +1266,32 @@ function ArrivalEditor({ nodeId }: { nodeId: string }) {
 
       {a.kind === "ramp" && (
         <>
-          <Field label="from" hint="req/s">
-            <NumberInput
-              value={a.fromRatePerSec}
-              min={0}
-              step={10}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client?.arrival.kind === "ramp") n.client.arrival.fromRatePerSec = Math.max(0, v);
-                })
-              }
-            />
-          </Field>
-          <Field label="to" hint="req/s">
-            <NumberInput
-              value={a.toRatePerSec}
-              min={0.1}
-              step={10}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client?.arrival.kind === "ramp") n.client.arrival.toRatePerSec = Math.max(0.1, v);
-                })
-              }
-            />
-          </Field>
+          <FieldRow>
+            <Field label="from" hint="req/s">
+              <NumberInput
+                value={a.fromRatePerSec}
+                min={0}
+                step={10}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.client?.arrival.kind === "ramp") n.client.arrival.fromRatePerSec = Math.max(0, v);
+                  })
+                }
+              />
+            </Field>
+            <Field label="to" hint="req/s">
+              <NumberInput
+                value={a.toRatePerSec}
+                min={0.1}
+                step={10}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.client?.arrival.kind === "ramp") n.client.arrival.toRatePerSec = Math.max(0.1, v);
+                  })
+                }
+              />
+            </Field>
+          </FieldRow>
           <p className="note">
             A load test in one run: the offered rate rises steadily and the first SLO breach marks
             the limit. It reads slightly <b>high</b> against a steady-state search, because queues
@@ -1217,54 +1304,58 @@ function ArrivalEditor({ nodeId }: { nodeId: string }) {
 
       {a.kind === "spike" && (
         <>
-          <Field label="base" hint="req/s">
-            <NumberInput
-              value={a.baseRatePerSec}
-              min={0.1}
-              step={10}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client?.arrival.kind === "spike") n.client.arrival.baseRatePerSec = Math.max(0.1, v);
-                })
-              }
-            />
-          </Field>
-          <Field label="peak" hint="req/s">
-            <NumberInput
-              value={a.peakRatePerSec}
-              min={0.1}
-              step={10}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client?.arrival.kind === "spike") n.client.arrival.peakRatePerSec = Math.max(0.1, v);
-                })
-              }
-            />
-          </Field>
-          <Field label="starts at" hint="s">
-            <NumberInput
-              value={a.atSec}
-              min={0}
-              step={10}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client?.arrival.kind === "spike") n.client.arrival.atSec = Math.max(0, v);
-                })
-              }
-            />
-          </Field>
-          <Field label="lasts" hint="s">
-            <NumberInput
-              value={a.durationSec}
-              min={1}
-              step={5}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client?.arrival.kind === "spike") n.client.arrival.durationSec = Math.max(1, v);
-                })
-              }
-            />
-          </Field>
+          <FieldRow>
+            <Field label="base" hint="req/s">
+              <NumberInput
+                value={a.baseRatePerSec}
+                min={0.1}
+                step={10}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.client?.arrival.kind === "spike") n.client.arrival.baseRatePerSec = Math.max(0.1, v);
+                  })
+                }
+              />
+            </Field>
+            <Field label="peak" hint="req/s">
+              <NumberInput
+                value={a.peakRatePerSec}
+                min={0.1}
+                step={10}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.client?.arrival.kind === "spike") n.client.arrival.peakRatePerSec = Math.max(0.1, v);
+                  })
+                }
+              />
+            </Field>
+          </FieldRow>
+          <FieldRow>
+            <Field label="starts at" hint="s">
+              <NumberInput
+                value={a.atSec}
+                min={0}
+                step={10}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.client?.arrival.kind === "spike") n.client.arrival.atSec = Math.max(0, v);
+                  })
+                }
+              />
+            </Field>
+            <Field label="lasts" hint="s">
+              <NumberInput
+                value={a.durationSec}
+                min={1}
+                step={5}
+                onChange={(v) =>
+                  patch((n) => {
+                    if (n.client?.arrival.kind === "spike") n.client.arrival.durationSec = Math.max(1, v);
+                  })
+                }
+              />
+            </Field>
+          </FieldRow>
           <p className="note">
             Leave room after the burst: <b>recovery is usually the more interesting half</b>. A
             queue built during a spike keeps hurting requests that arrive after it has passed, so a
@@ -1330,7 +1421,7 @@ function ArrivalEditor({ nodeId }: { nodeId: string }) {
             </div>
           ))}
           <button
-            className="btn small"
+            className="btn small with-icon"
             onClick={() =>
               patch((n) => {
                 if (n.client?.arrival.kind === "steps") {
@@ -1342,6 +1433,7 @@ function ArrivalEditor({ nodeId }: { nodeId: string }) {
               })
             }
           >
+            <PlusIcon size={13} />
             add step
           </button>
         </>
@@ -1876,25 +1968,27 @@ function QueueLimitEditor({
 }) {
   return (
     <>
-      <Field label="capacity" hint="0 = unbounded">
-        <NumberInput
-          value={queueCapacity ?? 0}
-          min={0}
-          step={10}
-          onChange={(v) => onCapacity(v <= 0 ? null : Math.round(v))}
-        />
-      </Field>
-      <Field label="when full">
-        <Select
-          value={admissionPolicy}
-          disabled={queueCapacity === null}
-          options={[
-            { value: "shed" as const, label: "shed (reject)" },
-            { value: "block" as const, label: "block (wait anyway)" },
-          ]}
-          onChange={onPolicy}
-        />
-      </Field>
+      <FieldRow>
+        <Field label="capacity" hint="0 = unbounded">
+          <NumberInput
+            value={queueCapacity ?? 0}
+            min={0}
+            step={10}
+            onChange={(v) => onCapacity(v <= 0 ? null : Math.round(v))}
+          />
+        </Field>
+        <Field label="when full">
+          <Select
+            value={admissionPolicy}
+            disabled={queueCapacity === null}
+            options={[
+              { value: "shed" as const, label: "shed (reject)" },
+              { value: "block" as const, label: "block (wait anyway)" },
+            ]}
+            onChange={onPolicy}
+          />
+        </Field>
+      </FieldRow>
       <p className="note">
         Shedding trades errors for bounded latency: an overloaded station with a bounded queue
         still has a steady state. Blocking in an open-loop system makes the bound advisory,
@@ -1937,8 +2031,10 @@ function ClassEditor() {
                   })
                 }
               />
-              <button
-                className="btn small danger"
+              <IconButton
+                label={`Remove class ${c.label}`}
+                tone="danger"
+                size="sm"
                 onClick={() =>
                   edit((d) => {
                     const removed = d.classes[i]?.id;
@@ -1951,8 +2047,8 @@ function ClassEditor() {
                   })
                 }
               >
-                remove
-              </button>
+                <TrashIcon size={14} />
+              </IconButton>
             </div>
             <div className="class-editor-row">
               <Field label="weight" hint={`${((c.weight / totalWeight) * 100).toFixed(0)}% of traffic`}>
@@ -1968,7 +2064,7 @@ function ClassEditor() {
                   }
                 />
               </Field>
-              <Field label="cost multiplier" hint="× service time">
+              <Field label="cost" hint="× service time">
                 <NumberInput
                   value={c.serviceMultiplier}
                   min={0.1}
@@ -1986,7 +2082,7 @@ function ClassEditor() {
         ))
       )}
       <button
-        className="btn small"
+        className="btn small with-icon"
         onClick={() =>
           edit((d) => {
             const n = d.classes.length;
@@ -1999,6 +2095,7 @@ function ClassEditor() {
           })
         }
       >
+        <PlusIcon size={13} />
         add class
       </button>
     </>
@@ -2013,51 +2110,55 @@ function ScenarioEditor() {
   return (
     <>
       <div className="section">scenario</div>
-      <Field label="duration" hint="simulated s">
-        <NumberInput
-          value={scenario.durationSec}
-          min={1}
-          step={60}
-          onChange={(v) => edit((d) => { d.scenario.durationSec = Math.max(1, v); })}
-        />
-      </Field>
-      <Field label="warm-up" hint="discarded s">
-        <NumberInput
-          value={scenario.warmupSec}
-          min={0}
-          step={10}
-          onChange={(v) => edit((d) => { d.scenario.warmupSec = Math.max(0, v); })}
-        />
-      </Field>
-      <Field label="seed" hint="reproducibility">
-        <NumberInput
-          value={scenario.seed}
-          min={0}
-          onChange={(v) => edit((d) => { d.scenario.seed = Math.max(0, Math.round(v)); })}
-        />
-      </Field>
+      <FieldRow>
+        <Field label="duration" hint="s">
+          <NumberInput
+            value={scenario.durationSec}
+            min={1}
+            step={60}
+            onChange={(v) => edit((d) => { d.scenario.durationSec = Math.max(1, v); })}
+          />
+        </Field>
+        <Field label="warm-up" hint="s">
+          <NumberInput
+            value={scenario.warmupSec}
+            min={0}
+            step={10}
+            onChange={(v) => edit((d) => { d.scenario.warmupSec = Math.max(0, v); })}
+          />
+        </Field>
+        <Field label="seed">
+          <NumberInput
+            value={scenario.seed}
+            min={0}
+            onChange={(v) => edit((d) => { d.scenario.seed = Math.max(0, Math.round(v)); })}
+          />
+        </Field>
+      </FieldRow>
       <p className="note">
         Warm-up removes startup bias. Longer runs improve accuracy, especially near saturation.
       </p>
 
       <div className="section">slo</div>
-      <Field label="p99 target" hint="ms, 0 = none">
-        <NumberInput
-          value={slo.p99LatencyMs ?? 0}
-          min={0}
-          step={10}
-          onChange={(v) => edit((d) => { d.slo.p99LatencyMs = v <= 0 ? null : v; })}
-        />
-      </Field>
-      <Field label="max errors" hint="%, 0 = none">
-        <NumberInput
-          value={slo.maxErrorRatePct ?? 0}
-          min={0}
-          max={100}
-          step={0.1}
-          onChange={(v) => edit((d) => { d.slo.maxErrorRatePct = v <= 0 ? null : v; })}
-        />
-      </Field>
+      <FieldRow>
+        <Field label="p99 target" hint="ms, 0 = none">
+          <NumberInput
+            value={slo.p99LatencyMs ?? 0}
+            min={0}
+            step={10}
+            onChange={(v) => edit((d) => { d.slo.p99LatencyMs = v <= 0 ? null : v; })}
+          />
+        </Field>
+        <Field label="max errors" hint="%, 0 = none">
+          <NumberInput
+            value={slo.maxErrorRatePct ?? 0}
+            min={0}
+            max={100}
+            step={0.1}
+            onChange={(v) => edit((d) => { d.slo.maxErrorRatePct = v <= 0 ? null : v; })}
+          />
+        </Field>
+      </FieldRow>
     </>
   );
 }

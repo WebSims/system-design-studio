@@ -84,6 +84,56 @@ export const GaugeIcon = makeIcon(
     <circle cx="12" cy="14" r="1.25" fill="currentColor" stroke="none" />
   </>
 )
+export const TrashIcon = makeIcon(
+  <>
+    <path d="M4 7h16M10 11v6M14 11v6" />
+    <path d="M6 7l1 13h10l1-13M9 7V4h6v3" />
+  </>
+)
+export const LinkIcon = makeIcon(
+  <>
+    <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5" />
+    <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5" />
+  </>
+)
+export const PencilIcon = makeIcon(
+  <>
+    <path d="M4 20h4l11-11-4-4L4 16z" />
+    <path d="m13.5 6.5 4 4" />
+  </>
+)
+export const WrenchIcon = makeIcon(
+  <path d="M14.5 3.5a5 5 0 0 0-3.2 6.9L3.5 18.2 5.8 20.5l7.8-7.8a5 5 0 0 0 6.9-6.4l-3 3-2.5-.5-.5-2.5z" />
+)
+export const ClipboardIcon = makeIcon(
+  <>
+    <rect x="6" y="5" width="12" height="16" rx="2" />
+    <path d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2M9 11h6M9 15h4" />
+  </>
+)
+export const HistoryIcon = makeIcon(
+  <>
+    <path d="M3.5 12a8.5 8.5 0 1 0 2.5-6" />
+    <path d="M3.5 3.5V8H8M12 7.5V12l3 2" />
+  </>
+)
+export const ChevronRightIcon = makeIcon(<path d="m9 6 6 6-6 6" />)
+export const EyeIcon = makeIcon(
+  <>
+    <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
+    <circle cx="12" cy="12" r="3" />
+  </>
+)
+export const EyeOffIcon = makeIcon(
+  <>
+    <path d="M3 3l18 18M10.6 6a9.8 9.8 0 0 1 1.4-.1c6 0 9.5 6.1 9.5 6.1a16 16 0 0 1-3.2 3.8M6.6 6.7A16 16 0 0 0 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.2-1" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+  </>
+)
+export const ArrowRightIcon = makeIcon(<path d="M5 12h14M13 6l6 6-6 6" />)
+export const CursorIcon = makeIcon(
+  <path d="M5 4l14 7-6 2-2 6z" />
+)
 
 /* ---------- component kinds ---------- */
 

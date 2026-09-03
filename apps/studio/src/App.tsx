@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { blankDesign } from "@sds/schema";
 import { FlowCanvas } from "./canvas/FlowCanvas";
 import { Inspector } from "./panels/Inspector";
 import { ResultsRail } from "./panels/ResultsRail";
@@ -7,6 +6,7 @@ import { BehaviourRail } from "./panels/BehaviourRail";
 import { RaceDock } from "./panels/RaceDock";
 import { AgentPanel } from "./panels/AgentPanel";
 import { Topbar } from "./chrome/Topbar";
+import { StartScreen } from "./chrome/StartScreen";
 import { restoreStudy, useStudyStore } from "./study/store";
 import { PerformanceView } from "./views/PerformanceView";
 import { CompareView } from "./views/CompareView";
@@ -15,157 +15,7 @@ import { registerWebmcpTools } from "./webmcp/register";
 import { buildCatalog } from "./webmcp/catalog";
 import type { ToolHost } from "./webmcp/tools";
 import { cancelWorker, portfolioInWorker } from "./engine/client";
-import { CODEBASE_PROMPT, CODEBASE_PROMPT_ROUTE } from "./codebase-prompt";
-import { DEMO_SCENARIOS } from "./examples";
 import { useRaceModel } from "./raceModel";
-
-/**
- * Copy is the only action this prompt takes. The agent remains responsible for deciding which
- * registered tools to call, and the user can edit the visible request before sending it.
- */
-async function copyPrompt(prompt: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(prompt);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function PromptRoute() {
-  return (
-    <ol className="prompt-route" aria-label="Create system design from codebase workflow">
-      {CODEBASE_PROMPT_ROUTE.map((step) => (
-        <li key={step}>{step}</li>
-      ))}
-    </ol>
-  );
-}
-
-/**
- * What the studio shows before there is anything to show: three ways in.
- *
- * A worked scenario, because a race you can watch happen in the first minute is worth more than any
- * paragraph about one. The codebase prompt, because the agent reconstructing the current system is
- * the way this gets used on real work. A blank canvas, because sometimes the design is in your head.
- * Nothing is loaded until a person picks; the studio still boots empty.
- */
-function EmptyWorkspace() {
-  const webmcp = useStudyStore((s) => s.webmcp);
-  const addCandidate = useStudyStore((s) => s.addCandidate);
-  const loadStudyDocument = useStudyStore((s) => s.loadStudyDocument);
-  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
-  const [promptOpen, setPromptOpen] = useState(false);
-  const webmcpReady = webmcp.status.includes("tools");
-
-  const copySelected = async () => {
-    setCopyState("copying");
-    setCopyState((await copyPrompt(CODEBASE_PROMPT)) ? "copied" : "failed");
-  };
-
-  const startManualDesign = () => {
-    addCandidate({
-      label: "manual design",
-      intent: "Created manually from an empty canvas.",
-      design: blankDesign(),
-      origin: "human",
-    });
-  };
-
-  return (
-    <div className="empty-study">
-      <div className="empty-card start-card">
-        <div className="empty-kicker">System Design Studio</div>
-        <h1>Draw a system. Watch it break. Fix it. Hand it to your agent.</h1>
-        <p className="empty-lede">
-          Model the architecture, give its requests real steps, and the studio finds the order of
-          events that breaks a rule and plays it on your drawing. Then measure the fix under load.
-        </p>
-
-        <div className="start-grid">
-          {DEMO_SCENARIOS.map((scenario) => (
-            <button
-              key={scenario.id}
-              className="start-option scenario"
-              onClick={() => loadStudyDocument(scenario.open())}
-            >
-              <span className="start-kicker">worked scenario</span>
-              <strong>{scenario.label}</strong>
-              <span className="start-blurb">{scenario.summary}</span>
-              <span className="start-teaches">{scenario.teaches}</span>
-              <span className="start-cta">Open and play the race</span>
-            </button>
-          ))}
-
-          <div className="start-option import">
-            <span className="start-kicker">from a codebase</span>
-            <strong>Let your coding agent draw the current system</strong>
-            <span className="start-blurb">
-              Paste one request into a WebMCP-capable agent. It reads the repository, imports the
-              current architecture with a citation per component, and stops.
-            </span>
-            <div className="row-actions">
-              <button
-                className="btn primary"
-                disabled={copyState === "copying"}
-                onClick={() => void copySelected()}
-              >
-                {copyState === "copying"
-                  ? "Copying\u2026"
-                  : copyState === "copied"
-                    ? "Prompt copied"
-                    : copyState === "failed"
-                      ? "Copy unavailable"
-                      : "Copy agent prompt"}
-              </button>
-              <button className="btn" onClick={() => setPromptOpen((open) => !open)} aria-expanded={promptOpen}>
-                {promptOpen ? "Hide prompt" : "Show prompt"}
-              </button>
-            </div>
-            <span className="copy-feedback muted" aria-live="polite">
-              {copyState === "copied"
-                ? "Ready to paste. You can edit the request before sending."
-                : copyState === "failed"
-                  ? "Open the prompt and copy it by hand."
-                  : webmcpReady
-                    ? `WebMCP is ready \u00b7 ${webmcp.status}`
-                    : "Open this page beside a WebMCP-capable coding agent to expose the Studio tools."}
-            </span>
-          </div>
-
-          <div className="start-option blank">
-            <span className="start-kicker">from scratch</span>
-            <strong>Blank canvas</strong>
-            <span className="start-blurb">
-              Add components from the palette, link them, give one some request steps, add a rule.
-            </span>
-            <button className="btn manual-design-action" onClick={startManualDesign}>
-              Design manually
-            </button>
-          </div>
-        </div>
-
-        {promptOpen && (
-          <div className="starter-prompt">
-            <div className="starter-prompt-head">
-              <span>Paste into your agent</span>
-              <strong>Create system design from codebase</strong>
-            </div>
-            <p>{CODEBASE_PROMPT}</p>
-            <PromptRoute />
-          </div>
-        )}
-
-        <p className="muted what-it-finds">
-          <b>What this can find:</b> lost updates, double bookings, idempotency keys per attempt
-          rather than per request, unfenced leases and stale owners, queue redelivery, worker crashes
-          mid-write, expiry timing; and under load, the bottleneck, the retry storm, the growing
-          backlog. <b>Not (yet):</b> isolation levels, partitions, quorum, clock skew, liveness.
-        </p>
-      </div>
-    </div>
-  );
-}
 
 /**
  * The bottom dock: the lens's results, in the DevTools position.
@@ -237,7 +87,7 @@ function ReviewDrawer() {
 function Workbench() {
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
   const lens = useStudyStore((s) => s.lens);
-  if (!hasCandidates) return <EmptyWorkspace />;
+  if (!hasCandidates) return <StartScreen />;
   return (
     <>
       {lens === "behaviour" ? <BehaviourRail /> : <ResultsRail />}
