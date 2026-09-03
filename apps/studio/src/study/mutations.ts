@@ -8,10 +8,12 @@ import {
   type ArchitectureEvidence,
   type Candidate,
   type CandidateRole,
+  type Design,
   type RepositorySnapshot,
   type Study,
 } from "@sds/schema";
-import { nextNodePosition, placedBoxes, separateOverlappingNodePositions } from "../canvas/layout"
+import { NODE_GAP, overlappingNodePair } from "../canvas/layout"
+import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry"
 
 /**
  * Candidate mutations, as pure functions over a study.
@@ -40,6 +42,25 @@ export class MutationRefused extends Error {
     super(message);
     this.name = "MutationRefused";
   }
+}
+
+/**
+ * Agent-authored coordinates are part of the architecture, not cosmetic metadata.
+ * Refuse collisions with enough geometry for the agent to choose a meaningful new position.
+ */
+const assertAgentLayout = (design: Design, by: "human" | "agent") => {
+  if (by !== "agent") return
+
+  const pair = overlappingNodePair(design.nodes)
+  if (!pair) return
+
+  const [first, second] = pair
+  throw new MutationRefused(
+    `nodes "${first.id}" at (${first.x}, ${first.y}) and "${second.id}" at (${second.x}, ${second.y}) overlap. ` +
+      `Choose x/y from the topology and keep ${NODE_WIDTH}x${NODE_HEIGHT} node boxes at least ${NODE_GAP}px apart. ` +
+      "Use increasing x for dependency depth and separate parallel branches on y.",
+    "design-layout-invalid"
+  )
 }
 
 /** Follow explicit candidate ancestry to the repository-derived as-is model, if one exists. */
@@ -115,12 +136,10 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
 
   let design;
   try {
-    const parsedDesign = migrateAndParse(rawDesign)
-    design =
-      input.origin === "agent"
-        ? separateOverlappingNodePositions(parsedDesign)
-        : parsedDesign
+    design = migrateAndParse(rawDesign)
+    assertAgentLayout(design, input.origin)
   } catch (err) {
+    if (err instanceof MutationRefused) throw err
     throw new MutationRefused(
       `the design does not parse: ${err instanceof Error ? err.message : String(err)}. ` +
         `Use studio_validate_draft to see the field-level errors.`,
@@ -271,12 +290,10 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
 
   let design;
   try {
-    const parsedDesign = migrateAndParse(input.design)
-    design =
-      input.by === "agent"
-        ? separateOverlappingNodePositions(parsedDesign)
-        : parsedDesign
+    design = migrateAndParse(input.design)
+    assertAgentLayout(design, input.by)
   } catch (err) {
+    if (err instanceof MutationRefused) throw err
     throw new MutationRefused(
       `the design does not parse: ${err instanceof Error ? err.message : String(err)}`,
       "design-invalid"
@@ -446,10 +463,14 @@ export function applyArchitecturePatch(
     switch (operation.op) {
       case "add-node": {
         const node = structuredClone(operation.node) as Record<string, unknown>;
-        // A node drawn without coordinates takes the next free grid slot, so an agent can add
-        // components in the order it finds them and the picture stays readable as it grows.
-        const unplaced = typeof node.x !== "number" || typeof node.y !== "number";
-        draft.nodes.push(unplaced ? { ...node, ...nextNodePosition(placedBoxes(draft.nodes)) } : node);
+        if (input.by === "agent" && (typeof node.x !== "number" || typeof node.y !== "number")) {
+          throw new MutationRefused(
+            "add-node requires numeric x and y. Position the node from the architecture topology; " +
+              `node boxes are ${NODE_WIDTH}x${NODE_HEIGHT} with a minimum ${NODE_GAP}px gap.`,
+            "node-position-required"
+          )
+        }
+        draft.nodes.push(node);
         changed.push(`added node${typeof node.id === "string" ? ` ${node.id}` : ""}`);
         break;
       }

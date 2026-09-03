@@ -592,6 +592,21 @@ describe("reading the study", () => {
     // And that there is no exactly-once queue, which is the thing a model will otherwise assume.
     expect((content.notes as string[]).join(" ")).toContain("no exactly-once queue setting");
   });
+
+  it("makes the agent responsible for a topology-aware canvas layout", async () => {
+    const { content } = await call("studio_get_catalog", {})
+    const layout = content.layoutGuide as {
+      nodeSize: { width: number; height: number }
+      minimumGap: number
+      rules: string[]
+    }
+
+    expect(layout.nodeSize).toEqual({ width: 216, height: 150 })
+    expect(layout.minimumGap).toBe(48)
+    expect(layout.rules.join(" ")).toMatch(/Plan the full topology/)
+    expect(layout.rules.join(" ")).toMatch(/dependency depth/)
+    expect(layout.rules.join(" ")).toMatch(/Never overlap/)
+  })
 });
 
 // ---------------------------------------------------------------------------
@@ -665,8 +680,7 @@ describe("repository-backed architecture", () => {
     expect(host.study.activeCandidateId).toBe(drawing.content.candidateId);
     const candidateId = drawing.content.candidateId as string;
 
-    // Nodes without coordinates land in distinct grid slots.
-    const client = await call("studio_apply_architecture_patch", {
+    const unpositioned = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 0,
       operations: [
@@ -676,8 +690,37 @@ describe("repository-backed architecture", () => {
         },
       ],
     });
+    expect(unpositioned.isError).toBe(true);
+    expect(String(unpositioned.content.error)).toContain("requires numeric x and y");
+    expect(host.study.candidates[0]!.revision).toBe(0);
+
+    // The agent owns the layout and its coordinates are preserved.
+    const client = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 0,
+      operations: [
+        {
+          op: "add-node",
+          node: { id: "browser", kind: "client", label: "browser", x: 0, y: 240, client: { arrival: { kind: "poisson", ratePerSec: 20 } } },
+        },
+      ],
+    });
     expect(client.isError).toBeFalsy();
     expect((client.content.changed as string[])[0]).toBe("added node browser");
+
+    const overlapping = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 1,
+      operations: [
+        {
+          op: "add-node",
+          node: { id: "api", kind: "server", label: "api", x: 0, y: 240, server: { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } } },
+        },
+      ],
+    });
+    expect(overlapping.isError).toBe(true);
+    expect(String(overlapping.content.error)).toContain("overlap");
+    expect(host.study.candidates[0]!.revision).toBe(1);
 
     const api = await call("studio_apply_architecture_patch", {
       candidateId,
@@ -685,14 +728,17 @@ describe("repository-backed architecture", () => {
       operations: [
         {
           op: "add-node",
-          node: { id: "api", kind: "server", label: "api", server: { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } } },
+          node: { id: "api", kind: "server", label: "api", x: 320, y: 240, server: { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } } },
         },
       ],
     });
     expect(api.isError).toBeFalsy();
     const placed = host.study.candidates[0]!.design.nodes;
     expect(placed).toHaveLength(2);
-    expect(placed[0]!.x).not.toBe(placed[1]!.x);
+    expect(placed.map(({ x, y }) => ({ x, y }))).toEqual([
+      { x: 0, y: 240 },
+      { x: 320, y: 240 },
+    ]);
 
     // A link to a node that does not exist yet is refused, and the drawing is untouched.
     const dangling = await call("studio_apply_architecture_patch", {
@@ -917,6 +963,19 @@ describe("validating a draft", () => {
     const warnings = content.warnings as Array<{ message: string }>;
     expect(warnings.some((w) => w.message.includes("vacuous"))).toBe(true);
   });
+
+  it("reports overlapping authored coordinates as a layout error", async () => {
+    const design = structuredClone(host.study.candidates[6]!.design)
+    design.nodes[1]!.x = design.nodes[0]!.x
+    design.nodes[1]!.y = design.nodes[0]!.y
+
+    const { content } = await call("studio_validate_draft", { design })
+    expect(content.valid).toBe(false)
+    const errors = content.errors as Array<{ layer: string; code: string }>
+    expect(errors).toContainEqual(
+      expect.objectContaining({ layer: "layout", code: "node-overlap" })
+    )
+  })
 
   it("does not store anything", async () => {
     const before = host.study.candidates.length;

@@ -1,7 +1,7 @@
-import type { Design, SdsNode } from "@sds/schema"
+import type { SdsNode } from "@sds/schema"
 import { NODE_HEIGHT, NODE_WIDTH } from "./geometry"
 
-const NODE_GAP = 48
+export const NODE_GAP = 48
 const HORIZONTAL_STEP = NODE_WIDTH + NODE_GAP
 const VERTICAL_STEP = NODE_HEIGHT + NODE_GAP
 
@@ -23,60 +23,30 @@ const nodesOverlap = (first: Box, second: Box): boolean => {
   return !horizontallyClear && !verticallyClear
 }
 
-const findOpenPosition = (
-  node: SdsNode,
-  positionedNodes: readonly SdsNode[],
-  columnCount: number
-): Pick<SdsNode, "x" | "y"> => {
-  let slot = 1
-
-  while (true) {
-    const candidate = {
-      ...node,
-      x: node.x + (slot % columnCount) * HORIZONTAL_STEP,
-      y: node.y + Math.floor(slot / columnCount) * VERTICAL_STEP,
-    }
-
-    if (!positionedNodes.some((positionedNode) => nodesOverlap(candidate, positionedNode))) {
-      return { x: candidate.x, y: candidate.y }
-    }
-
-    slot += 1
-  }
-}
-
 /**
- * Preserve intentional positions and move only nodes whose boxes collide.
- *
- * React Flow renders supplied coordinates verbatim. WebMCP-authored designs can therefore collapse
- * into one visible node when an agent satisfies the required x/y fields with repeated values.
+ * Return the first pair that violates the canvas spacing contract.
+ * Agent mutations use this to reject a poor layout rather than silently moving authored nodes.
  */
-export const separateOverlappingNodePositions = (design: Design): Design => {
-  const positionedNodes: SdsNode[] = []
-  const columnCount = Math.max(2, Math.ceil(Math.sqrt(design.nodes.length)))
-  let changed = false
+export const overlappingNodePair = (
+  nodes: readonly SdsNode[]
+): readonly [SdsNode, SdsNode] | null => {
+  for (let firstIndex = 0; firstIndex < nodes.length; firstIndex += 1) {
+    const first = nodes[firstIndex]
+    if (!first) continue
 
-  for (const node of design.nodes) {
-    if (!positionedNodes.some((positionedNode) => nodesOverlap(node, positionedNode))) {
-      positionedNodes.push(node)
-      continue
+    for (let secondIndex = firstIndex + 1; secondIndex < nodes.length; secondIndex += 1) {
+      const second = nodes[secondIndex]
+      if (second && nodesOverlap(first, second)) return [first, second]
     }
-
-    const position = findOpenPosition(node, positionedNodes, columnCount)
-    positionedNodes.push({ ...node, ...position })
-    changed = true
   }
 
-  if (!changed) return design
-  return { ...design, nodes: positionedNodes }
+  return null
 }
 
 /**
  * Where a node lands when nobody said.
  *
- * Two doors add nodes without coordinates: the palette, and an agent drawing an architecture one
- * `add-node` patch at a time. Both should produce a picture a person can read while it forms, so
- * both use the same rule: the first free slot of a grid, left to right, top to bottom.
+ * This is only for the human palette. WebMCP agents must author x/y from architecture topology.
  */
 export const nextNodePosition = (placed: readonly Box[]): Box => {
   let slot = 0
@@ -92,7 +62,3 @@ export const nextNodePosition = (placed: readonly Box[]): Box => {
     slot += 1
   }
 }
-
-/** Nodes with usable coordinates, from a design that may still be raw agent input. */
-export const placedBoxes = (nodes: ReadonlyArray<Record<string, unknown>>): Box[] =>
-  nodes.flatMap((node) => (typeof node.x === "number" && typeof node.y === "number" ? [{ x: node.x, y: node.y }] : []))

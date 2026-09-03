@@ -15,13 +15,14 @@
  * as the immutable baseline and links the repository revision.
  */
 export const CODEBASE_PROMPT = [
-  "Inspect this repository with workspace tools, then call the open System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture. " +
-    "The page cannot read files; do not drive its UI.",
-  "Create a study, read its catalog, and record only code-backed workload, goals, SLOs, and invariants; leave unknowns blank. " +
-    "Open an empty as-is candidate and add one component or link per patch so it appears live. Use stable IDs and carry forward each returned revision. Add workflows only when supported by code.",
+  "Inspect this repository with workspace tools. Use the open System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; " +
+    "the page cannot read files, so do not drive its UI.",
+  "Create a study, read its catalog, and record code-backed workload, goals, SLOs, and invariants; leave unknowns blank. " +
+    "Plan the full topology and its x/y layout first using layoutGuide: dependency depth left-to-right, parallel branches on separate rows, no overlaps or avoidable edge crossings. " +
+    "Open an empty as-is candidate and add one component or link per patch; carry forward each returned revision.",
   "Seal it as the immutable as-is baseline with branch, commit, dirty state, inspected scope, and evidence for every component and link. " +
-    "Mark facts observed, deductions inferred, and unknown production behaviour assumed. Follow the tool schemas and next-step guidance for payload details.",
-  "Read it back, report evidence gaps, annotate the weakest or riskiest parts, and focus the most important one. " +
+    "Mark facts observed, deductions inferred, and unknown production behaviour assumed. Follow the tool schemas and next-step guidance.",
+  "Read it back, report evidence gaps, annotate and focus the highest risk. " +
     "Stop before redesigning or editing code.",
 ].join("\n\n")
 

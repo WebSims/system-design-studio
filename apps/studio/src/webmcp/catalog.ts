@@ -1,4 +1,6 @@
 import type { Catalog } from "./tools";
+import { NODE_GAP } from "../canvas/layout"
+import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry"
 
 /**
  * The modelling vocabulary, as an agent needs to read it.
@@ -193,6 +195,21 @@ export function buildCatalog(): Catalog {
       { kind: "leaseExpiry", whatItModels: "A lease expires while its holder is still working and still believes it holds one." },
       { kind: "reservationExpiry", whatItModels: "A scheduled expiry fires, possibly racing the request that armed it." },
     ],
+
+    layoutGuide: {
+      coordinateSystem: "x increases to the right; y increases downward",
+      nodeSize: { width: NODE_WIDTH, height: NODE_HEIGHT },
+      minimumGap: NODE_GAP,
+      suggestedStep: { x: 320, y: 240 },
+      rules: [
+        "Plan the full topology before placing the first node; coordinates communicate architecture and are not auto-generated.",
+        "Put callers and clients in the leftmost column, then increase x by dependency depth toward services, queues, stores and external systems.",
+        "Keep the primary request path on one row. Put parallel or asynchronous branches on separate y rows.",
+        "Center a shared dependency vertically between its callers when practical.",
+        "Use update-node with x/y to improve the layout when a newly discovered dependency changes the topology.",
+        "Never overlap node boxes. Avoid edge crossings and long edges through unrelated nodes.",
+      ],
+    },
 
     notes: [
       "Operations are a closed set. There are no loops, no function calls and no recursion, because a workflow that could loop an unbounded number of times has no bounded state space and the only possible verdict would be 'inconclusive'.",

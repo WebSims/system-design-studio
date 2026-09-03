@@ -26,7 +26,7 @@ structured architecture evidence and results into the same live page a person re
 | `studio_update_study` | set the workload, SLOs, invariants, faults and bounds |
 | `studio_list_studies` | list saved projects |
 | `studio_open_study` | open a saved project |
-| `studio_import_architecture` | link a repository snapshot and add its evidence-backed as-is baseline; the first step that draws anything on the page |
+| `studio_import_architecture` | link a repository snapshot and seal its evidence-backed as-is baseline |
 
 **Read**
 
@@ -57,8 +57,9 @@ structured architecture evidence and results into the same live page a person re
 1. Codex reads the real workspace and records commit, branch, dirty state, and scope.
 2. Codex draws the as-is design on the canvas: `studio_create_candidate` with no design
    opens an empty canvas, then one `studio_apply_architecture_patch` per component and
-   link, each drawn as it is accepted. Nodes without coordinates take the next free grid
-   slot.
+   link, each drawn as it is accepted. Before drawing, Codex reads
+   `studio_get_catalog.layoutGuide`, plans dependency depth and branches, and supplies
+   meaningful `x`/`y` for every node. Missing or overlapping positions are refused.
 3. `studio_import_architecture` with `fromCandidateId` seals that drawing as the as-is
    baseline (or imports a complete `design` in one call). Observed facts cite source;
    deductions are `inferred`; unknown production behavior stays `assumed`.

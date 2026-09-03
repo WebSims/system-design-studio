@@ -68,7 +68,9 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
             {
               "additionalProperties": false,
               "properties": {
-                "node": {},
+                "node": {
+                  "description": "Complete node including numeric x and y chosen from topology. Coordinates are required; read studio_get_catalog.layoutGuide before drawing.",
+                },
                 "op": {
                   "const": "add-node",
                 },

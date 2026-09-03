@@ -25,12 +25,18 @@ studio_create_study → studio_get_catalog → studio_update_study
 ```
 
 The canvas appears at `studio_create_candidate`, and from then on every accepted patch is
-drawn as it lands, so you watch the architecture form. An `add-node` without `x` and `y` is
-placed in the next free grid slot, the same rule the palette uses. Each patch is validated
-before it is committed: a link to a node that does not exist yet is refused with a named
-error, a missing client is only a warning. `studio_import_architecture` with
-`fromCandidateId` then turns the drawing into the as-is baseline in place, keeping its id
-and everything on the canvas; passing a complete `design` instead still imports in one call.
+drawn as it lands, so you watch the architecture form. The agent owns the layout: before
+the first patch it reads `studio_get_catalog.layoutGuide`, plans the full topology, and
+supplies `x` and `y` for every node. Dependency depth runs left-to-right, parallel or
+asynchronous branches use separate rows, and shared dependencies sit between their callers.
+Missing coordinates and overlapping node boxes are refused rather than silently rearranged.
+The agent can use `update-node` with new `x`/`y` when later evidence changes the topology.
+
+Each patch is validated before it is committed: a link to a node that does not exist yet is
+refused with a named error, while a missing client is only a warning.
+`studio_import_architecture` with `fromCandidateId` then turns the drawing into the as-is
+baseline in place, keeping its id and everything on the canvas; passing a complete `design`
+instead still imports in one call.
 
 Until a candidate exists the studio keeps showing the start screen: creating the study,
 setting its contract and validating a draft change the project and the activity log in the

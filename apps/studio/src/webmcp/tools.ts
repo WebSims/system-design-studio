@@ -20,6 +20,8 @@ import {
 } from "@sds/schema";
 import type { ArchitecturePatchOperation } from "../study/mutations";
 import { buildImplementationHandoff } from "../implementation-handoff";
+import { NODE_GAP, overlappingNodePair } from "../canvas/layout"
+import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry"
 import { toJsonSchema, type JsonSchema } from "./json-schema";
 
 /**
@@ -227,7 +229,17 @@ const GetArchitectureInput = z
   .strict();
 
 const ArchitecturePatchOperationInput = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("add-node"), node: z.unknown() }).strict(),
+  z
+    .object({
+      op: z.literal("add-node"),
+      node: z
+        .unknown()
+        .describe(
+          "Complete node including numeric x and y chosen from topology. Coordinates are required; " +
+            "read studio_get_catalog.layoutGuide before drawing."
+        ),
+    })
+    .strict(),
   z
     .object({
       op: z.literal("update-node"),
@@ -428,6 +440,13 @@ export interface Catalog {
   operations: Array<{ op: string; indivisible: boolean; whatItDoes: string }>;
   patterns: Array<{ id: string; label: string; expectation: string }>;
   faults: Array<{ kind: string; whatItModels: string }>;
+  layoutGuide: {
+    coordinateSystem: string;
+    nodeSize: { width: number; height: number };
+    minimumGap: number;
+    suggestedStep: { x: number; y: number };
+    rules: string[];
+  };
   notes: string[];
 }
 
@@ -516,7 +535,8 @@ const isDrawing = (study: Study, candidate: Candidate): boolean =>
 /** The next step while drawing, with the ids and revision filled in so nothing has to be re-read. */
 const drawingNext = (candidate: Candidate): string =>
   `Keep drawing with studio_apply_architecture_patch { candidateId: "${candidate.id}", expectedRevision: ${candidate.revision} }: ` +
-  "add-node per component (x and y optional), add-edge once both ends exist, set-workflow if the code shows the request steps; " +
+  "add-node per component with x/y chosen from studio_get_catalog.layoutGuide, add-edge once both ends exist, " +
+  "set-workflow if the code shows the request steps; " +
   `each accepted patch appears on the canvas. When complete, seal it with studio_import_architecture { fromCandidateId: "${candidate.id}", expectedRevision, repository, evidence }.`;
 
 // ---------------------------------------------------------------------------
@@ -554,7 +574,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             contractLocked: false,
             next:
               "The canvas stays empty until a candidate exists. To draw live, call studio_create_candidate with no design " +
-              "for an empty canvas, add each component and link with studio_apply_architecture_patch, then seal it with " +
+              "for an empty canvas, plan positions from studio_get_catalog.layoutGuide, add each component and link with " +
+              "studio_apply_architecture_patch, then seal it with " +
               "studio_import_architecture { fromCandidateId }. Or import a complete design in one call.",
           };
         },
@@ -825,7 +846,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Apply a small atomic graph delta to an experiment instead of resending the whole design. Operations can add, " +
           "update or remove nodes and links, replace the workflow, or rename the design. Every accepted patch is drawn on " +
           "the canvas immediately, so drawing an architecture one component or link per call lets a person watch it form; " +
-          "an add-node without x and y is placed in the next free grid slot. Requires the revision read from " +
+          "the agent must choose x/y for every node using studio_get_catalog.layoutGuide. Layout should communicate the " +
+          "topology: callers to dependencies left-to-right, parallel branches on separate rows, shared dependencies centered. " +
+          "Overlapping nodes and missing coordinates are refused, never silently repositioned. Requires the revision read from " +
           "studio_get_architecture or returned by the previous call, and refuses baselines, promoted candidates, stale " +
           "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,
@@ -1392,10 +1415,10 @@ export function compactEvaluation(evaluation: CandidateEvaluation) {
 /**
  * Validate a draft the way the studio validates it, and say so in the same words.
  *
- * Three layers, reported separately because the fixes are different: Zod shape errors mean a
- * field is the wrong type, topology errors mean the graph does not make sense, and workflow
- * errors mean the state model does not match the topology. An agent that gets one list cannot
- * tell which kind of mistake it made.
+ * Four layers, reported separately because the fixes are different: Zod shape errors mean a
+ * field is the wrong type, topology errors mean the graph does not make sense, layout errors mean
+ * authored coordinates collide, and workflow errors mean the state model does not match the
+ * topology. An agent that gets one list cannot tell which kind of mistake it made.
  */
 export function validateDraft(design: unknown): {
   valid: boolean;
@@ -1439,6 +1462,19 @@ export function validateDraft(design: unknown): {
       ...(issue.nodeId ? { where: issue.nodeId } : issue.edgeId ? { where: issue.edgeId } : {}),
     };
     (issue.severity === "error" ? errors : warnings).push(entry);
+  }
+
+  const overlapping = overlappingNodePair(parsed.nodes)
+  if (overlapping) {
+    const [first, second] = overlapping
+    errors.push({
+      layer: "layout",
+      code: "node-overlap",
+      message:
+        `nodes "${first.id}" at (${first.x}, ${first.y}) and "${second.id}" at (${second.x}, ${second.y}) overlap; ` +
+        `node boxes are ${NODE_WIDTH}x${NODE_HEIGHT} and need a ${NODE_GAP}px gap`,
+      where: `${first.id},${second.id}`,
+    })
   }
 
   for (const issue of validateWorkflow(parsed)) {

@@ -22,6 +22,13 @@ describe("the codebase-to-design prompt", () => {
     expect(CODEBASE_PROMPT).toMatch(/immutable as-is baseline/);
   });
 
+  it("makes the agent plan and author the visual layout", () => {
+    expect(CODEBASE_PROMPT).toMatch(/Plan the full topology and its x\/y layout/)
+    expect(CODEBASE_PROMPT).toMatch(/dependency depth left-to-right/)
+    expect(CODEBASE_PROMPT).toMatch(/parallel branches on separate rows/)
+    expect(CODEBASE_PROMPT).toMatch(/no overlaps or avoidable edge crossings/)
+  })
+
   it("stays an as-is reconstruction rather than silently redesigning code", () => {
     expect(CODEBASE_PROMPT).toMatch(/facts observed/);
     expect(CODEBASE_PROMPT).toMatch(/deductions inferred/);
