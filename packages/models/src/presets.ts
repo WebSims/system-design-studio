@@ -221,6 +221,31 @@ export const PRESETS: ComponentPreset[] = [
     },
   },
   {
+    id: "lock",
+    label: "lease / lock service",
+    kind: "lock",
+    blurb:
+      "a lease with a TTL, not a mutex. Unfenced by default because that is what a Redis SET NX gives you; turn on fencing to make exclusion real.",
+    build: (id, x, y) =>
+      node({
+        id,
+        kind: "lock",
+        label: "lease service",
+        x,
+        y,
+        lock: {
+          concurrency: 32,
+          serviceTime: { kind: "lognormal", mean: 1.5, p99: 12 },
+          defaultTtlMs: 2000,
+          fencingTokens: false,
+          citation: {
+            source: "in-memory key-value store used as a lock, single region",
+            asOf: "2026-08",
+          },
+        },
+      }),
+  },
+  {
     id: "object-store",
     label: "object store",
     kind: "server",

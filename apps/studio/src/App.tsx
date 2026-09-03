@@ -1,72 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { PRESETS } from "@sds/models";
+import { useEffect, useState } from "react";
 import { blankDesign } from "@sds/schema";
 import { FlowCanvas } from "./canvas/FlowCanvas";
 import { Inspector } from "./panels/Inspector";
 import { ResultsRail } from "./panels/ResultsRail";
-import { nextNodeId } from "./ids";
-import { useStudio } from "./store";
-import { restoreStudy, useStudyStore, type ViewId } from "./study/store";
-import { CorrectnessView } from "./views/CorrectnessView";
+import { BehaviourRail } from "./panels/BehaviourRail";
+import { RaceDock } from "./panels/RaceDock";
+import { AgentPanel } from "./panels/AgentPanel";
+import { Topbar } from "./chrome/Topbar";
+import { restoreStudy, useStudyStore } from "./study/store";
 import { PerformanceView } from "./views/PerformanceView";
 import { CompareView } from "./views/CompareView";
 import { CandidateBar } from "./panels/CandidateBar";
-import { ActivityLog } from "./panels/ActivityLog";
-import { studyFilename } from "./persist";
 import { registerWebmcpTools } from "./webmcp/register";
 import { buildCatalog } from "./webmcp/catalog";
 import type { ToolHost } from "./webmcp/tools";
 import { cancelWorker, portfolioInWorker } from "./engine/client";
 import { CODEBASE_PROMPT, CODEBASE_PROMPT_ROUTE } from "./codebase-prompt";
-
-/**
- * The component palette.
- *
- * Every preset is assembled from the cited benchmark library, so dropping one in
- * starts you at a defensible number with visible provenance rather than at a
- * placeholder. The blurb says when the component is the wrong choice, which is the
- * more useful half.
- */
-function Palette({ onClose }: { onClose: () => void }) {
-  const edit = useStudio((s) => s.edit);
-  const select = useStudio((s) => s.select);
-
-  const add = useCallback(
-    (presetId: string) => {
-      const preset = PRESETS.find((p) => p.id === presetId);
-      if (!preset) return;
-      edit((d) => {
-        const id = nextNodeId(preset.kind, d.nodes.map((n) => n.id));
-        const maxX = d.nodes.reduce((m, n) => Math.max(m, n.x), 0);
-        d.nodes.push(preset.build(id, maxX + 300, 240));
-        return;
-      });
-      // Select the new node so the inspector opens on it immediately.
-      setTimeout(() => {
-        const nodes = useStudio.getState().design.nodes;
-        const last = nodes[nodes.length - 1];
-        if (last) select({ kind: "node", id: last.id });
-      }, 0);
-      onClose();
-    },
-    [edit, select, onClose]
-  );
-
-  return (
-    <div className="palette" onClick={(e) => e.stopPropagation()}>
-      <div className="palette-title">add component</div>
-      {PRESETS.map((p) => (
-        <button key={p.id} className="palette-item" onClick={() => add(p.id)}>
-          <span className={`palette-dot kind-${p.kind}`} />
-          <span className="palette-body">
-            <span className="palette-label">{p.label}</span>
-            <span className="palette-blurb">{p.blurb}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
+import { DEMO_SCENARIOS } from "./examples";
+import { useRaceModel } from "./raceModel";
 
 /**
  * Copy is the only action this prompt takes. The agent remains responsible for deciding which
@@ -92,15 +43,19 @@ function PromptRoute() {
 }
 
 /**
- * What the studio shows before there is anything to show.
+ * What the studio shows before there is anything to show: three ways in.
  *
- * There is deliberately no sample system here. A person either asks the agent to reconstruct the
- * current codebase through WebMCP or starts with a genuinely empty manual canvas.
+ * A worked scenario, because a race you can watch happen in the first minute is worth more than any
+ * paragraph about one. The codebase prompt, because the agent reconstructing the current system is
+ * the way this gets used on real work. A blank canvas, because sometimes the design is in your head.
+ * Nothing is loaded until a person picks; the studio still boots empty.
  */
 function EmptyWorkspace() {
   const webmcp = useStudyStore((s) => s.webmcp);
   const addCandidate = useStudyStore((s) => s.addCandidate);
+  const loadStudyDocument = useStudyStore((s) => s.loadStudyDocument);
   const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+  const [promptOpen, setPromptOpen] = useState(false);
   const webmcpReady = webmcp.status.includes("tools");
 
   const copySelected = async () => {
@@ -119,255 +74,176 @@ function EmptyWorkspace() {
 
   return (
     <div className="empty-study">
-      <div className="empty-card">
+      <div className="empty-card start-card">
         <div className="empty-kicker">System Design Studio</div>
-        <h1>Model a real system.</h1>
+        <h1>Draw a system. Watch it break. Fix it. Hand it to your agent.</h1>
         <p className="empty-lede">
-          Ask your coding agent to reconstruct this codebase through WebMCP, or open an empty canvas
-          and draw the architecture yourself. No demo project is loaded.
+          Model the architecture, give its requests real steps, and the studio finds the order of
+          events that breaks a rule and plays it on your drawing. Then measure the fix under load.
         </p>
 
-        <div className="starter-prompt">
-          <div className="starter-prompt-head">
-            <span>Paste into your agent</span>
-            <strong>Create system design from codebase</strong>
-          </div>
-          <p>{CODEBASE_PROMPT}</p>
-          <PromptRoute />
-        </div>
+        <div className="start-grid">
+          {DEMO_SCENARIOS.map((scenario) => (
+            <button
+              key={scenario.id}
+              className="start-option scenario"
+              onClick={() => loadStudyDocument(scenario.open())}
+            >
+              <span className="start-kicker">worked scenario</span>
+              <strong>{scenario.label}</strong>
+              <span className="start-blurb">{scenario.summary}</span>
+              <span className="start-teaches">{scenario.teaches}</span>
+              <span className="start-cta">Open and play the race</span>
+            </button>
+          ))}
 
-        <div className="empty-actions">
-          <button
-            className="btn primary"
-            disabled={copyState === "copying"}
-            onClick={() => void copySelected()}
-          >
-            {copyState === "copying"
-              ? "Copying…"
-              : copyState === "copied"
-                ? "Prompt copied"
+          <div className="start-option import">
+            <span className="start-kicker">from a codebase</span>
+            <strong>Let your coding agent draw the current system</strong>
+            <span className="start-blurb">
+              Paste one request into a WebMCP-capable agent. It reads the repository, imports the
+              current architecture with a citation per component, and stops.
+            </span>
+            <div className="row-actions">
+              <button
+                className="btn primary"
+                disabled={copyState === "copying"}
+                onClick={() => void copySelected()}
+              >
+                {copyState === "copying"
+                  ? "Copying\u2026"
+                  : copyState === "copied"
+                    ? "Prompt copied"
+                    : copyState === "failed"
+                      ? "Copy unavailable"
+                      : "Copy agent prompt"}
+              </button>
+              <button className="btn" onClick={() => setPromptOpen((open) => !open)} aria-expanded={promptOpen}>
+                {promptOpen ? "Hide prompt" : "Show prompt"}
+              </button>
+            </div>
+            <span className="copy-feedback muted" aria-live="polite">
+              {copyState === "copied"
+                ? "Ready to paste. You can edit the request before sending."
                 : copyState === "failed"
-                  ? "Copy unavailable"
-                  : "Copy agent prompt"}
-          </button>
-          <button className="btn manual-design-action" onClick={startManualDesign}>
-            Design manually
-          </button>
-        </div>
-        <div className="empty-action-help">
-          <span className="copy-feedback" aria-live="polite">
-            {copyState === "copied"
-              ? "Ready to paste. You can edit the request before sending."
-              : copyState === "failed"
-                ? "Select the visible prompt and copy it manually."
-                : "The prompt is visible and editable after you paste it."}
-          </span>
-          <span>Manual design starts with an empty canvas; add components from the toolbar.</span>
+                  ? "Open the prompt and copy it by hand."
+                  : webmcpReady
+                    ? `WebMCP is ready \u00b7 ${webmcp.status}`
+                    : "Open this page beside a WebMCP-capable coding agent to expose the Studio tools."}
+            </span>
+          </div>
+
+          <div className="start-option blank">
+            <span className="start-kicker">from scratch</span>
+            <strong>Blank canvas</strong>
+            <span className="start-blurb">
+              Add components from the palette, link them, give one some request steps, add a rule.
+            </span>
+            <button className="btn manual-design-action" onClick={startManualDesign}>
+              Design manually
+            </button>
+          </div>
         </div>
 
-        <p className={`muted empty-agent ${webmcpReady ? "ready" : ""}`}>
-          {webmcpReady
-            ? `WebMCP is ready · ${webmcp.status} · the agent can write the model, not approve it.`
-            : "Open this page beside a WebMCP-capable coding agent to expose the Studio tools."}
+        {promptOpen && (
+          <div className="starter-prompt">
+            <div className="starter-prompt-head">
+              <span>Paste into your agent</span>
+              <strong>Create system design from codebase</strong>
+            </div>
+            <p>{CODEBASE_PROMPT}</p>
+            <PromptRoute />
+          </div>
+        )}
+
+        <p className="muted what-it-finds">
+          <b>What this can find:</b> lost updates, double bookings, idempotency keys per attempt
+          rather than per request, unfenced leases and stale owners, queue redelivery, worker crashes
+          mid-write, expiry timing; and under load, the bottleneck, the retry storm, the growing
+          backlog. <b>Not (yet):</b> isolation levels, partitions, quorum, clock skew, liveness.
         </p>
       </div>
     </div>
   );
 }
 
-const VIEWS: Array<{ id: ViewId; label: string; hint: string }> = [
-  { id: "design", label: "Design", hint: "Draw the architecture and behavior" },
-  { id: "correctness", label: "Correctness", hint: "Search for unsafe interleavings" },
-  { id: "performance", label: "Performance", hint: "Measure load, latency, and outcomes" },
-  { id: "compare", label: "Compare", hint: "Review gates and trade-offs" },
-];
-
 /**
- * The view switcher.
+ * The bottom dock: the lens's results, in the DevTools position.
  *
- * Four views over ONE study document. Not four modes with their own state: a correctness verdict and
- * a latency figure that described slightly different documents would be the incoherence the whole
- * study format exists to prevent, and separate stores is how that happens.
+ * Behaviour: the counterexample timeline, synced with the sprites above it. Load: the measured
+ * results, production scenarios and business outcomes. Collapsible, because the canvas is the point.
  */
-function ViewTabs() {
-  const view = useStudyStore((s) => s.view);
-  const setView = useStudyStore((s) => s.setView);
+function BottomDock() {
+  const lens = useStudyStore((s) => s.lens);
+  const plan = useRaceModel((s) => s.plan);
+  const [collapsed, setCollapsed] = useState(false);
+  const [autoOpened, setAutoOpened] = useState<string | null>(null);
+
+  // A freshly found race opens the dock even if the person had closed it: the result is the point.
+  const planKey = plan ? `${plan.steps.length}:${plan.violatingNodeId ?? ""}` : null;
+  useEffect(() => {
+    if (planKey && planKey !== autoOpened) {
+      setCollapsed(false);
+      setAutoOpened(planKey);
+    }
+  }, [autoOpened, planKey]);
+
   return (
-    <nav className="tabs" aria-label="Design views">
-      {VIEWS.map((v) => (
-        <button
-          key={v.id}
-          className={view === v.id ? "active" : ""}
-          aria-current={view === v.id ? "page" : undefined}
-          title={v.hint}
-          onClick={() => setView(v.id)}
-        >
-          {v.label}
+    <section className={`dock ${collapsed ? "collapsed" : ""}`} aria-label={lens === "behaviour" ? "how it breaks" : "measured under load"}>
+      <header className="dock-head">
+        <h2>{lens === "behaviour" ? "how it breaks" : "measured under load"}</h2>
+        <span className="muted dock-hint">
+          {lens === "behaviour"
+            ? "one column per request, one row per step; click a row to jump there"
+            : "production scenarios, replicated measurement and business outcomes for the active version"}
+        </span>
+        <button className="btn small" onClick={() => setCollapsed((c) => !c)} aria-expanded={!collapsed}>
+          {collapsed ? "show" : "hide"}
         </button>
-      ))}
-    </nav>
+      </header>
+      {!collapsed && <div className="dock-content">{lens === "behaviour" ? <RaceDock /> : <PerformanceView />}</div>}
+    </section>
   );
 }
 
-function Topbar() {
-  const design = useStudio((s) => s.design);
-  const study = useStudyStore((s) => s.study);
-  const exportStudyJson = useStudyStore((s) => s.exportStudyJson);
-  const importStudyJson = useStudyStore((s) => s.importStudyJson);
-  const persistence = useStudyStore((s) => s.persistence);
-  const webmcp = useStudyStore((s) => s.webmcp);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [menu, setMenu] = useState<"palette" | "activity" | null>(null);
-  const hasCandidates = study.candidates.length > 0;
-  const webmcpReady = webmcp.status.includes("tools");
-  const activeCandidate =
-    study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ??
-    study.candidates[0];
-  const evidenceCoverage = activeCandidate
-    ? new Set(
-        activeCandidate.evidence.map((evidence) => `${evidence.targetKind}:${evidence.targetId}`)
-      ).size
-    : 0;
-  const architectureElements = activeCandidate
-    ? activeCandidate.design.nodes.length + activeCandidate.design.edges.length
-    : 0;
-  const sourceRevision = study.repository?.revision
-    ? study.repository.revision.slice(0, 9)
-    : "unversioned";
-
-  const download = useCallback(() => {
-    // A STUDY, not a design. The design alone would lose the invariants, the bounds and every
-    // other candidate -- which is to say it would lose the argument and keep only one of its
-    // conclusions.
-    const blob = new Blob([exportStudyJson()], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = studyFilename(study);
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [exportStudyJson, study]);
-
+function ReviewDrawer() {
+  const setReviewOpen = useStudyStore((s) => s.setReviewOpen);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReviewOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setReviewOpen]);
   return (
-    <header className="topbar" onClick={() => setMenu(null)}>
-      <div className="topbar-primary">
-        <div className="brand">
-          <div className="mark" aria-hidden="true" />
+    <>
+      <div className="drawer-backdrop" onClick={() => setReviewOpen(false)} />
+      <aside className="review-drawer" aria-label="review and hand off">
+        <header className="drawer-head">
           <div>
-            <div className="brand-name">
-              System Design <b>Studio</b>
-            </div>
-            <div className="brand-sub">Code → model → test → code</div>
+            <h2>review &amp; hand off</h2>
+            <p className="muted">Which versions pass the rules, how they trade off, and the one change a person approved.</p>
           </div>
-        </div>
-        {hasCandidates ? <ViewTabs /> : null}
-        <div className="tb-spacer" />
-        <div className="topbar-status">
-          {study.candidates.length > 0 && (
-            <span className="tb-meta tnum">
-              {design.nodes.length} nodes · {design.edges.length} links
-            </span>
-          )}
-          {persistence.status !== "idle" && (
-            <span
-              className={`save-status ${persistence.status === "failed" ? "issue-error" : ""}`}
-              title={persistence.detail}
-            >
-              {persistence.status === "failed" ? "Not saved" : persistence.status}
-            </span>
-          )}
-          <div className="menu-anchor activity-anchor">
-            <button
-              className="btn status-btn"
-              title={webmcp.detail}
-              aria-expanded={menu === "activity"}
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenu(menu === "activity" ? null : "activity");
-              }}
-            >
-              <span className={`status-dot ${webmcpReady ? "ready" : ""}`} />
-              {webmcpReady ? "WebMCP ready" : `WebMCP ${webmcp.status}`}
-            </button>
-            {menu === "activity" && <ActivityLog onClose={() => setMenu(null)} />}
-          </div>
-        </div>
-      </div>
-
-      <div className="topbar-secondary">
-        {hasCandidates ? (
-          <div className="tb-group">
-            <div className="menu-anchor">
-              <button
-                className="btn"
-                aria-expanded={menu === "palette"}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenu(menu === "palette" ? null : "palette");
-                }}
-              >
-                Add component
-              </button>
-              {menu === "palette" && <Palette onClose={() => setMenu(null)} />}
-            </div>
-          </div>
-        ) : null}
-
-        {study.repository && (
-          <div
-            className="repository-status"
-            title={`${study.repository.rootHint || study.repository.name} · ${evidenceCoverage}/${architectureElements} architecture elements have evidence`}
-          >
-            <span className="repository-dot" />
-            <strong>{study.repository.name}</strong>
-            <code>{study.repository.branch || "workspace"}@{sourceRevision}</code>
-            <span className="repository-coverage">
-              {evidenceCoverage}/{architectureElements} evidenced
-            </span>
-            {study.repository.dirty && <span className="repository-dirty">dirty</span>}
-          </div>
-        )}
-
-        <div className="tb-spacer" />
-
-        <div className="tb-group file-actions">
-          {hasCandidates ? (
-            <button className="btn" onClick={download}>
-              Export
-            </button>
-          ) : null}
-          <button className="btn" onClick={() => fileRef.current?.click()}>
-            Import
+          <button className="btn small" onClick={() => setReviewOpen(false)} aria-label="close review">
+            close
           </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="application/json"
-            style={{ display: "none" }}
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              // Accepts a study OR a bare design; a design becomes a one-candidate study with no
-              // correctness contract, which is the honest treatment of a document that has no
-              // invariants.
-              importStudyJson(await file.text());
-              e.target.value = "";
-            }}
-          />
-        </div>
-      </div>
-    </header>
+        </header>
+        <CompareView />
+      </aside>
+    </>
   );
 }
 
-function DesignView() {
+function Workbench() {
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
+  const lens = useStudyStore((s) => s.lens);
   if (!hasCandidates) return <EmptyWorkspace />;
   return (
     <>
-      <ResultsRail />
+      {lens === "behaviour" ? <BehaviourRail /> : <ResultsRail />}
       <FlowCanvas />
       <Inspector />
+      <BottomDock />
     </>
   );
 }
@@ -472,6 +348,20 @@ function useWebmcp() {
               }
         );
       },
+      annotate: (input) => {
+        const store = useStudyStore.getState();
+        const note = store.addAnnotation({ ...input, by: "agent" });
+        // A note is worth nothing unseen. Open the panel the first time the agent speaks.
+        if (!store.agentOpen) store.setAgentOpen(true);
+        return note;
+      },
+      focus: (request) => {
+        const store = useStudyStore.getState();
+        if ("candidateId" in request && request.candidateId && request.candidateId !== store.study.activeCandidateId) {
+          store.selectCandidate(request.candidateId);
+        }
+        store.requestFocus(request.target);
+      },
       log: (entry) => useStudyStore.getState().logActivity(entry),
     };
 
@@ -487,9 +377,11 @@ function useWebmcp() {
 }
 
 export function App() {
-  const view = useStudyStore((s) => s.view);
+  const lens = useStudyStore((s) => s.lens);
   const error = useStudyStore((s) => s.error);
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
+  const reviewOpen = useStudyStore((s) => s.reviewOpen);
+  const agentOpen = useStudyStore((s) => s.agentOpen);
   useWebmcp();
 
   useEffect(() => {
@@ -497,14 +389,13 @@ export function App() {
   }, []);
 
   return (
-    <div className={`shell shell-${view}`}>
+    <div className={`shell shell-${lens} ${hasCandidates ? "" : "shell-empty"} ${agentOpen ? "agent-open" : ""}`}>
       <Topbar />
       {hasCandidates ? <CandidateBar /> : null}
       {error && <div className="banner banner-error">{error}</div>}
-      {view === "design" && <DesignView />}
-      {view === "correctness" && <CorrectnessView />}
-      {view === "performance" && <PerformanceView />}
-      {view === "compare" && <CompareView />}
+      <Workbench />
+      {agentOpen && <AgentPanel />}
+      {reviewOpen && hasCandidates && <ReviewDrawer />}
     </div>
   );
 }

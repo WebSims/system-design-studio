@@ -10,114 +10,12 @@ import {
 } from "@sds/schema";
 import { useStudio } from "../store";
 import { useStudyStore } from "../study/store";
+import { BehaviourEditor, LockEditor, StateEditor } from "./BehaviourEditor";
+import { Field, NumberInput, Select, Toggle } from "./controls";
 
 /** Round to an integer and hold it inside the schema's bounds. */
 const clampInt = (v: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(v)));
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <label className="field">
-      <span className="field-label">
-        {label}
-        {hint && <span className="field-hint">{hint}</span>}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-function NumberInput({
-  value,
-  onChange,
-  min,
-  max,
-  step,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-  min?: number;
-  max?: number;
-  step?: number;
-}) {
-  return (
-    <input
-      type="number"
-      className="input tnum"
-      value={value}
-      min={min}
-      max={max}
-      step={step ?? 1}
-      onChange={(e) => {
-        const v = Number(e.target.value);
-        if (!Number.isFinite(v)) return;
-        /**
-         * Clamp here rather than at each call site.
-         *
-         * `min` and `max` on a number input are advisory: the browser will happily let
-         * you type past them, and every call site was clamping the lower bound by hand
-         * and none the upper. Typing a concurrency of 1e9 froze the studio outright,
-         * because the closed-form solvers are linear in the server count and the live
-         * preview evaluates them on every keystroke.
-         */
-        const lo = min ?? -Infinity;
-        const hi = max ?? Infinity;
-        onChange(Math.min(hi, Math.max(lo, v)));
-      }}
-    />
-  );
-}
-
-function Toggle({
-  label,
-  hint,
-  on,
-  onChange,
-}: {
-  label: string;
-  hint?: string;
-  on: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button className={`toggle-row ${on ? "on" : ""}`} onClick={() => onChange(!on)}>
-      <span className="toggle-switch">
-        <span className="toggle-knob" />
-      </span>
-      <span className="toggle-body">
-        <span>{label}</span>
-        {hint && <span className="toggle-hint">{hint}</span>}
-      </span>
-    </button>
-  );
-}
-
-function Select<T extends string>({
-  value,
-  options,
-  onChange,
-  disabled,
-}: {
-  value: T;
-  options: Array<{ value: T; label: string }>;
-  onChange: (v: T) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <select
-      className="input"
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(e.target.value as T)}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
-  );
-}
 
 /**
  * Provenance for a preset's numbers.
@@ -161,14 +59,14 @@ function ArchitectureEvidence({
       <div className="evidence-heading">
         <span>source evidence</span>
         <span className={`badge ${candidate.role === "baseline" ? "badge-info" : "badge-muted"}`}>
-          {candidate.role === "baseline" ? "as-is" : "experiment"}
+          {candidate.role === "baseline" ? "current" : "version"}
         </span>
       </div>
       {evidence.length === 0 ? (
         <p className={`evidence-empty ${study.repository ? "evidence-uncovered" : ""}`}>
           {study.repository
             ? "No repository evidence is attached to this element. Treat it as an assumption until the agent cites a source."
-            : "This is a freehand model. Link a repository through Codex to attach auditable source evidence."}
+            : "This is a freehand model. Import from a codebase with your coding agent to attach auditable source evidence."}
         </p>
       ) : (
         <ul className="evidence-list">
@@ -299,15 +197,18 @@ export function Inspector() {
   const design = useStudio((s) => s.design);
   const preview = useStudio((s) => s.preview);
   const edit = useStudio((s) => s.edit);
+  const lens = useStudyStore((s) => s.lens);
 
   if (!selection) {
     return (
       <aside className="rail right">
         <div className="rail-title">inspector</div>
         <div className="empty">
-          Select a node or connection to edit it.
+          Select a component or link to edit it.
           <div className="empty-sub">
-            Drag between node handles to connect them.
+            {lens === "behaviour"
+              ? "Select a service to write its request steps, or a database to see what it stores. Steps are what race; without them there is nothing to find."
+              : "To link two components, press Link on the canvas and click them in turn, or drag from one's right handle to another's left."}
           </div>
         </div>
         <ClassEditor />
@@ -447,6 +348,21 @@ export function Inspector() {
       if (n) fn(n);
     });
 
+  /**
+   * Behaviour first in the Behaviour lens, capacity first in the Load lens.
+   *
+   * Same editors either way; only the order changes, so the thing the current lens is
+   * about is the thing under the cursor.
+   */
+  const behaviour =
+    node.kind === "server" ? (
+      <BehaviourEditor nodeId={node.id} />
+    ) : node.kind === "database" ? (
+      <StateEditor nodeId={node.id} />
+    ) : node.kind === "lock" ? (
+      <LockEditor nodeId={node.id} />
+    ) : null;
+
   return (
     <aside className="rail right">
       <div className="rail-title">{node.kind}</div>
@@ -455,6 +371,8 @@ export function Inspector() {
       <Field label="label">
         <input className="input" value={node.label} onChange={(e) => patch((n) => { n.label = e.target.value; })} />
       </Field>
+
+      {lens === "behaviour" && behaviour}
 
       {node.kind === "client" && node.client && (
         <>
@@ -1100,6 +1018,26 @@ export function Inspector() {
           <CitationNote citation={node.queue.citation} />
         </>
       )}
+
+      {node.kind === "lock" && node.lock && (
+        <>
+          <div className="section">lease service time</div>
+          <DistributionEditor
+            value={node.lock.serviceTime}
+            onChange={(serviceTime) => patch((n) => { if (n.lock) n.lock.serviceTime = serviceTime; })}
+          />
+          <div className="section">waiters</div>
+          <QueueLimitEditor
+            queueCapacity={node.lock.queueCapacity}
+            admissionPolicy={node.lock.admissionPolicy}
+            onCapacity={(v) => patch((n) => { if (n.lock) n.lock.queueCapacity = v; })}
+            onPolicy={(v) => patch((n) => { if (n.lock) n.lock.admissionPolicy = v; })}
+          />
+          <CitationNote citation={node.lock.citation} />
+        </>
+      )}
+
+      {lens === "load" && behaviour}
 
       {nodePreview && (
         <div className="model-badge">

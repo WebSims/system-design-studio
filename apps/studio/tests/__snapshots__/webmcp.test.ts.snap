@@ -2,6 +2,53 @@
 
 exports[`input schemas come from the validators > matches a snapshot, so widening a validator without regenerating fails a test 1`] = `
 {
+  "studio_annotate": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "targetId": {
+        "description": "Node id, edge id, step index as a string, or candidate id.",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "targetKind": {
+        "description": "What the note is pinned to. A step is a 0-based index into that candidate's counterexample.",
+        "enum": [
+          "node",
+          "edge",
+          "step",
+          "candidate",
+        ],
+        "type": "string",
+      },
+      "text": {
+        "description": "The note, one or two sentences. Say what, and cite where when you can.",
+        "maxLength": 400,
+        "minLength": 1,
+        "type": "string",
+      },
+      "tone": {
+        "default": "info",
+        "enum": [
+          "info",
+          "warn",
+          "bad",
+        ],
+        "type": "string",
+      },
+    },
+    "required": [
+      "targetKind",
+      "targetId",
+      "text",
+    ],
+    "type": "object",
+  },
   "studio_apply_architecture_patch": {
     "additionalProperties": false,
     "properties": {
@@ -339,6 +386,38 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     },
     "required": [
       "name",
+    ],
+    "type": "object",
+  },
+  "studio_focus": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "id": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "index": {
+        "minimum": 0,
+        "type": "integer",
+      },
+      "kind": {
+        "description": "Select a node or edge, or scrub to a counterexample step.",
+        "enum": [
+          "node",
+          "edge",
+          "step",
+        ],
+        "type": "string",
+      },
+    },
+    "required": [
+      "kind",
     ],
     "type": "object",
   },

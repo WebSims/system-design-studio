@@ -221,6 +221,18 @@ class TestHost implements ToolHost {
       warnings: [],
     };
   }
+
+  readonly notes: Array<Parameters<ToolHost["annotate"]>[0]> = [];
+  readonly focused: Array<Parameters<ToolHost["focus"]>[0]> = [];
+
+  annotate(input: Parameters<ToolHost["annotate"]>[0]) {
+    this.notes.push(input);
+    return { id: `note-${this.notes.length}` };
+  }
+
+  focus(request: Parameters<ToolHost["focus"]>[0]) {
+    this.focused.push(request);
+  }
 }
 
 function stubEvaluation(candidateId: string): CandidateEvaluation {
@@ -366,6 +378,8 @@ describe("registration", () => {
       "studio_get_evaluation",
       "studio_compare_candidates",
       "studio_get_implementation_handoff",
+      "studio_annotate",
+      "studio_focus",
     ]);
   });
 
@@ -445,7 +459,7 @@ describe("registration", () => {
       expect(r.state.reason).toContain("remains usable by hand");
     }
     // And the tool definitions still exist, so the UI can list what an agent WOULD be able to do.
-    expect(r.tools.length).toBe(19);
+    expect(r.tools.length).toBe(21);
   });
 
   it("reports unsupported when registerTool is present but not a function", () => {
@@ -1335,5 +1349,61 @@ describe("an agent can define the study, not just answer it", () => {
     if (mc.registered.length === 0) registerWebmcpTools({ host, target: { modelContext: mc } });
     const names = mc.registered.map((t) => t.name).join(" ");
     expect(names).not.toMatch(/delete|remove|promote|approve|ship|deploy/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pointing at things: annotate and focus
+// ---------------------------------------------------------------------------
+
+describe("studio_annotate and studio_focus", () => {
+  const activeNode = () => host.study.candidates.find((c) => c.id === host.study.activeCandidateId)!.design.nodes[0]!.id;
+
+  it("pins a note to a node of the active candidate and logs it", async () => {
+    const r = await call("studio_annotate", { targetKind: "node", targetId: activeNode(), text: "the race happens here", tone: "bad" });
+    expect(r.isError).toBeFalsy();
+    expect(host.notes).toHaveLength(1);
+    expect(host.notes[0]).toMatchObject({
+      candidateId: host.study.activeCandidateId,
+      targetKind: "node",
+      targetId: activeNode(),
+      tone: "bad",
+    });
+    expect(host.activity.at(-1)?.tool).toBe("studio_annotate");
+  });
+
+  it("refuses a note on a node that does not exist, so a typo cannot pin to nothing", async () => {
+    const r = await call("studio_annotate", { targetKind: "node", targetId: "nope", text: "?" });
+    expect(r.isError).toBe(true);
+    expect(host.notes).toHaveLength(0);
+  });
+
+  it("notes never touch the study document", async () => {
+    const before = JSON.stringify(host.study);
+    await call("studio_annotate", { targetKind: "candidate", targetId: host.study.activeCandidateId, text: "a thought" });
+    expect(JSON.stringify(host.study)).toBe(before);
+  });
+
+  it("focuses a node and requires an id for it", async () => {
+    const ok = await call("studio_focus", { kind: "node", id: activeNode() });
+    expect(ok.isError).toBeFalsy();
+    expect(host.focused).toEqual([{ candidateId: host.study.activeCandidateId, target: { kind: "node", id: activeNode() } }]);
+
+    const missing = await call("studio_focus", { kind: "node" });
+    expect(missing.isError).toBe(true);
+  });
+
+  it("refuses to focus a step before a counterexample exists, and past its end after", async () => {
+    const early = await call("studio_focus", { kind: "step", index: 0 });
+    expect(early.isError).toBe(true);
+    expect((early.content as { error: string }).error).toMatch(/no counterexample/);
+
+    await call("studio_run_evaluation", { candidateId: host.study.activeCandidateId, correctness: true, performance: false });
+    const ok = await call("studio_focus", { kind: "step", index: 0 });
+    expect(ok.isError).toBeFalsy();
+    expect(host.focused.at(-1)).toEqual({ candidateId: host.study.activeCandidateId, target: { kind: "step", index: 0 } });
+
+    const far = await call("studio_focus", { kind: "step", index: 999 });
+    expect(far.isError).toBe(true);
   });
 });

@@ -407,7 +407,7 @@ function ResultPanel({ result }: { result: RunResult }) {
 
       {failedInvariants.length > 0 && (
         <div className="verdict crit">
-          <div className="verdict-title">invariant violated — do not trust these numbers</div>
+          <div className="verdict-title">simulator self-check failed — do not trust these numbers</div>
           {failedInvariants.map((i) => (
             <div className="verdict-body" key={i.name}>
               {i.name}: {i.detail}
@@ -642,7 +642,7 @@ function ResultPanel({ result }: { result: RunResult }) {
         threshold={slo.p99LatencyMs}
       />
 
-      <div className="section">invariants</div>
+      <div className="section">simulator self-checks</div>
       {result.invariants.map((i) => (
         <div className={`invariant ${i.passed ? "ok" : "bad"}`} key={i.name}>
           <span className="inv-mark">{i.passed ? "✓" : "✗"}</span>

@@ -50,6 +50,7 @@ import {
   editActiveDesign,
   importRepositoryArchitecture,
   promoteCandidate,
+  releaseApproval,
   replaceCandidateDraft,
   setActiveCandidate,
   type ApplyArchitecturePatchInput,
@@ -61,12 +62,13 @@ import type { ActivityEntry } from "../webmcp/tools";
 /**
  * The study store.
  *
- * ONE DOCUMENT, FOUR VIEWS
+ * ONE DOCUMENT, ONE CANVAS, TWO LENSES
  *
- * Design, Correctness, Performance and Compare are views over the same study, not four modes with
+ * The Behaviour lens (race explorer) and the Load lens (simulator) are views over the same study on
+ * the same canvas, and the review drawer is a third view over the same document. Not modes with
  * their own state. That is the entire architectural content of "both learner and expert": there is
- * one canonical model and the views differ in what they show of it, so a guided invariant builder
- * and a raw JSON editor cannot produce documents that disagree.
+ * one canonical model and the views differ in what they show of it, so a guided rule builder and a
+ * raw JSON editor cannot produce documents that disagree.
  *
  * WHY EVALUATIONS ARE CACHED IN THE DOCUMENT
  *
@@ -76,11 +78,64 @@ import type { ActivityEntry } from "../webmcp/tools";
  * shown next to the design that produced it -- see `evaluationKey`.
  */
 
-export type ViewId = "design" | "correctness" | "performance" | "compare";
+/**
+ * The two lenses on the one canvas.
+ *
+ * `behaviour` is the race explorer: a handful of actors, step-driven, state on the data nodes.
+ * `load` is the simulator: rates, queues, latency. Same design, same canvas; the lens decides what
+ * the rails and the bottom dock show of it.
+ */
+export type LensId = "behaviour" | "load";
+
+/**
+ * A note an agent (or a person) pinned to something on the canvas.
+ *
+ * Session state, not document state: it is narration about the model, not part of it, so it is
+ * neither saved nor exported and cannot leak into a handoff.
+ */
+export interface Annotation {
+  id: string;
+  candidateId: string | null;
+  targetKind: "node" | "edge" | "step" | "candidate";
+  targetId: string;
+  text: string;
+  tone: "info" | "warn" | "bad";
+  by: "agent" | "human";
+  at: number;
+}
+
+/**
+ * Something the agent (or the review drawer) asked the canvas to look at. Consumed by the canvas,
+ * which pans to it, selects it and, for a step, scrubs the counterexample there.
+ */
+export type FocusRequest =
+  | { kind: "node"; id: string }
+  | { kind: "edge"; id: string }
+  | { kind: "step"; index: number };
 
 export interface StudioState {
   study: Study;
-  view: ViewId;
+  lens: LensId;
+  /** The review drawer (versions, gates, trade-offs, hand off) over the canvas. */
+  reviewOpen: boolean;
+  /** The agent stream panel. */
+  agentOpen: boolean;
+  annotations: Annotation[];
+  focusRequest: FocusRequest | null;
+  /**
+   * Version the canvas is being diffed against, or null for no diff.
+   *
+   * When set, the active version is drawn with its additions and changes marked and the
+   * other version's removed components drawn as ghosts. This is how "did the code change
+   * land as approved" is answered: re-import the codebase, diff it against the approved
+   * version, look.
+   */
+  diffBaseId: string | null;
+  /**
+   * The approved version a re-import should be checked against, remembered when a person
+   * releases an approval to let the agent import the new commit.
+   */
+  verifyAgainstId: string | null;
 
   /** Validation of the whole study, recomputed on every edit. */
   issues: StudyIssue[];
@@ -100,8 +155,22 @@ export interface StudioState {
   persistence: { status: "idle" | "saving" | "saved" | "failed"; detail: string };
 
   // ---- navigation ----
-  setView(view: ViewId): void;
+  setLens(lens: LensId): void;
+  setReviewOpen(open: boolean): void;
+  setAgentOpen(open: boolean): void;
   selectCandidate(id: string): void;
+  addAnnotation(annotation: Omit<Annotation, "id" | "at">): Annotation;
+  dismissAnnotation(id: string): void;
+  requestFocus(request: StudioState["focusRequest"]): void;
+  setDiffBase(candidateId: string | null): void;
+  /**
+   * Release the approval so a new source snapshot can become the current system.
+   *
+   * A human action, and the only way an agent's re-import is allowed into an approved
+   * project. Results are kept; only the decision is withdrawn, and the approved version
+   * is remembered so the re-import can be diffed against it.
+   */
+  releaseApprovalForReimport(): void;
 
   // ---- document ----
   loadStudyDocument(study: Study): void;
@@ -284,7 +353,13 @@ export const useStudyStore = create<StudioState>((set, get) => {
 
   return {
     study: initial,
-    view: "design",
+    lens: "behaviour",
+    reviewOpen: false,
+    agentOpen: false,
+    annotations: [],
+    focusRequest: null,
+    diffBaseId: null,
+    verifyAgainstId: null,
     ...derive(initial),
     portfolio: null,
     running: new Set<string>(),
@@ -293,7 +368,33 @@ export const useStudyStore = create<StudioState>((set, get) => {
     webmcp: { status: "unknown", detail: "" },
     persistence: { status: "idle", detail: "" },
 
-    setView: (view) => set({ view }),
+    setLens: (lens) => set({ lens }),
+    setReviewOpen: (reviewOpen) => set({ reviewOpen }),
+    setAgentOpen: (agentOpen) => set({ agentOpen }),
+    addAnnotation: (input) => {
+      const annotation: Annotation = {
+        ...input,
+        id: `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        at: Date.now(),
+      };
+      set((s) => ({ annotations: [...s.annotations.slice(-199), annotation] }));
+      return annotation;
+    },
+    dismissAnnotation: (id) =>
+      set((s) => ({ annotations: s.annotations.filter((note) => note.id !== id) })),
+    requestFocus: (focusRequest) => set({ focusRequest }),
+    setDiffBase: (diffBaseId) => set({ diffBaseId }),
+    releaseApprovalForReimport: () => {
+      const study = get().study;
+      const approved = study.promotedCandidateId;
+      if (!approved) return;
+      try {
+        commit(releaseApproval(study), true);
+        set({ verifyAgainstId: approved, diffBaseId: null });
+      } catch (err) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
 
     selectCandidate: (id) => {
       try {
@@ -305,7 +406,9 @@ export const useStudyStore = create<StudioState>((set, get) => {
 
     loadStudyDocument: (study) => {
       commit(study, true);
-      set({ portfolio: null, view: "design" });
+      // Annotations narrate one document; carrying them into another would pin notes to elements
+      // that happen to share an id.
+      set({ portfolio: null, reviewOpen: false, annotations: [], focusRequest: null, diffBaseId: null, verifyAgainstId: null });
       void get().refreshPortfolio();
     },
 
@@ -393,7 +496,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
     importArchitecture: (input) => {
       const { study, candidate } = importRepositoryArchitecture(get().study, input);
       commit(study, true);
-      set({ portfolio: null, view: "design" });
+      set({ portfolio: null, reviewOpen: false });
       void get().refreshPortfolio();
       return candidate;
     },

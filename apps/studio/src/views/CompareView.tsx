@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { EligibilityDecision, PortfolioResult } from "@sds/schema";
+import { reimportPrompt } from "../codebase-prompt";
 import { buildImplementationHandoff } from "../implementation-handoff";
 import { baselineAncestor } from "../study/mutations";
 import { useStudyStore } from "../study/store";
@@ -30,7 +31,8 @@ export function CompareView() {
   const cancel = useStudyStore((s) => s.cancel);
   const promote = useStudyStore((s) => s.promote);
   const select = useStudyStore((s) => s.selectCandidate);
-  const setView = useStudyStore((s) => s.setView);
+  const setLens = useStudyStore((s) => s.setLens);
+  const setReviewOpen = useStudyStore((s) => s.setReviewOpen);
 
   const busy = running.size > 0;
 
@@ -39,7 +41,7 @@ export function CompareView() {
       <div className="view-main">
         <section className="section">
           <header className="section-head">
-            <h2>compare</h2>
+            <h2>versions</h2>
             <div className="row-actions">
               {busy ? (
                 <button className="btn" onClick={cancel}>
@@ -48,7 +50,7 @@ export function CompareView() {
               ) : (
                 <>
                   <button className="btn primary" onClick={() => void evaluateAll()}>
-                    Run all
+                    Run all versions
                   </button>
                   <button className="btn" onClick={() => void refresh()}>
                     Refresh
@@ -59,7 +61,7 @@ export function CompareView() {
           </header>
 
           {!portfolio ? (
-            <p className="muted">No comparison yet.</p>
+            <p className="muted">No comparison yet. Run all versions to see which pass the rules and how they trade off.</p>
           ) : (
             <>
               <p className="lede">{portfolio.claim}</p>
@@ -77,9 +79,9 @@ export function CompareView() {
         {portfolio && (
           <section className="section">
             <header className="section-head">
-              <h2>the gates</h2>
+              <h2>does each version pass?</h2>
             </header>
-            <p className="muted">Candidates must pass all five gates to enter the comparison.</p>
+            <p className="muted">A version has to pass all five checks before its numbers are compared with the others.</p>
 
             <div className="gate-grid">
               {portfolio.decisions.map((decision) => {
@@ -103,11 +105,12 @@ export function CompareView() {
                     busy={running.has(decision.candidateId)}
                     onOpen={() => {
                       select(decision.candidateId);
-                      setView("design");
+                      setReviewOpen(false);
                     }}
                     onInspect={() => {
                       select(decision.candidateId);
-                      setView("correctness");
+                      setLens("behaviour");
+                      setReviewOpen(false);
                     }}
                     onPromote={() => promote(decision.candidateId)}
                   />
@@ -122,7 +125,7 @@ export function CompareView() {
         {portfolio && portfolio.axes.length > 0 && (
           <section className="section">
             <header className="section-head">
-              <h2>axes compared</h2>
+              <h2>trade-offs</h2>
             </header>
             <ul className="axis-list">
               {portfolio.axes.map((axis) => (
@@ -140,7 +143,7 @@ export function CompareView() {
 
             {portfolio.dominated.length > 0 && (
               <>
-                <h3>dominance</h3>
+                <h3>strictly better</h3>
                 <ul className="axis-list">
                   {portfolio.dominated.map((d, i) => (
                     <li key={i}>
@@ -177,7 +180,9 @@ export function CompareView() {
 
 function ImplementationHandoffPanel() {
   const study = useStudyStore((state) => state.study);
+  const releaseApprovalForReimport = useStudyStore((state) => state.releaseApprovalForReimport);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [verifyStep, setVerifyStep] = useState<"idle" | "confirm" | "copied" | "failed">("idle");
   const handoff = buildImplementationHandoff(study);
 
   if (handoff.status === "blocked") {
@@ -186,15 +191,15 @@ function ImplementationHandoffPanel() {
       !["approval-stale", "evaluation-required", "approval-ineligible"].includes(handoff.code);
     const steps = [
       { label: "Repository snapshot", done: study.repository !== null },
-      { label: "Eligible experiment approved", done: approvalReady },
-      { label: "Handoff ready", done: false },
+      { label: "A version that passes the rules is approved", done: approvalReady },
+      { label: "Ready to send to the agent", done: false },
     ];
     return (
       <section className="section implementation-handoff handoff-blocked">
         <header className="section-head">
           <div>
-            <h2>implementation handoff</h2>
-            <p className="section-subtitle">Turn a reviewed experiment into a precise code task.</p>
+            <h2>send to agent</h2>
+            <p className="section-subtitle">Turn an approved version into a precise code task for your coding agent.</p>
           </div>
           <span className="badge badge-muted">not ready</span>
         </header>
@@ -233,19 +238,48 @@ function ImplementationHandoffPanel() {
     }
   };
 
+  /**
+   * Step two of the loop with code: release the approval (a human act) and hand the agent a
+   * re-import request. The approved version is remembered so the delta section defaults to
+   * approved -> as built once the import lands.
+   */
+  const startVerify = async () => {
+    const approved = {
+      id: handoff.approvedDesign.candidateId,
+      label: handoff.approvedDesign.label,
+    };
+    const prompt = reimportPrompt(approved, {
+      studyId: study.id,
+      studyName: study.name,
+      candidateId: approved.id,
+      candidateLabel: approved.label,
+      candidateRevision: handoff.approvedDesign.revision,
+    });
+    let copied = false;
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(prompt);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+    releaseApprovalForReimport();
+    setVerifyStep(copied ? "copied" : "failed");
+  };
+
   return (
     <section className="section implementation-handoff handoff-ready">
       <header className="section-head">
         <div>
-          <h2>implementation handoff</h2>
-          <p className="section-subtitle">The exact architecture delta a person approved.</p>
+          <h2>send to agent</h2>
+          <p className="section-subtitle">The exact architecture change a person approved.</p>
         </div>
         <span className="badge badge-ok">approved</span>
       </header>
 
       <div className="handoff-receipt">
         <div className="handoff-route-card">
-          <span>From code baseline</span>
+          <span>From the current system</span>
           <strong>{handoff.baseline.label}</strong>
           <code>
             {handoff.baseline.candidateId}@r{handoff.baseline.revision}
@@ -253,7 +287,7 @@ function ImplementationHandoffPanel() {
         </div>
         <span className="handoff-route-arrow" aria-hidden="true">→</span>
         <div className="handoff-route-card approved">
-          <span>To approved experiment</span>
+          <span>To the approved version</span>
           <strong>{handoff.approvedDesign.label}</strong>
           <code>
             {handoff.approvedDesign.candidateId}@r{handoff.approvedDesign.revision}
@@ -333,11 +367,11 @@ function ImplementationHandoffPanel() {
       <footer className="handoff-actions">
         <div>
           <button className="btn primary" onClick={() => void copyPrompt()}>
-            {copyState === "copied" ? "Handoff copied" : "Copy agent handoff"}
+            {copyState === "copied" ? "Copied for your agent" : "Send approved change to agent"}
           </button>
           <span className={`copy-status copy-${copyState}`} aria-live="polite">
             {copyState === "copied"
-              ? "Ready to paste into Codex."
+              ? "Paste it into your coding agent. It edits the code with its own tools; the studio never touches files."
               : copyState === "failed"
                 ? "Clipboard access failed."
                 : ""}
@@ -345,27 +379,76 @@ function ImplementationHandoffPanel() {
         </div>
         <p>Approval authorizes this code delta—not deployment.</p>
       </footer>
+
+      <div className="handoff-verify">
+        <h3>after the agent has changed the code</h3>
+        {verifyStep === "confirm" ? (
+          <>
+            <p>
+              This withdraws the approval so the new commit can become the current system, keeps
+              every result and the approved version, and copies a re-import request for your agent.
+              When the import lands, the review shows approved against as built.
+            </p>
+            <div className="row-actions">
+              <button type="button" className="btn primary small" onClick={() => void startVerify()}>
+                release approval and copy the request
+              </button>
+              <button type="button" className="btn small ghost" onClick={() => setVerifyStep("idle")}>
+                not yet
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="row-actions">
+            <button type="button" className="btn small" onClick={() => setVerifyStep("confirm")}>
+              Verify the change landed
+            </button>
+            <span className="muted">re-import at the new commit and diff it against this approval</span>
+          </div>
+        )}
+      </div>
     </section>
   );
 }
 
 function ArchitectureDelta() {
   const study = useStudyStore((state) => state.study);
+  const verifyAgainstId = useStudyStore((state) => state.verifyAgainstId);
+  const diffBaseId = useStudyStore((state) => state.diffBaseId);
+  const setDiffBase = useStudyStore((state) => state.setDiffBase);
+  const selectCandidate = useStudyStore((state) => state.selectCandidate);
+  const setReviewOpen = useStudyStore((state) => state.setReviewOpen);
   const [baseChoice, setBaseChoice] = useState("");
   const [headChoice, setHeadChoice] = useState("");
   if (study.candidates.length < 2) return null;
 
   const candidateIds = new Set(study.candidates.map((candidate) => candidate.id));
+  /**
+   * After a hand-off the question is "did what landed match what was approved", so when a
+   * person released an approval for a re-import and a newer import exists, the default pair
+   * is approved -> as built rather than current -> approved.
+   */
+  const approvedForVerify = verifyAgainstId && candidateIds.has(verifyAgainstId) ? verifyAgainstId : null;
+  // Candidates are appended in creation order, so "a baseline imported after the approval"
+  // is the last baseline positioned after the approved version.
+  const approvedIndex = approvedForVerify ? study.candidates.findIndex((c) => c.id === approvedForVerify) : -1;
+  const asBuilt =
+    approvedIndex >= 0
+      ? [...study.candidates.slice(approvedIndex + 1)].reverse().find((c) => c.role === "baseline") ?? null
+      : null;
+  const verifying = approvedForVerify !== null && asBuilt !== null;
   const preferredHead = study.promotedCandidateId ?? study.activeCandidateId;
   const preferredBaseline = preferredHead ? baselineAncestor(study, preferredHead) : null;
-  const defaultBaseId =
-    preferredBaseline?.id ??
-    study.candidates.find((candidate) => candidate.role === "baseline")?.id ??
-    study.candidates[0]!.id;
+  const defaultBaseId = verifying
+    ? approvedForVerify!
+    : (preferredBaseline?.id ??
+      study.candidates.find((candidate) => candidate.role === "baseline")?.id ??
+      study.candidates[0]!.id);
   const baseId = candidateIds.has(baseChoice) ? baseChoice : defaultBaseId;
   const activeCandidateId = study.activeCandidateId;
-  const defaultHeadId =
-    study.promotedCandidateId !== null &&
+  const defaultHeadId = verifying && asBuilt!.id !== baseId
+    ? asBuilt!.id
+    : study.promotedCandidateId !== null &&
     study.promotedCandidateId !== baseId &&
     candidateIds.has(study.promotedCandidateId)
       ? study.promotedCandidateId
@@ -389,13 +472,27 @@ function ArchitectureDelta() {
     { label: "links configured", value: delta.summary.edgesChanged, tone: "changed" },
   ];
 
+  const shownOnCanvas = diffBaseId === baseId && activeCandidateId === headId;
+  const showOnCanvas = () => {
+    if (activeCandidateId !== headId) selectCandidate(headId);
+    setDiffBase(baseId);
+    setReviewOpen(false);
+  };
+
   return (
     <section className="section architecture-delta">
       <header className="section-head">
         <div>
-          <h2>architecture delta</h2>
-          <p className="section-subtitle">See what structurally changed before comparing outcomes.</p>
+          <h2>{verifying ? "did the code change land?" : "what changed between versions"}</h2>
+          <p className="section-subtitle">
+            {verifying
+              ? "The re-imported system against the version that was approved. Anything marked here was built differently from what was signed off."
+              : "See what structurally changed before comparing outcomes."}
+          </p>
         </div>
+        <button type="button" className={`btn small ${shownOnCanvas ? "" : "primary"}`} onClick={showOnCanvas}>
+          {shownOnCanvas ? "shown on canvas" : "show on canvas"}
+        </button>
       </header>
 
       <div className="delta-pickers">
@@ -448,7 +545,7 @@ function ArchitectureDelta() {
 
       {!delta.comparable && (
         <p className="delta-warning">
-          These candidates share no stable component IDs. Additions and removals are exact, but the
+          These versions share no stable component IDs. Additions and removals are exact, but the
           studio cannot pair components to claim that one was changed or moved.
         </p>
       )}
@@ -545,11 +642,11 @@ function GateCard({
       <header>
         <h3>{label}</h3>
         <div className="badges">
-          {origin === "agent" && <span className="badge badge-agent">AI draft</span>}
+          {origin === "agent" && <span className="badge badge-agent">agent draft</span>}
           {origin === "library" && <span className="badge badge-muted">library</span>}
           {isApproved && <span className="badge badge-ok">approved</span>}
           {isPromoted && !isApproved && <span className="badge badge-warn">review needed</span>}
-          {onFrontier && <span className="badge badge-info">frontier</span>}
+          {onFrontier && <span className="badge badge-info">a trade-off</span>}
           {busy && <span className="badge badge-muted">Running…</span>}
         </div>
       </header>
@@ -567,10 +664,10 @@ function GateCard({
 
       <footer className="row-actions">
         <button className="btn btn-quiet" onClick={onOpen}>
-          Open design
+          Open on canvas
         </button>
         <button className="btn btn-quiet" onClick={onInspect}>
-          Evidence
+          How it breaks
         </button>
         {/* Approval is eligibility-gated and only reachable from this human click. */}
         <button
@@ -578,14 +675,14 @@ function GateCard({
           disabled={!decision.eligible || role !== "experiment" || isApproved}
           title={
             role === "baseline"
-              ? "The as-is baseline is the source of a change, not an implementation target."
+              ? "The current system is what a change starts from, not something to approve."
               : decision.eligible
                 ? "Approve this exact revision. Human-only: no agent tool can do this."
-                : "Only an eligible experiment can be approved."
+                : "Only a version that passes the rules can be approved."
           }
           onClick={onPromote}
         >
-          {isApproved ? "Approved" : isPromoted ? "Approve again" : "Approve design"}
+          {isApproved ? "Approved" : isPromoted ? "Approve again" : "Approve this version"}
         </button>
       </footer>
     </article>

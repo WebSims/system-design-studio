@@ -17,6 +17,7 @@ import {
   templateFor,
 } from "../src/correctness/builder";
 import { NODE_HEIGHT, NODE_WIDTH } from "../src/canvas/geometry";
+import { DEMO_SCENARIOS } from "../src/examples";
 import { exportStudy, importStudy, studyFilename, STUDY_EXTENSION } from "../src/persist";
 
 /**
@@ -375,19 +376,31 @@ describe("nothing in the app is wired to one domain", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("does not import the worked-scenario registry", () => {
+  it("reaches the worked-scenario registry only through the opt-in examples module", () => {
+    // The scenarios are offered on the start screen, as a choice beside Import and Blank. They are
+    // never a default: the store, persistence and the tool host must not know they exist, or the
+    // auto-loaded demo comes back through a side door.
     const importers = appSources()
-      .filter((f) => /from "@sds\/models"/.test(f.text))
       .filter((f) => /STUDY_EXAMPLES/.test(f.text))
       .map((f) => f.path);
-    expect(importers).toEqual([]);
+    expect(importers).toEqual(["examples.ts"]);
   });
 
-  it("offers one codebase prompt and a manual canvas instead of empty product chrome", () => {
+  it("opens a worked scenario as a fresh project, never under the retired demo id", () => {
+    for (const scenario of DEMO_SCENARIOS) {
+      const opened = scenario.open();
+      expect(opened.id).not.toBe("limited-free-pizza");
+      expect(opened.id.startsWith("demo-")).toBe(true);
+      expect(opened.candidates.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("offers the codebase prompt, a manual canvas and worked scenarios on the start screen", () => {
     const app = appSources().find((file) => file.path === "App.tsx")?.text ?? "";
-    expect(app).not.toMatch(/\bEXAMPLES\b|ExampleMenu|AgentPromptMenu|ProjectMenu/);
+    expect(app).not.toMatch(/ExampleMenu|AgentPromptMenu|ProjectMenu/);
     expect(app).toContain("CODEBASE_PROMPT");
     expect(app).toContain("Design manually");
+    expect(app).toContain("DEMO_SCENARIOS");
     expect(app).toContain("blankDesign");
     expect(app).toContain("WebMCP");
   });

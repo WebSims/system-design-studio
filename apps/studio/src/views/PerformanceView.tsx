@@ -6,7 +6,6 @@ import type {
   ProductionScenarioResult,
 } from "@sds/schema";
 import { PRODUCTION_SCENARIO_RECIPES } from "@sds/study";
-import { useStudio } from "../store";
 import { useStudyStore } from "../study/store";
 
 /**
@@ -35,27 +34,21 @@ export function PerformanceView() {
   const evaluate = useStudyStore((s) => s.evaluate);
   const cancel = useStudyStore((s) => s.cancel);
 
-  // Says what to do, not just what is missing. "no candidate" is accurate and leaves the reader
-  // to guess which of four views fixes it.
   if (!active) {
-    return (
-      <div className="view">
-        <p className="muted">Ask Codex to create a candidate first.</p>
-      </div>
-    );
+    return <div className="dock-empty">Create a version first.</div>;
   }
 
   const p = evaluation?.performance ?? null;
   const b = evaluation?.business ?? null;
 
   return (
-    <div className="view view-performance">
+    <div className="view view-performance load-dock">
       <div className="view-main">
         <ProductionSuite candidateId={active.id} candidateLabel={active.label} />
 
         <section className="section">
           <header className="section-head">
-            <h2>steady-state measurement</h2>
+            <h2>measured under load</h2>
             {running ? (
               <button className="btn" onClick={cancel}>
                 cancel
@@ -130,8 +123,7 @@ function ProductionSuite({
   const evaluate = useStudyStore((state) => state.evaluate);
   const cancel = useStudyStore((state) => state.cancel);
   const workerRunning = useStudyStore((state) => state.running.has(candidateId));
-  const setView = useStudyStore((state) => state.setView);
-  const select = useStudio((state) => state.select);
+  const requestFocus = useStudyStore((state) => state.requestFocus);
   const [requested, setRequested] = useState(false);
   const results = evaluation?.scenarios ?? [];
   const running = requested && workerRunning;
@@ -145,11 +137,10 @@ function ProductionSuite({
     }
   };
 
+  // The canvas is always on screen now, so "inspect" pans to the element rather than changing tabs.
   const inspect = (result: ProductionScenarioResult) => {
-    if (result.targetNodeId) select({ kind: "node", id: result.targetNodeId });
-    else if (result.targetEdgeId) select({ kind: "edge", id: result.targetEdgeId });
-    else return;
-    setView("design");
+    if (result.targetNodeId) requestFocus({ kind: "node", id: result.targetNodeId });
+    else if (result.targetEdgeId) requestFocus({ kind: "edge", id: result.targetEdgeId });
   };
 
   const critical = results.filter((result) => result.status === "critical").length;
@@ -205,8 +196,8 @@ function ProductionSuite({
       </div>
 
       <p className="scenario-caveat">
-        Result quality follows model quality. Source evidence on the Design canvas shows what came
-        from code and what is still inferred or assumed.
+        Result quality follows model quality. Source evidence on the canvas shows what came from
+        code and what is still inferred or assumed.
       </p>
     </section>
   );

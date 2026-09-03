@@ -506,6 +506,23 @@ export function promoteCandidate(study: Study, candidateId: string, now = Date.n
   });
 }
 
+/**
+ * Withdraw the approval without discarding results.
+ *
+ * Human only. The use is the step after a hand-off: the agent has changed the code, and the
+ * project needs to accept a new source snapshot as "current" to check that what landed is
+ * what was approved. An agent's import into an approved project is refused (see
+ * `importRepositoryArchitecture`), so a person releases the decision first, explicitly.
+ */
+export function releaseApproval(study: Study, now = Date.now()): Study {
+  return StudySchema.parse({
+    ...study,
+    promotedCandidateId: null,
+    approval: null,
+    updatedAt: now,
+  });
+}
+
 /** Remove a candidate. Human only, and refused for the promoted one. */
 export function deleteCandidate(study: Study, candidateId: string): Study {
   if (study.promotedCandidateId === candidateId) {

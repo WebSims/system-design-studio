@@ -1,7 +1,7 @@
 import { useStudyStore } from "../study/store";
 
 /**
- * The candidate strip.
+ * The versions strip.
  *
  * Present in every view, because "which architecture am I looking at" is the question a reader loses
  * track of first and the one that makes every number on screen ambiguous when they do. It also
@@ -25,8 +25,8 @@ export function CandidateBar() {
   const duplicateActive = () => {
     if (!active) return;
     const candidate = addCandidate({
-      label: `${active.label} experiment`.slice(0, 120),
-      intent: `Experiment based on ${active.label}.`,
+      label: `${active.label} v2`.slice(0, 120),
+      intent: `A version based on ${active.label}.`,
       copyFrom: active.id,
       origin: "human",
     });
@@ -65,7 +65,7 @@ export function CandidateBar() {
               >
                 {/* Origin is rendered, never inferred, and an agent cannot set it. */}
                 <span className={`chip-role chip-role-${candidate.role}`}>
-                  {candidate.role === "baseline" ? "AS IS" : "EXP"}
+                  {candidate.role === "baseline" ? "CURRENT" : "VERSION"}
                 </span>
                 {candidate.origin === "agent" && <span className="chip-mark">AI</span>}
                 {isPromoted && <span className="chip-mark chip-promoted">✓</span>}
@@ -93,10 +93,10 @@ export function CandidateBar() {
           <button
             className="candidate-chip candidate-add"
             disabled={study.candidates.length >= 64}
-            title="Create an experiment from the active architecture"
+            title="Copy the active version and change it"
             onClick={duplicateActive}
           >
-            New experiment
+            New version
           </button>
         )}
       </div>

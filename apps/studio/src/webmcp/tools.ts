@@ -254,6 +254,45 @@ const CompareInput = z
 
 const EmptyInput = z.object({}).strict();
 
+const AnnotateInput = z
+  .object({
+    candidateId: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe("Candidate the note belongs to. Defaults to the active candidate."),
+    targetKind: z
+      .enum(["node", "edge", "step", "candidate"])
+      .describe("What the note is pinned to. A step is a 0-based index into that candidate's counterexample."),
+    targetId: z.string().min(1).max(64).describe("Node id, edge id, step index as a string, or candidate id."),
+    text: z.string().min(1).max(400).describe("The note, one or two sentences. Say what, and cite where when you can."),
+    tone: z
+      .enum(["info", "warn", "bad"])
+      .default("info")
+      .describe("info: explanation. warn: a risk or trade-off. bad: this is where it breaks."),
+  })
+  .strict();
+
+/**
+ * A flat object rather than a discriminated union, because every tool advertises one closed object
+ * schema and clients render those better. `id` is required for node/edge, `index` for step; the
+ * tool checks the pairing and says so.
+ */
+const FocusToolInput = z
+  .object({
+    kind: z.enum(["node", "edge", "step"]).describe("Select a node or edge, or scrub to a counterexample step."),
+    id: z.string().min(1).max(64).optional().describe("Node or edge id. Required for kind node/edge."),
+    index: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("0-based step of the candidate's counterexample. Required for kind step."),
+    candidateId: z.string().min(1).max(64).optional().describe("Defaults to the active candidate."),
+  })
+  .strict();
+
 // ---------------------------------------------------------------------------
 // tool declarations
 // ---------------------------------------------------------------------------
@@ -322,8 +361,28 @@ export interface ToolHost {
   }): Promise<CandidateEvaluation>;
   getEvaluation(candidateId: string): CandidateEvaluation | null;
   comparePortfolio(candidateIds: readonly string[]): Promise<PortfolioResult>;
+  /**
+   * Pin a note to something on the canvas. Session-only narration: it is not part of the document,
+   * is never saved or exported, and cannot reach a handoff.
+   */
+  annotate(input: AnnotationInput): { id: string };
+  /** Select and pan to an element, or scrub the active version's counterexample to a step. */
+  focus(request: FocusInput): void;
   /** Record every call in the local activity log. */
   log(entry: ActivityEntry): void;
+}
+
+export interface AnnotationInput {
+  candidateId: string | null;
+  targetKind: "node" | "edge" | "step" | "candidate";
+  targetId: string;
+  text: string;
+  tone: "info" | "warn" | "bad";
+}
+
+export interface FocusInput {
+  candidateId?: string;
+  target: { kind: "node" | "edge"; id: string } | { kind: "step"; index: number };
 }
 
 export interface ActivityEntry {
@@ -1019,6 +1078,93 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
               : {}),
           });
           return handoff;
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_annotate",
+        description:
+          "Pin a short note to a component, link, counterexample step or candidate so the person sees your reasoning on the canvas " +
+          "(for example: which component the race happens at, what a proposed version trades off). Notes are session-only narration: " +
+          "they are not part of the study, are never saved or exported, and cannot change any result.",
+        input: AnnotateInput,
+        annotations: {},
+        async run(args) {
+          const study = host.getStudy();
+          const candidateId = args.candidateId ?? study.activeCandidateId;
+          const candidate = candidateId ? requireCandidate(study, candidateId) : null;
+          if (candidate && args.targetKind === "node" && !candidate.design.nodes.some((n) => n.id === args.targetId)) {
+            throw new Error(`no node "${args.targetId}" in candidate ${candidate.id}`);
+          }
+          if (candidate && args.targetKind === "edge" && !candidate.design.edges.some((e) => e.id === args.targetId)) {
+            throw new Error(`no edge "${args.targetId}" in candidate ${candidate.id}`);
+          }
+          if (args.targetKind === "candidate" && !study.candidates.some((c) => c.id === args.targetId)) {
+            throw new Error(`no candidate "${args.targetId}"`);
+          }
+          const note = host.annotate({
+            candidateId: args.targetKind === "candidate" ? args.targetId : (candidate?.id ?? null),
+            targetKind: args.targetKind,
+            targetId: args.targetId,
+            text: args.text,
+            tone: args.tone,
+          });
+          host.log({
+            tool: "studio_annotate",
+            at: Date.now(),
+            ok: true,
+            summary: `noted on ${args.targetKind} ${args.targetId}: ${args.text.slice(0, 80)}`,
+            ...(candidate ? { candidateId: candidate.id } : {}),
+          });
+          return { noteId: note.id, candidateId: candidate?.id ?? null };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_focus",
+        description:
+          "Point the person at something: select and pan the canvas to a component or link, or scrub the active candidate's " +
+          "counterexample to a step (0-based) so the sprites and state chips show that moment. Changes only what is on screen.",
+        input: FocusToolInput,
+        annotations: {},
+        async run(args) {
+          const study = host.getStudy();
+          const candidateId = args.candidateId ?? study.activeCandidateId;
+          const candidate = candidateId ? requireCandidate(study, candidateId) : null;
+          if (!candidate) throw new Error("no candidate to focus in");
+          if (args.kind === "step") {
+            if (args.index === undefined) throw new Error("kind step needs an index");
+            const ce = host.getEvaluation(candidate.id)?.correctness?.counterexample ?? null;
+            if (!ce) throw new Error(`candidate ${candidate.id} has no counterexample to step through; run studio_run_evaluation first`);
+            if (args.index >= ce.steps.length) {
+              throw new Error(`step ${args.index} is out of range; the counterexample has ${ce.steps.length} steps`);
+            }
+            host.focus({ candidateId: candidate.id, target: { kind: "step", index: args.index } });
+            host.log({ tool: "studio_focus", at: Date.now(), ok: true, summary: `focused step ${args.index + 1}`, candidateId: candidate.id });
+            return { focused: { kind: "step", index: args.index }, candidateId: candidate.id };
+          }
+          if (args.id === undefined) throw new Error(`kind ${args.kind} needs an id`);
+          if (args.kind === "node" && !candidate.design.nodes.some((n) => n.id === args.id)) {
+            throw new Error(`no node "${args.id}" in candidate ${candidate.id}`);
+          }
+          if (args.kind === "edge" && !candidate.design.edges.some((e) => e.id === args.id)) {
+            throw new Error(`no edge "${args.id}" in candidate ${candidate.id}`);
+          }
+          host.focus({ candidateId: candidate.id, target: { kind: args.kind, id: args.id } });
+          host.log({
+            tool: "studio_focus",
+            at: Date.now(),
+            ok: true,
+            summary: `focused ${args.kind} ${args.id}`,
+            candidateId: candidate.id,
+          });
+          return { focused: { kind: args.kind, id: args.id }, candidateId: candidate.id };
         },
       },
       host

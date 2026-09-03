@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import { pizzaStudy } from "@sds/models";
 import { StudySchema, blankStudy, evaluationKey, type Study } from "@sds/schema";
 import { evaluateCandidate } from "@sds/study";
+import { reimportPrompt } from "../src/codebase-prompt";
 import { buildImplementationHandoff } from "../src/implementation-handoff";
 import {
   createCandidate,
   importRepositoryArchitecture,
   promoteCandidate,
+  releaseApproval,
   replaceCandidateDraft,
 } from "../src/study/mutations";
+import { compareDesignTopology } from "../src/topology";
 
 type RepositoryFixture = {
   study: Study;
@@ -192,5 +195,64 @@ describe("implementation handoff", () => {
       status: "blocked",
       code: "evaluation-required",
     });
+  });
+
+  /**
+   * The step after the hand-off. An agent's import into an approved project is refused, so a
+   * person releases the approval; the re-import then lands as a new baseline, and the diff
+   * between it and the approved version is what says whether the change landed as signed off.
+   */
+  it("lets a person release the approval so the agent can re-import at the new commit, and the diff shows what landed", () => {
+    const fixture = repositoryStudy();
+    const approved = promoteCandidate(fixture.study, fixture.experimentId, 500);
+    const approvedCandidate = approved.candidates.find((c) => c.id === fixture.experimentId)!;
+
+    // Still approved: the agent is refused.
+    expect(() =>
+      importRepositoryArchitecture(approved, {
+        repository: { ...approved.repository!, revision: "def456", capturedAt: 900 },
+        label: "as built @def456",
+        design: approvedCandidate.design,
+        origin: "agent",
+      })
+    ).toThrow(/approved/);
+
+    const released = releaseApproval(approved, 600);
+    expect(released.promotedCandidateId).toBeNull();
+    expect(released.approval).toBeNull();
+    // Results are kept; only the decision is withdrawn.
+    expect(Object.keys(released.evaluations)).toEqual(Object.keys(approved.evaluations));
+    expect(buildImplementationHandoff(released)).toMatchObject({ status: "blocked", code: "approval-required" });
+
+    // The agent built almost what was approved, but dropped one link.
+    const asBuiltDesign = structuredClone(approvedCandidate.design);
+    const droppedEdge = asBuiltDesign.edges.pop()!;
+    const reimported = importRepositoryArchitecture(released, {
+      repository: { ...released.repository!, revision: "def456", capturedAt: 900 },
+      label: "as built @def456",
+      design: asBuiltDesign,
+      origin: "agent",
+    });
+    expect(reimported.candidate.role).toBe("baseline");
+    expect(reimported.study.activeCandidateId).toBe(reimported.candidate.id);
+    expect(reimported.study.repository?.revision).toBe("def456");
+    // Order is creation order, so the as-built import sits after the approved version.
+    const ids = reimported.study.candidates.map((c) => c.id);
+    expect(ids.indexOf(reimported.candidate.id)).toBeGreaterThan(ids.indexOf(fixture.experimentId));
+
+    const delta = compareDesignTopology(approvedCandidate.design, reimported.candidate.design);
+    expect(delta.comparable).toBe(true);
+    expect(delta.summary.edgesRemoved).toBe(1);
+    expect(delta.edges.find((e) => e.status === "removed")?.id).toBe(droppedEdge.id);
+    expect(delta.summary.nodesAdded + delta.summary.nodesRemoved + delta.summary.nodesChanged).toBe(0);
+  });
+
+  it("the re-import request names the approved version and forbids code edits", () => {
+    const prompt = reimportPrompt({ id: "c-approved", label: "Approved checkout" }, { studyId: "checkout-study" });
+    expect(prompt).toContain("studio_import_architecture");
+    expect(prompt).toContain('studio_compare_candidates between the new import and the approved version c-approved ("Approved checkout")');
+    expect(prompt).toContain("studio_annotate");
+    expect(prompt).toContain("Do not edit code");
+    expect(prompt).toContain("Project (study) id: checkout-study");
   });
 });

@@ -5,6 +5,10 @@ import { iconDataUrl, visitIcon } from "./identicon";
 import { isTimeVarying, peakRate, type ArrivalProcess, type NodeKind, type SdsNode } from "@sds/schema";
 import { useStudio } from "../store";
 import { usePlayback } from "../playback";
+import { useNodeState, useRaceModel } from "../raceModel";
+import { useRacePlayback } from "../racePlayback";
+import { useStudyStore } from "../study/store";
+import { KindIcon } from "../ui/icons";
 
 /**
  * NODE HEIGHT IS FIXED, ON PURPOSE.
@@ -35,6 +39,16 @@ const KIND_LABEL: Record<NodeKind, string> = {
   gateway: "gateway",
   lock: "lease",
 };
+
+/** The kind caption in a node's head: the same glyph the palette uses, so menu and drawing agree. */
+function KindCaption({ kind }: { kind: NodeKind }) {
+  return (
+    <span className="node-kind">
+      <KindIcon kind={kind} size={11} />
+      {KIND_LABEL[kind]}
+    </span>
+  );
+}
 
 /** One-line summary of an arrival profile, including the time-varying shapes. */
 function describeArrival(a: ArrivalProcess): string {
@@ -213,16 +227,61 @@ function ChipStrip({ nodeId }: { nodeId: string }) {
   );
 }
 
+/**
+ * The state strip: what this node's collections hold right now.
+ *
+ * The race is about data, so data has to be visible on the drawing. Each collection stored on this
+ * node is a chip -- `inventory 1`, `claims no rows` -- showing the declared initial value until a
+ * counterexample is loaded, then the value after the current step. A chip that just changed flashes;
+ * a chip the violated rule reads turns red at the final step. That is the whole "watch it break".
+ */
+function StateStrip({ nodeId }: { nodeId: string }) {
+  const chips = useNodeState(nodeId);
+  if (chips.length === 0) return null;
+  return (
+    <div className="state-strip" aria-label="state held here">
+      {chips.map((chip) => (
+        <span
+          key={chip.id}
+          className={`state-chip ${chip.changed ? "changed" : ""} ${chip.violated ? "violated" : ""}`}
+          title={chip.label}
+        >
+          <span className="state-id">{chip.id}</span>
+          <span className="state-value tnum">{chip.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Which part this node plays in the counterexample step under the cursor. */
+function useRaceRole(nodeId: string): "" | "race-home" | "race-target" | "race-violated" {
+  const plan = useRaceModel((s) => s.plan);
+  const cursor = useRacePlayback((s) => s.cursor);
+  const lens = useStudyStore((s) => s.lens);
+  if (!plan || lens !== "behaviour" || cursor < 0) return "";
+  const step = plan.steps[Math.min(cursor, plan.steps.length - 1)];
+  if (!step) return "";
+  const atEnd = cursor >= plan.steps.length - 1;
+  if (atEnd && plan.violatingNodeId === nodeId) return "race-violated";
+  if (step.targetNodeId === nodeId) return "race-target";
+  if (step.homeNodeId === nodeId) return "race-home";
+  return "";
+}
+
 export function StudioNode({ id, selected, data }: NodeProps) {
   const node = useStudio((s) => s.design.nodes.find((n) => n.id === id));
   const preview = useStudio((s) => s.preview.nodes.find((n) => n.nodeId === id));
   const measured = useMeasured(id);
   // Narrow selector: this node re-renders only when ITS OWN occupancy changes.
   const occ = usePlayback((s) => s.occupancy[id]);
+  const raceRole = useRaceRole(id);
   const evidence = data as {
     repositoryLinked?: boolean;
     evidenceCount?: number;
     evidenceTone?: "observed" | "inferred" | "assumed" | "uncovered";
+    noteCount?: number;
+    noteTone?: "info" | "warn" | "bad";
   };
 
   if (!node) return null;
@@ -242,29 +301,48 @@ export function StudioNode({ id, selected, data }: NodeProps) {
     <div
       className={`node kind-${node.kind} ${selected ? "selected" : ""} tone-${tone} ${
         backlogGrowing || refusingConnections ? "async-alert" : ""
-      }`}
+      } ${raceRole}`}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT, "--accent-node": KIND_ACCENT[node.kind] } as React.CSSProperties}
     >
       {!isClient && <Handle type="target" position={Position.Left} />}
 
       <div className="node-head">
         <span className="node-label">{node.label}</span>
+        {evidence.noteCount ? (
+          <button
+            className={`node-note note-${evidence.noteTone ?? "info"}`}
+            title={`${evidence.noteCount} note${evidence.noteCount === 1 ? "" : "s"} from the agent. Click to read them.`}
+            onClick={(e) => {
+              e.stopPropagation();
+              useStudio.getState().select({ kind: "node", id });
+              useStudyStore.getState().setAgentOpen(true);
+            }}
+          >
+            {evidence.noteCount}
+          </button>
+        ) : null}
         {evidence.repositoryLinked && (
-          <span
+          <button
             className={`node-evidence evidence-${evidence.evidenceTone ?? "uncovered"}`}
             title={
               evidence.evidenceCount
-                ? `${evidence.evidenceCount} source evidence record${evidence.evidenceCount === 1 ? "" : "s"}`
-                : "No source evidence attached"
+                ? `${evidence.evidenceCount} source evidence record${evidence.evidenceCount === 1 ? "" : "s"}. Click to see the cited lines.`
+                : "No source evidence attached. Treat this component as an assumption."
             }
+            onClick={(e) => {
+              e.stopPropagation();
+              useStudio.getState().select({ kind: "node", id });
+            }}
           >
             {evidence.evidenceCount || "?"}
-          </span>
+          </button>
         )}
-        <span className="node-kind">{KIND_LABEL[node.kind]}</span>
+        <KindCaption kind={node.kind} />
       </div>
 
       <div className="node-service">{summaryOf(node)}</div>
+
+      <StateStrip nodeId={id} />
 
       {!isClient && (
         <div className="util-row">
@@ -303,7 +381,32 @@ export function StudioNode({ id, selected, data }: NodeProps) {
  * nothing useful and breaks selection. That is how the gateway shipped invisible in a
  * first pass.
  */
-export const nodeTypes: Record<NodeKind, typeof StudioNode> = {
+/**
+ * A component that exists in the version being diffed against but not in the one on the
+ * canvas. Drawn where it used to be, hollow, so a removal is visible as a removal rather
+ * than as an absence.
+ */
+export function GhostNode({ data }: NodeProps) {
+  const ghost = data as { label?: string; kind?: NodeKind }
+  const kind = ghost.kind ?? "server"
+  return (
+    <div
+      className={`node ghost kind-${kind}`}
+      style={{ width: NODE_WIDTH, height: NODE_HEIGHT, "--accent-node": KIND_ACCENT[kind] } as React.CSSProperties}
+      title="present in the version being compared, removed in this one"
+    >
+      {kind !== "client" && <Handle type="target" position={Position.Left} />}
+      <div className="node-head">
+        <span className="node-label">{ghost.label ?? "removed"}</span>
+        <KindCaption kind={kind} />
+      </div>
+      <div className="node-service">removed in this version</div>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  )
+}
+
+export const nodeTypes: Record<NodeKind | "ghost", typeof StudioNode | typeof GhostNode> = {
   client: StudioNode,
   loadbalancer: StudioNode,
   server: StudioNode,
@@ -312,4 +415,5 @@ export const nodeTypes: Record<NodeKind, typeof StudioNode> = {
   queue: StudioNode,
   gateway: StudioNode,
   lock: StudioNode,
+  ghost: GhostNode,
 };

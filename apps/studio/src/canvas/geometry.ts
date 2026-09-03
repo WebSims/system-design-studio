@@ -17,7 +17,11 @@ import type { SdsNode } from "@sds/schema";
  */
 
 export const NODE_WIDTH = 216;
-export const NODE_HEIGHT = 128;
+/**
+ * Tall enough for a head, a summary line, a utilisation bar, a row of state chips and the occupancy
+ * strip. Fixed so React Flow never re-measures during playback; see `nodes.tsx`.
+ */
+export const NODE_HEIGHT = 150;
 
 /** Occupancy chips: how many fit, and where they sit inside the node box. */
 export const MAX_CHIPS = 7;
