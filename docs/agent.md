@@ -57,12 +57,17 @@ structured architecture evidence and results into the same live page a person re
 1. Codex reads the real workspace and records commit, branch, dirty state, and scope.
 2. Codex draws the as-is design on the canvas: `studio_create_candidate` with no design
    opens an empty canvas, then one `studio_apply_architecture_patch` per component and
-   link, each drawn as it is accepted. Before drawing, Codex reads
-   `studio_get_catalog.layoutGuide`, plans dependency depth and branches, and supplies
-   meaningful `x`/`y` for every node. Missing or overlapping positions are refused.
+   link, each drawn as it is accepted. Nodes represent deployed runtimes or independent
+   capacity/failure boundaries, not arbitrary source modules; a separately modeled
+   in-process subsystem is labelled as such. Coordinates follow the topology: Codex either
+   supplies `x`/`y` per node from `studio_get_catalog.layoutGuide` or includes an
+   `auto-layout` operation and the studio lays the graph out by dependency depth.
+   Missing or overlapping positions are otherwise refused.
 3. `studio_import_architecture` with `fromCandidateId` seals that drawing as the as-is
    baseline (or imports a complete `design` in one call). Observed facts cite source;
-   deductions are `inferred`; unknown production behavior stays `assumed`.
+   deductions are `inferred`; unknown production behavior stays `assumed`. A project that
+   declares correctness invariants cannot seal a design with no workflow handlers, because
+   every correctness verdict would be vacuous and the baseline would then be immutable.
 4. Codex creates experiments from that baseline. The baseline cannot be redesigned in
    place through WebMCP.
 5. Correctness, performance, and named production scenarios produce evidence. Exact-ID

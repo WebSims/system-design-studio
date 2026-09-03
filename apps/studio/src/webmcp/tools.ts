@@ -20,8 +20,7 @@ import {
 } from "@sds/schema";
 import type { ArchitecturePatchOperation } from "../study/mutations";
 import { buildImplementationHandoff } from "../implementation-handoff";
-import { NODE_GAP, overlappingNodePair } from "../canvas/layout"
-import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry"
+import { layoutIssue } from "../canvas/layout";
 import { toJsonSchema, type JsonSchema } from "./json-schema";
 
 /**
@@ -235,8 +234,8 @@ const ArchitecturePatchOperationInput = z.discriminatedUnion("op", [
       node: z
         .unknown()
         .describe(
-          "Complete node including numeric x and y chosen from topology. Coordinates are required; " +
-            "read studio_get_catalog.layoutGuide before drawing."
+          "Complete node. x and y are required and should follow studio_get_catalog.layoutGuide (x by dependency depth, " +
+            "parallel branches on separate y rows), unless the same patch contains an auto-layout operation, which places every node."
         ),
     })
     .strict(),
@@ -259,6 +258,15 @@ const ArchitecturePatchOperationInput = z.discriminatedUnion("op", [
   z.object({ op: z.literal("remove-edge"), edgeId: z.string().min(1).max(128) }).strict(),
   z.object({ op: z.literal("set-workflow"), workflow: z.unknown() }).strict(),
   z.object({ op: z.literal("set-design-name"), name: z.string().min(1).max(160) }).strict(),
+  z
+    .object({ op: z.literal("auto-layout") })
+    .strict()
+    .describe(
+      "Move every node to a layered layout computed from the links: callers in the leftmost column, one column per " +
+        "dependency depth, each node level with the middle of its callers, no overlaps. Applied after the other " +
+        "operations in the patch, so nodes added in the same patch may omit x and y. Use it when hand-placed " +
+        "coordinates would be guesswork, or after a newly found dependency changes the shape of the graph."
+    ),
 ]);
 
 const ArchitecturePatchInput = z
@@ -535,8 +543,8 @@ const isDrawing = (study: Study, candidate: Candidate): boolean =>
 /** The next step while drawing, with the ids and revision filled in so nothing has to be re-read. */
 const drawingNext = (candidate: Candidate): string =>
   `Keep drawing with studio_apply_architecture_patch { candidateId: "${candidate.id}", expectedRevision: ${candidate.revision} }: ` +
-  "add-node per component with x/y chosen from studio_get_catalog.layoutGuide, add-edge once both ends exist, " +
-  "set-workflow if the code shows the request steps; " +
+  "add-node per component with x/y chosen from studio_get_catalog.layoutGuide (or include auto-layout in the patch and omit them), " +
+  "add-edge once both ends exist, and set-workflow for a source-backed state-changing flow when the project declares correctness invariants; " +
   `each accepted patch appears on the canvas. When complete, seal it with studio_import_architecture { fromCandidateId: "${candidate.id}", expectedRevision, repository, evidence }.`;
 
 // ---------------------------------------------------------------------------
@@ -574,8 +582,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             contractLocked: false,
             next:
               "The canvas stays empty until a candidate exists. To draw live, call studio_create_candidate with no design " +
-              "for an empty canvas, plan positions from studio_get_catalog.layoutGuide, add each component and link with " +
-              "studio_apply_architecture_patch, then seal it with " +
+              "for an empty canvas, add each component and link with studio_apply_architecture_patch (position them from " +
+              "studio_get_catalog.layoutGuide or include an auto-layout operation), then seal it with " +
               "studio_import_architecture { fromCandidateId }. Or import a complete design in one call.",
           };
         },
@@ -702,6 +710,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Import the current as-is architecture of a repository revision. Atomically links the repository and creates an " +
           "immutable baseline with code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
           "supported by the cited source; mark deductions inferred and unknown production behaviour assumed. " +
+          "If the project declares correctness invariants, the design must contain a workflow handler that can exercise them; " +
+          "a vacuous immutable baseline is refused. " +
           "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
           "step by step on the canvas (studio_create_candidate, then studio_apply_architecture_patch per component and link). " +
           "Either way this is what makes the drawing the immutable as-is baseline.",
@@ -846,9 +856,10 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Apply a small atomic graph delta to an experiment instead of resending the whole design. Operations can add, " +
           "update or remove nodes and links, replace the workflow, or rename the design. Every accepted patch is drawn on " +
           "the canvas immediately, so drawing an architecture one component or link per call lets a person watch it form; " +
-          "the agent must choose x/y for every node using studio_get_catalog.layoutGuide. Layout should communicate the " +
-          "topology: callers to dependencies left-to-right, parallel branches on separate rows, shared dependencies centered. " +
-          "Overlapping nodes and missing coordinates are refused, never silently repositioned. Requires the revision read from " +
+          "coordinates communicate the topology (callers to dependencies left-to-right, parallel branches on separate rows, " +
+          "shared dependencies centered): either choose x/y per node from studio_get_catalog.layoutGuide, or include an " +
+          "auto-layout operation and the studio computes that layout from the links. Overlapping nodes and missing " +
+          "coordinates are otherwise refused, never silently repositioned. Requires the revision read from " +
           "studio_get_architecture or returned by the previous call, and refuses baselines, promoted candidates, stale " +
           "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,
@@ -1464,17 +1475,9 @@ export function validateDraft(design: unknown): {
     (issue.severity === "error" ? errors : warnings).push(entry);
   }
 
-  const overlapping = overlappingNodePair(parsed.nodes)
-  if (overlapping) {
-    const [first, second] = overlapping
-    errors.push({
-      layer: "layout",
-      code: "node-overlap",
-      message:
-        `nodes "${first.id}" at (${first.x}, ${first.y}) and "${second.id}" at (${second.x}, ${second.y}) overlap; ` +
-        `node boxes are ${NODE_WIDTH}x${NODE_HEIGHT} and need a ${NODE_GAP}px gap`,
-      where: `${first.id},${second.id}`,
-    })
+  const layout = layoutIssue(parsed.nodes);
+  if (layout) {
+    errors.push({ layer: "layout", code: layout.code, message: layout.message, where: layout.nodeIds.join(",") });
   }
 
   for (const issue of validateWorkflow(parsed)) {

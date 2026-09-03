@@ -593,17 +593,35 @@ describe("reading the study", () => {
     expect((content.notes as string[]).join(" ")).toContain("no exactly-once queue setting");
   });
 
-  it("makes the agent responsible for a topology-aware canvas layout", async () => {
+  it("the catalogue keeps repository drawings at real runtime and capacity boundaries", async () => {
+    const { content } = await call("studio_get_catalog", {});
+    const server = (content.componentKinds as Array<{ kind: string; whatItModels: string }>).find(
+      (kind) => kind.kind === "server"
+    );
+    const notes = (content.notes as string[]).join(" ");
+
+    expect(server?.whatItModels).toContain("deployed runtime or independently bounded capacity/failure boundary");
+    expect(server?.whatItModels).toContain("not an arbitrary package, handler, goroutine or class");
+    expect(notes).toContain("mutually exclusive providers");
+    expect(notes).toContain("schema-required placeholder");
+    expect(notes).toContain("not a description of the current mechanism");
+    expect(notes).toContain("correctness invariant without a workflow");
+  });
+
+  it("gives the agent the layout contract and both ways to meet it", async () => {
     const { content } = await call("studio_get_catalog", {})
     const layout = content.layoutGuide as {
       nodeSize: { width: number; height: number }
       minimumGap: number
+      suggestedStep: { x: number; y: number }
       rules: string[]
     }
 
     expect(layout.nodeSize).toEqual({ width: 216, height: 150 })
     expect(layout.minimumGap).toBe(48)
-    expect(layout.rules.join(" ")).toMatch(/Plan the full topology/)
+    expect(layout.suggestedStep).toEqual({ x: 320, y: 240 })
+    expect(layout.rules.join(" ")).toMatch(/Coordinates communicate architecture/)
+    expect(layout.rules.join(" ")).toMatch(/auto-layout/)
     expect(layout.rules.join(" ")).toMatch(/dependency depth/)
     expect(layout.rules.join(" ")).toMatch(/Never overlap/)
   })
@@ -691,7 +709,7 @@ describe("repository-backed architecture", () => {
       ],
     });
     expect(unpositioned.isError).toBe(true);
-    expect(String(unpositioned.content.error)).toContain("requires numeric x and y");
+    expect(String(unpositioned.content.error)).toContain("needs numeric x and y");
     expect(host.study.candidates[0]!.revision).toBe(0);
 
     // The agent owns the layout and its coordinates are preserved.
@@ -798,6 +816,78 @@ describe("repository-backed architecture", () => {
     });
     expect(again.isError).toBe(true);
     expect(String(again.content.error)).toContain("already an as-is baseline");
+  });
+
+  it("refuses to seal declared correctness invariants without an executable workflow", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    await call("studio_update_study", {
+      contract: {
+        correctness: {
+          invariants: [
+            {
+              id: "always-safe",
+              label: "the declared rule holds",
+              scope: "safety",
+              expr: { kind: "lit", value: true },
+              message: "The rule was violated.",
+            },
+          ],
+        },
+      },
+    });
+    const drawing = await call("studio_create_candidate", { label: "as-is (drawing)" });
+
+    const sealed = await call("studio_import_architecture", {
+      repository: { name: "checkout-service", revision: "abc123" },
+      fromCandidateId: drawing.content.candidateId,
+      expectedRevision: 0,
+    });
+
+    expect(sealed.isError).toBe(true);
+    expect(String(sealed.content.error)).toContain("declares 1 correctness invariant");
+    expect(String(sealed.content.error)).toContain("no workflow handlers");
+    expect(host.study.repository).toBeNull();
+    expect(host.study.candidates[0]!.role).toBe("experiment");
+  });
+
+  it("lays a drawing out by dependency depth when the agent asks, placing nodes added without coordinates", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const drawing = await call("studio_create_candidate", { label: "as-is (drawing)" });
+    const candidateId = drawing.content.candidateId as string;
+    const server = { concurrency: 8, serviceTime: { kind: "deterministic", value: 0.01 } };
+
+    const patched = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 0,
+      operations: [
+        { op: "auto-layout" },
+        { op: "add-node", node: { id: "browser", kind: "client", label: "browser", client: { arrival: { kind: "poisson", ratePerSec: 20 } } } },
+        { op: "add-node", node: { id: "api", kind: "server", label: "api", server } },
+        { op: "add-node", node: { id: "worker", kind: "server", label: "worker", server } },
+        { op: "add-node", node: { id: "pg", kind: "database", label: "postgres", database: { serviceTime: { kind: "deterministic", value: 0.005 } } } },
+        { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api" } },
+        { op: "add-edge", edge: { id: "browser-worker", from: "browser", to: "worker" } },
+        { op: "add-edge", edge: { id: "api-pg", from: "api", to: "pg" } },
+        { op: "add-edge", edge: { id: "worker-pg", from: "worker", to: "pg" } },
+      ],
+    });
+    expect(patched.isError).toBeFalsy();
+    expect((patched.content.changed as string[]).at(-1)).toBe("laid out 4 nodes by dependency depth");
+
+    const byId = new Map(host.study.candidates[0]!.design.nodes.map((node) => [node.id, node]));
+    expect(byId.get("browser")!.x).toBeLessThan(byId.get("api")!.x);
+    expect(byId.get("api")!.x).toBe(byId.get("worker")!.x);
+    expect(byId.get("api")!.y).not.toBe(byId.get("worker")!.y);
+    expect(byId.get("pg")!.x).toBeGreaterThan(byId.get("api")!.x);
+
+    // Without auto-layout in the patch, a node still needs its coordinates.
+    const unpositioned = await call("studio_apply_architecture_patch", {
+      candidateId,
+      expectedRevision: 1,
+      operations: [{ op: "add-node", node: { id: "cache", kind: "cache", label: "cache", cache: {} } }],
+    });
+    expect(unpositioned.isError).toBe(true);
+    expect(String(unpositioned.content.error)).toContain("auto-layout");
   });
 
   it("refuses an import that names both a design and a drawn candidate, or neither", async () => {

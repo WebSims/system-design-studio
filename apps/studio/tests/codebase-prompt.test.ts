@@ -9,8 +9,8 @@ describe("the codebase-to-design prompt", () => {
   });
 
   it("is concise and delegates payload details to the tools", () => {
-    expect(CODEBASE_PROMPT.split(/\s+/).length).toBeLessThanOrEqual(150);
-    expect(CODEBASE_PROMPT.split("\n\n")).toHaveLength(4);
+    expect(CODEBASE_PROMPT.split(/\s+/).length).toBeLessThanOrEqual(260);
+    expect(CODEBASE_PROMPT.split("\n\n")).toHaveLength(5);
     expect(CODEBASE_PROMPT).toMatch(/Follow the tool schemas and next-step guidance/);
     expect(CODEBASE_PROMPT).not.toMatch(/targetKind:|lineStart|fromCandidateId/);
   });
@@ -23,10 +23,26 @@ describe("the codebase-to-design prompt", () => {
   });
 
   it("makes the agent plan and author the visual layout", () => {
-    expect(CODEBASE_PROMPT).toMatch(/Plan the full topology and its x\/y layout/)
-    expect(CODEBASE_PROMPT).toMatch(/dependency depth left-to-right/)
-    expect(CODEBASE_PROMPT).toMatch(/parallel branches on separate rows/)
-    expect(CODEBASE_PROMPT).toMatch(/no overlaps or avoidable edge crossings/)
+    expect(CODEBASE_PROMPT).toMatch(/Plan topology and layout from layoutGuide/)
+    expect(CODEBASE_PROMPT).toMatch(/use auto-layout/)
+  })
+
+  it("preserves runtime boundaries instead of promoting every code unit to a service", () => {
+    expect(CODEBASE_PROMPT).toMatch(/processes or containers/)
+    expect(CODEBASE_PROMPT).toMatch(/independent capacity or failure boundary/)
+    expect(CODEBASE_PROMPT).toMatch(/not merely a package, handler, goroutine, or class/)
+    expect(CODEBASE_PROMPT).toMatch(/label it '\(in-process\)'/)
+    expect(CODEBASE_PROMPT).toMatch(/configured or documented-default provider/)
+    expect(CODEBASE_PROMPT).toMatch(/mutually exclusive alternatives as gaps/)
+  })
+
+  it("requires an executable flow without presenting placeholders as measurements", () => {
+    expect(CODEBASE_PROMPT).toMatch(/invariants for required system outcomes/)
+    expect(CODEBASE_PROMPT).toMatch(/not implementation mechanisms or process-local guarantees/)
+    expect(CODEBASE_PROMPT).toMatch(/highest-risk state-changing flow into a workflow/)
+    expect(CODEBASE_PROMPT).toMatch(/Never invent production rates, replicas, latencies, or provider choices/)
+    expect(CODEBASE_PROMPT).toMatch(/placeholders assumed/)
+    expect(CODEBASE_PROMPT).toMatch(/do not run performance until calibrated/)
   })
 
   it("stays an as-is reconstruction rather than silently redesigning code", () => {
@@ -36,7 +52,9 @@ describe("the codebase-to-design prompt", () => {
     expect(CODEBASE_PROMPT).toMatch(/Stop before redesigning or editing code/);
     expect(CODEBASE_PROMPT_ROUTE).toEqual([
       "inspect the codebase",
+      "identify runtime and capacity boundaries",
       "define the system yardstick",
+      "trace one critical flow",
       "draw the as-is design live, then seal it",
       "show evidence gaps",
     ]);

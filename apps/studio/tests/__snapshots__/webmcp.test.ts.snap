@@ -69,7 +69,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
               "additionalProperties": false,
               "properties": {
                 "node": {
-                  "description": "Complete node including numeric x and y chosen from topology. Coordinates are required; read studio_get_catalog.layoutGuide before drawing.",
+                  "description": "Complete node. x and y are required and should follow studio_get_catalog.layoutGuide (x by dependency depth, parallel branches on separate y rows), unless the same patch contains an auto-layout operation, which places every node.",
                 },
                 "op": {
                   "const": "add-node",
@@ -208,6 +208,19 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
               "required": [
                 "op",
                 "name",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "description": "Move every node to a layered layout computed from the links: callers in the leftmost column, one column per dependency depth, each node level with the middle of its callers, no overlaps. Applied after the other operations in the patch, so nodes added in the same patch may omit x and y. Use it when hand-placed coordinates would be guesswork, or after a newly found dependency changes the shape of the graph.",
+              "properties": {
+                "op": {
+                  "const": "auto-layout",
+                },
+              },
+              "required": [
+                "op",
               ],
               "type": "object",
             },

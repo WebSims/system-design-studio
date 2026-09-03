@@ -9,6 +9,7 @@ import { useNodeState, useRaceModel } from "../raceModel";
 import { useRacePlayback } from "../racePlayback";
 import { useStudyStore } from "../study/store";
 import { KindIcon } from "../ui/icons";
+import { modelInputLabel } from "./provenance";
 
 /**
  * NODE HEIGHT IS FIXED, ON PURPOSE.
@@ -362,7 +363,11 @@ export function StudioNode({ id, selected, data }: NodeProps) {
         ) : detail ? (
           <span className="occ tnum">{detail}</span>
         ) : (
-          <span className="node-src">{measured ? "measured" : "estimated"}</span>
+          <span className="node-src">
+            {measured
+              ? "measured"
+              : modelInputLabel(Boolean(evidence.repositoryLinked), evidence.evidenceTone)}
+          </span>
         )}
       </div>
 

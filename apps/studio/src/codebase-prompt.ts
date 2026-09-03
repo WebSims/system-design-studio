@@ -17,8 +17,15 @@
 export const CODEBASE_PROMPT = [
   "Inspect this repository with workspace tools. Use the open System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; " +
     "the page cannot read files, so do not drive its UI.",
-  "Create a study, read its catalog, and record code-backed workload, goals, SLOs, and invariants; leave unknowns blank. " +
-    "Plan the full topology and its x/y layout first using layoutGuide: dependency depth left-to-right, parallel branches on separate rows, no overlaps or avoidable edge crossings. " +
+  "Before drawing, identify entrypoints, processes or containers, dependency configuration, and critical synchronous and background flows. " +
+    "A node is a deployed runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
+    "Keep ordinary in-process work on its host; split it only for a separate bound, label it '(in-process)', and cite its shared lifecycle. " +
+    "Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
+  "Create a study, read its catalog, and record code-backed workload classes, goals, SLOs, and invariants; leave unsupported targets blank. " +
+    "Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. " +
+    "Trace one highest-risk state-changing flow into a workflow when source supports it. " +
+    "Never invent production rates, replicas, latencies, or provider choices. Mark schema-required placeholders assumed and do not run performance until calibrated. " +
+    "Plan topology and layout from layoutGuide, or use auto-layout. " +
     "Open an empty as-is candidate and add one component or link per patch; carry forward each returned revision.",
   "Seal it as the immutable as-is baseline with branch, commit, dirty state, inspected scope, and evidence for every component and link. " +
     "Mark facts observed, deductions inferred, and unknown production behaviour assumed. Follow the tool schemas and next-step guidance.",
@@ -28,7 +35,9 @@ export const CODEBASE_PROMPT = [
 
 export const CODEBASE_PROMPT_ROUTE = [
   "inspect the codebase",
+  "identify runtime and capacity boundaries",
   "define the system yardstick",
+  "trace one critical flow",
   "draw the as-is design live, then seal it",
   "show evidence gaps",
 ] as const

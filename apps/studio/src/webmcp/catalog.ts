@@ -1,6 +1,6 @@
 import type { Catalog } from "./tools";
-import { NODE_GAP } from "../canvas/layout"
-import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry"
+import { LAYOUT_STEP, NODE_GAP } from "../canvas/layout";
+import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry";
 
 /**
  * The modelling vocabulary, as an agent needs to read it.
@@ -32,8 +32,13 @@ export function buildCatalog(): Catalog {
       {
         kind: "server",
         whatItModels:
-          "A request handler. `concurrency x replicas` slots. Holds its slot across dependency calls unless blocksOnDependencies is false, which is the mechanism by which a slow dependency exhausts a caller.",
-        capabilities: ["runs workflow handlers", "shed or block on a full queue", "load-correlated failure"],
+          "A deployed runtime or independently bounded capacity/failure boundary, not an arbitrary package, handler, goroutine or class. `concurrency x replicas` slots. In-process work belongs on its host unless it has separately configured concurrency or lifecycle; when split for that reason, label it '(in-process)'. Holds its slot across dependency calls unless blocksOnDependencies is false.",
+        capabilities: [
+          "runs one or more workflow handlers",
+          "models separately bounded in-process worker pools when labelled as such",
+          "shed or block on a full queue",
+          "load-correlated failure",
+        ],
       },
       {
         kind: "cache",
@@ -200,18 +205,23 @@ export function buildCatalog(): Catalog {
       coordinateSystem: "x increases to the right; y increases downward",
       nodeSize: { width: NODE_WIDTH, height: NODE_HEIGHT },
       minimumGap: NODE_GAP,
-      suggestedStep: { x: 320, y: 240 },
+      suggestedStep: { x: LAYOUT_STEP.x, y: LAYOUT_STEP.y },
       rules: [
-        "Plan the full topology before placing the first node; coordinates communicate architecture and are not auto-generated.",
+        "Coordinates communicate architecture. Either place every node yourself by the rules below, or include { op: \"auto-layout\" } in a studio_apply_architecture_patch and the studio applies them from the links.",
         "Put callers and clients in the leftmost column, then increase x by dependency depth toward services, queues, stores and external systems.",
         "Keep the primary request path on one row. Put parallel or asynchronous branches on separate y rows.",
         "Center a shared dependency vertically between its callers when practical.",
-        "Use update-node with x/y to improve the layout when a newly discovered dependency changes the topology.",
+        "When a newly discovered dependency changes the topology, re-place with update-node x/y or one auto-layout operation.",
         "Never overlap node boxes. Avoid edge crossings and long edges through unrelated nodes.",
       ],
     },
 
     notes: [
+      "Choose graph granularity from runtime, capacity and failure boundaries. Do not turn every source module, HTTP handler, goroutine, class or cron callback into a server. Keep ordinary responsibilities as workflow handlers on their deployed host; split an in-process subsystem only when an independently bounded resource is important to the question, label it '(in-process)', and cite the shared lifecycle.",
+      "A codebase may support mutually exclusive providers. Draw the provider selected by checked-in deployment configuration; if no deployed choice is known, use the documented default and record alternatives as an evidence gap rather than drawing every option as active at once.",
+      "Repository structure can establish topology but cannot establish production traffic, replica count, service time or dependency latency. Any schema-required placeholder for an unknown value is assumed input, must be cited as such, and is not a basis for running or reporting performance results.",
+      "An invariant is a required property of system state, not a description of the current mechanism. Do not encode 'uses a mutex' or 'one importer in this process' as safety goals. State the intended system-wide outcome when the source supports it; otherwise record the process-local guarantee as a risk or evidence gap.",
+      "A correctness invariant without a workflow that can change the state it reads is not executable evidence. For a code-derived baseline, trace at least one highest-risk state-changing flow when the source supports it; otherwise say that correctness has not been modeled and do not run the search.",
       "Operations are a closed set. There are no loops, no function calls and no recursion, because a workflow that could loop an unbounded number of times has no bounded state space and the only possible verdict would be 'inconclusive'.",
       "`read` followed by `write` is TWO transitions and another actor may run in between. That is the point of the model, not a limitation of it.",
       "There is no exactly-once queue setting. Exactly-once EFFECTS are reachable, and the only routes are insertUnique or a guarded conditionalWrite in the consumer.",

@@ -12,8 +12,7 @@ import {
   type RepositorySnapshot,
   type Study,
 } from "@sds/schema";
-import { NODE_GAP, overlappingNodePair } from "../canvas/layout"
-import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry"
+import { layeredPositions, layoutIssue, type LayoutEdge, type LayoutNode } from "../canvas/layout"
 
 /**
  * Candidate mutations, as pure functions over a study.
@@ -45,23 +44,42 @@ export class MutationRefused extends Error {
 }
 
 /**
- * Agent-authored coordinates are part of the architecture, not cosmetic metadata.
- * Refuse collisions with enough geometry for the agent to choose a meaningful new position.
+ * Agent-authored coordinates are part of the architecture, not cosmetic metadata: a collision is
+ * refused with the geometry needed to fix it, never silently repositioned. Humans drag nodes
+ * wherever they like.
  */
 const assertAgentLayout = (design: Design, by: "human" | "agent") => {
   if (by !== "agent") return
-
-  const pair = overlappingNodePair(design.nodes)
-  if (!pair) return
-
-  const [first, second] = pair
-  throw new MutationRefused(
-    `nodes "${first.id}" at (${first.x}, ${first.y}) and "${second.id}" at (${second.x}, ${second.y}) overlap. ` +
-      `Choose x/y from the topology and keep ${NODE_WIDTH}x${NODE_HEIGHT} node boxes at least ${NODE_GAP}px apart. ` +
-      "Use increasing x for dependency depth and separate parallel branches on y.",
-    "design-layout-invalid"
-  )
+  const issue = layoutIssue(design.nodes)
+  if (issue) throw new MutationRefused(issue.message, "design-layout-invalid")
 }
+
+/** The raw draft an architecture patch edits before it is parsed. */
+interface RawDraft {
+  name: string;
+  nodes: Array<Record<string, unknown> & { id?: unknown }>;
+  edges: Array<Record<string, unknown> & { id?: unknown }>;
+  workflow: unknown;
+}
+
+const hasPosition = (node: Record<string, unknown>): boolean =>
+  typeof node.x === "number" && typeof node.y === "number";
+
+/** Move every node of a raw draft to its layered position; nodes without a string id are left alone. */
+const layOutDraft = (draft: RawDraft): number => {
+  const nodes: LayoutNode[] = draft.nodes.flatMap((node) =>
+    typeof node.id === "string" ? [{ id: node.id, ...(typeof node.kind === "string" ? { kind: node.kind } : {}) }] : []
+  );
+  const edges: LayoutEdge[] = draft.edges.flatMap((edge) =>
+    typeof edge.from === "string" && typeof edge.to === "string" ? [{ from: edge.from, to: edge.to }] : []
+  );
+  const positions = layeredPositions(nodes, edges);
+  draft.nodes = draft.nodes.map((node) => {
+    const position = typeof node.id === "string" ? positions.get(node.id) : undefined;
+    return position ? { ...node, ...position } : node;
+  });
+  return positions.size;
+};
 
 /** Follow explicit candidate ancestry to the repository-derived as-is model, if one exists. */
 export function baselineAncestor(study: Study, candidateId: string): Candidate | null {
@@ -137,7 +155,9 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
   let design;
   try {
     design = migrateAndParse(rawDesign)
-    assertAgentLayout(design, input.origin)
+    // Only a design the agent wrote is held to the layout contract; a copy of what a person drew
+    // is theirs, and refusing the copy would tell the agent to fix something it did not do.
+    if (input.design !== undefined) assertAgentLayout(design, input.origin)
   } catch (err) {
     if (err instanceof MutationRefused) throw err
     throw new MutationRefused(
@@ -208,7 +228,8 @@ export type ArchitecturePatchOperation =
   | { op: "update-edge"; edgeId: string; patch: Record<string, unknown> }
   | { op: "remove-edge"; edgeId: string }
   | { op: "set-workflow"; workflow: unknown }
-  | { op: "set-design-name"; name: string };
+  | { op: "set-design-name"; name: string }
+  | { op: "auto-layout" };
 
 export interface ApplyArchitecturePatchInput {
   candidateId: string;
@@ -375,10 +396,30 @@ export function importRepositoryArchitecture(
     basedOnCandidateId: null,
     evidence: input.evidence ?? [],
   });
+  assertExecutableBaselineContract(created.study, created.candidate);
   return {
     candidate: created.candidate,
     study: StudySchema.parse({ ...created.study, activeCandidateId: created.candidate.id }),
   };
+}
+
+/**
+ * A baseline is immutable through the agent surface, so do not seal a correctness contract that
+ * can never exercise its own invariants. A topology-only import remains valid when the project
+ * declares no invariants; the problem is specifically the contradictory combination the explorer
+ * would otherwise evaluate vacuously.
+ */
+function assertExecutableBaselineContract(study: Study, candidate: Candidate): void {
+  if (study.correctness.invariants.length === 0) return;
+  if ((candidate.design.workflow?.handlers.length ?? 0) > 0) return;
+
+  throw new MutationRefused(
+    `cannot seal "${candidate.label}" as an immutable baseline: the project declares ` +
+      `${study.correctness.invariants.length} correctness invariant${study.correctness.invariants.length === 1 ? "" : "s"}, ` +
+      "but the drawing has no workflow handlers, so every correctness result would be vacuous. " +
+      "Add a source-backed workflow with studio_apply_architecture_patch, or remove unsupported invariants before sealing.",
+    "baseline-workflow-required"
+  );
 }
 
 /**
@@ -413,6 +454,7 @@ function sealDrawnArchitecture(
       );
     }
   }
+  assertExecutableBaselineContract(linked, existing);
   const added = input.evidence ?? [];
   const ids = new Set(existing.evidence.map((item) => item.id));
   const duplicate = added.find((item) => ids.has(item.id));
@@ -451,29 +493,30 @@ export function applyArchitecturePatch(
     throw new MutationRefused("an architecture patch needs at least one operation", "empty-patch");
   }
 
-  const draft = structuredClone(existing.design) as unknown as {
-    name: string;
-    nodes: Array<Record<string, unknown> & { id?: unknown }>;
-    edges: Array<Record<string, unknown> & { id?: unknown }>;
-    workflow: unknown;
-  };
+  const draft = structuredClone(existing.design) as unknown as RawDraft;
   const changed: string[] = [];
+  // A patch that ends in auto-layout may add nodes without coordinates: the layout supplies them.
+  const laysOut = input.operations.some((operation) => operation.op === "auto-layout");
 
   for (const operation of input.operations) {
     switch (operation.op) {
       case "add-node": {
         const node = structuredClone(operation.node) as Record<string, unknown>;
-        if (input.by === "agent" && (typeof node.x !== "number" || typeof node.y !== "number")) {
+        if (input.by === "agent" && !laysOut && !hasPosition(node)) {
           throw new MutationRefused(
-            "add-node requires numeric x and y. Position the node from the architecture topology; " +
-              `node boxes are ${NODE_WIDTH}x${NODE_HEIGHT} with a minimum ${NODE_GAP}px gap.`,
+            "add-node needs numeric x and y chosen from the topology (see studio_get_catalog.layoutGuide), " +
+              'or an { op: "auto-layout" } operation later in the same patch so the studio places it by dependency depth.',
             "node-position-required"
-          )
+          );
         }
-        draft.nodes.push(node);
+        // Placeholder until auto-layout runs; the schema requires numbers.
+        draft.nodes.push(hasPosition(node) ? node : { ...node, x: 0, y: 0 });
         changed.push(`added node${typeof node.id === "string" ? ` ${node.id}` : ""}`);
         break;
       }
+      case "auto-layout":
+        // Applied once, after every other operation, whatever its place in the list.
+        break;
       case "update-node": {
         if ("id" in operation.patch || "kind" in operation.patch) {
           throw new MutationRefused(
@@ -531,6 +574,11 @@ export function applyArchitecturePatch(
         changed.push("renamed design");
         break;
     }
+  }
+
+  if (laysOut) {
+    const placed = layOutDraft(draft);
+    changed.push(`laid out ${placed} node${placed === 1 ? "" : "s"} by dependency depth`);
   }
 
   const replaced = replaceCandidateDraft(study, {

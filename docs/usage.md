@@ -25,18 +25,37 @@ studio_create_study → studio_get_catalog → studio_update_study
 ```
 
 The canvas appears at `studio_create_candidate`, and from then on every accepted patch is
-drawn as it lands, so you watch the architecture form. The agent owns the layout: before
-the first patch it reads `studio_get_catalog.layoutGuide`, plans the full topology, and
-supplies `x` and `y` for every node. Dependency depth runs left-to-right, parallel or
-asynchronous branches use separate rows, and shared dependencies sit between their callers.
-Missing coordinates and overlapping node boxes are refused rather than silently rearranged.
-The agent can use `update-node` with new `x`/`y` when later evidence changes the topology.
+drawn as it lands, so you watch the architecture form. Coordinates are part of the design:
+dependency depth runs left-to-right, parallel or asynchronous branches use separate rows,
+and shared dependencies sit between their callers. The agent gets there one of two ways.
+It can read `studio_get_catalog.layoutGuide` and supply `x` and `y` for every node itself,
+or it can include an `auto-layout` operation in a patch and the studio computes exactly
+that layered layout from the links, placing any node added in the same patch. Missing
+coordinates and overlapping node boxes are otherwise refused rather than silently
+rearranged. When later evidence changes the topology, one `auto-layout` or `update-node`
+with new `x`/`y` re-places the drawing.
 
 Each patch is validated before it is committed: a link to a node that does not exist yet is
 refused with a named error, while a missing client is only a warning.
 `studio_import_architecture` with `fromCandidateId` then turns the drawing into the as-is
 baseline in place, keeping its id and everything on the canvas; passing a complete `design`
 instead still imports in one call.
+
+Graph nodes follow runtime, capacity, and failure boundaries rather than the source tree.
+A package, handler, goroutine, class, or cron callback stays inside its deployed host unless
+it has independently bounded concurrency or lifecycle that matters to the model. When such
+an in-process subsystem is split out, its label says `(in-process)` and its evidence cites
+both the separate bound and the shared lifecycle. Mutually exclusive provider implementations
+are alternatives: the graph shows the choice selected by checked-in deployment configuration,
+or the documented default when no deployed configuration exists, and records the other choices
+as evidence gaps rather than active dependencies.
+
+Invariants describe required system outcomes, not current implementation mechanisms or
+process-local guarantees. At least one high-risk state-changing source flow should become a
+workflow when the code supports it; otherwise recorded invariants cannot produce meaningful
+correctness evidence. Repository code also cannot reveal production traffic, replica counts,
+service times, or dependency latency. If a schema-required value has no source, it is a cited
+assumed placeholder and performance is not run until those inputs are calibrated.
 
 Until a candidate exists the studio keeps showing the start screen: creating the study,
 setting its contract and validating a draft change the project and the activity log in the
