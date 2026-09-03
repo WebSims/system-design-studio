@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { pizzaStudy, STUDY_EXAMPLES } from "@sds/models";
+import { pizzaStudy } from "@sds/models";
 import {
   StudySchema,
   applyStudyContract,
@@ -106,16 +106,11 @@ class TestHost implements ToolHost {
   async listStudies() {
     return {
       saved: [{ id: this.study.id, name: this.study.name, candidates: this.study.candidates.length, updatedAt: 1 }],
-      examples: STUDY_EXAMPLES.map((e) => ({ id: e.id, label: e.label, summary: e.summary, teaches: e.teaches })),
     };
   }
 
-  async openStudy(input: { studyId?: string; exampleId?: string }) {
-    if (input.exampleId) {
-      const found = STUDY_EXAMPLES.find((e) => e.id === input.exampleId);
-      if (!found) throw new Error(`there is no example "${input.exampleId}".`);
-      this.study = found.build();
-    }
+  async openStudy(input: { studyId: string }) {
+    if (input.studyId !== this.study.id) throw new Error(`there is no saved project "${input.studyId}".`);
     return this.study;
   }
 
@@ -926,21 +921,19 @@ describe("an agent can define the study, not just answer it", () => {
     expect(host.study.problem).toBe("clearer wording of the same problem");
   });
 
-  it("lists the examples with a reason to open each, and opens one", async () => {
+  it("lists and opens saved projects", async () => {
     const listed = await call("studio_list_studies");
-    const content = listed.content as { examples: Array<{ id: string; teaches: string }> };
-    expect(content.examples.length).toBeGreaterThan(0);
-    expect(content.examples[0]!.teaches.length).toBeGreaterThan(20);
+    const content = listed.content as { saved: Array<{ id: string; name: string }> };
+    expect(content.saved).toHaveLength(1);
 
-    const opened = await call("studio_open_study", { exampleId: content.examples[0]!.id });
+    const opened = await call("studio_open_study", { studyId: content.saved[0]!.id });
     expect(opened.isError).toBeFalsy();
-    expect(host.study.candidates.length).toBeGreaterThan(1);
+    expect(host.study.name).toBe(content.saved[0]!.name);
   });
 
-  it("refuses an open that names both a study and an example", async () => {
-    const r = await call("studio_open_study", { studyId: "a", exampleId: "b" });
+  it("refuses the removed example input", async () => {
+    const r = await call("studio_open_study", { exampleId: "limited-free-pizza" });
     expect(r.isError).toBe(true);
-    expect(JSON.stringify(r.content)).toMatch(/exactly one/);
   });
 
   it("refuses an open that names neither", async () => {
@@ -948,7 +941,7 @@ describe("an agent can define the study, not just answer it", () => {
     expect(r.isError).toBe(true);
   });
 
-  it("still has no tool to promote or delete, now that it can create studies too", async () => {
+  it("still has no tool to promote or delete, now that it can create projects too", async () => {
     if (mc.registered.length === 0) registerWebmcpTools({ host, target: { modelContext: mc } });
     const names = mc.registered.map((t) => t.name).join(" ");
     expect(names).not.toMatch(/delete|remove|promote|approve|ship|deploy/i);

@@ -181,7 +181,7 @@ export function decideEligibility(input: EligibilityInput): EligibilityDecision 
     gates.push({
       gate: "business-goals-satisfied",
       passed: true,
-      reason: "this study declares no business goals",
+      reason: "this project declares no business goals",
     });
   } else if (!b) {
     gates.push({

@@ -127,7 +127,7 @@ export function buildCatalog(): Catalog {
         op: "respond",
         indivisible: false,
         whatItDoes:
-          "Terminate the handler with success, rejected or error, and optionally record a business outcome label. The label must be one the study's product contract defines, or its meaning is unknown and it is not counted as valid or duplicate.",
+          "Terminate the handler with success, rejected or error, and optionally record a business outcome label. The label must be one the project's product contract defines, or its meaning is unknown and it is not counted as valid or duplicate.",
       },
     ],
 

@@ -11,14 +11,17 @@ Thirteen imperative tools are registered on the top-level page through
 Zod schema that validates at runtime and is snapshot-tested, so a widened validator
 cannot drift from its documentation.
 
+The tool names retain `study` as an internal API term. In the interface, this document
+is simply a project.
+
 **Define the problem**
 
 | tool | what it does |
 | --- | --- |
-| `studio_create_study` | start a new, empty study |
+| `studio_create_study` | start a new project |
 | `studio_update_study` | set the workload, SLOs, invariants, faults and bounds |
-| `studio_list_studies` | list saved studies and worked examples |
-| `studio_open_study` | open a saved study or an example |
+| `studio_list_studies` | list saved projects |
+| `studio_open_study` | open a saved project |
 
 **Read**
 
@@ -47,7 +50,7 @@ invariant, and the obvious next move for something optimising "make the tests pa
 to weaken the invariant.
 
 So `studio_update_study` is refused once any evaluation is cached or a candidate is
-promoted. The prose — the study's name and problem statement — stays editable, because
+promoted. The prose — the project's name and problem statement — stays editable, because
 it is not what the engine reads. Clearing the results, which visibly discards them,
 is the only way to reopen the contract.
 
@@ -81,8 +84,8 @@ requires **imperative** tools on the **top-level** page and does not discover
 declarative markup or tools inside iframes, which is why registration is a single
 `registerTool` loop at startup rather than anything more elegant.
 
-The app is AI-first and opens empty. The pizza study is a demo, not a template for new
-work. The real loop starts from the user's prompt: create the study → set the
+The app is AI-first and opens empty. The pizza scenario stays in the README and tests.
+The real loop starts from the user's prompt: create the project → set the
 invariants and SLOs → inspect the catalogue → create at least three isolated candidates
 → validate → run bounded correctness → discard the ones with counterexamples → run
 replicated performance → compare the frontier → report trade-offs and unresolved
@@ -91,12 +94,12 @@ assumptions.
 Prompts that should demonstrate it:
 
 1. *"I'm building a ticket system where each seat must be sold exactly once, about 500
-   sales a second during an on-sale. Set up a study for this and try three
-   architectures."* — should create the study, declare an invariant that a seat is
+   sales a second during an on-sale. Create a project and try three architectures."* —
+   should create the project, declare an invariant that a seat is
    never sold twice, add three isolated candidates, evaluate each, and report the
    trade-off rather than declaring a winner. This is the real path; everything below
-   assumes a study already exists.
-2. *"Read this study and propose three different architectures for it. Test each one
+   assumes a project already exists.
+2. *"Read this project and propose three different architectures for it. Test each one
    and tell me which you would ship and why."* — should produce three isolated
    agent-authored candidates, each evaluated, with a recommendation that names the
    trade-off rather than declaring a winner.

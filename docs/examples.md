@@ -6,7 +6,7 @@ Seven architectures for one problem, four broken on purpose.
 
 ## 200 free pizzas
 
-An example, not the default — the app opens empty, and this is one menu click away.
+This is a development and CLI scenario, not an app project or template.
 Seven candidates, four broken on purpose, differing **only** in architecture — the
 workload, SLOs, invariants and bounds are study-level and are pushed into every
 candidate before evaluation, so no candidate can win by quietly halving its own load.

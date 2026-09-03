@@ -257,7 +257,7 @@ function claimFor(
   // report on a study that has not been asked a question yet.
   if (total === 0) {
     return (
-      `Nothing to compare yet: this study has no candidate architectures. ` +
+      `Nothing to compare yet: this project has no candidate architectures. ` +
       `Add at least two, so the comparison has something to be between.`
     );
   }
@@ -278,7 +278,7 @@ function claimFor(
     `(out of ${total} tested) ${frontier.length === 1 ? "is" : "are"} PARETO-OPTIMAL AMONG THE CANDIDATES TESTED: ${front}. ` +
     `Axes compared: ${axisNames}. No weighting was applied and no candidate is called best. ` +
     `Nothing here searched the space of possible architectures, so nothing here supports a claim of global optimality -- ` +
-    `only that no other candidate in this study beats these on every axis. ` +
+    `only that no other candidate in this project beats these on every axis. ` +
     `Differences smaller than the measured 95% intervals are reported as ties rather than as wins.`
   );
 }

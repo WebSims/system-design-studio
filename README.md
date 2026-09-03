@@ -9,7 +9,7 @@ pnpm dev        # localhost:5173
 ```
 
 The app opens empty. Open it in Codex's browser and describe your real problem. Codex
-builds and tests the study through
+builds and tests several designs through
 [WebMCP](https://developers.openai.com/codex/webmcp); you review the evidence and make
 the final choice.
 
@@ -22,7 +22,7 @@ the final choice.
 | **Simulator** | Measures load, latency, queues and business outcomes. |
 | **Comparison** | Filters broken designs, then shows trade-offs. |
 | **Human decision** | AI cannot promote or delete a candidate. |
-| **Local storage** | Studies stay in your browser. |
+| **Local storage** | Projects stay in your browser. |
 
 ## What it will and will not say
 
@@ -42,8 +42,9 @@ pnpm sim -- --check --study-example limited-free-pizza      # find the race
 pnpm sim -- --portfolio --study-example limited-free-pizza  # compare seven designs
 ```
 
-The pizza study is only a worked demo: seven architectures, four broken on purpose.
-Real studies come from your prompt through WebMCP.
+The pizza scenario is only a development example: seven architectures, four broken
+on purpose. It is not shown in the app and is not used to create new projects. Real
+designs come from your prompt through WebMCP.
 
 ```
 VIOLATED   26 states, 132 transitions, 9ms

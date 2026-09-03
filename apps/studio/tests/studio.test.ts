@@ -329,13 +329,13 @@ describe("study import and export", () => {
     expect(imported.correctness.invariants).toEqual([]);
   });
 
-  it("uses its own extension, so a study is not mistaken for a design", () => {
+  it("uses its own extension, so a project is not mistaken for a design", () => {
     expect(studyFilename(study)).toBe(`two-hundred-free-pizzas${STUDY_EXTENSION}`);
-    expect(STUDY_EXTENSION).toBe(".sds-study.json");
+    expect(STUDY_EXTENSION).toBe(".sds-project.json");
   });
 
   it("copes with a name that has no usable characters", () => {
-    expect(studyFilename({ ...study, name: "!!!" })).toBe(`study${STUDY_EXTENSION}`);
+    expect(studyFilename({ ...study, name: "!!!" })).toBe(`project${STUDY_EXTENSION}`);
   });
 
   it("rejects a file that is neither", () => {
@@ -375,14 +375,12 @@ describe("nothing in the app is wired to one domain", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("reaches examples only through the registry, so every example is listed and openable", () => {
-    // STUDY_EXAMPLES is the one door. An example imported directly would be reachable without
-    // appearing in the menu, which is how a "default" grows back.
+  it("does not import the worked-scenario registry", () => {
     const importers = appSources()
       .filter((f) => /from "@sds\/models"/.test(f.text))
       .filter((f) => /STUDY_EXAMPLES/.test(f.text))
       .map((f) => f.path);
-    expect(importers.length).toBeGreaterThan(0);
+    expect(importers).toEqual([]);
   });
 
   it("creates an empty study with no invariants, candidates or domain assumptions", () => {

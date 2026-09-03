@@ -47,7 +47,7 @@ export function CompareView() {
                     Run all
                   </button>
                   <button className="btn" onClick={() => void refresh()}>
-                    refresh
+                    Refresh
                   </button>
                 </>
               )}

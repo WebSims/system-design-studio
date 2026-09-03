@@ -251,7 +251,7 @@ export function assemblePortfolio(study: Study): PortfolioResult {
         run: null,
       }),
       assumptions: [],
-      warnings: ["this candidate has not been evaluated at the study's current settings"],
+      warnings: ["this candidate has not been evaluated at the project's current settings"],
       createdAt: 0,
       wallMs: 0,
     };

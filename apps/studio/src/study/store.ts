@@ -24,7 +24,6 @@ import {
 import { STUDY_ENGINE_VERSION } from "@sds/study";
 import { previewDesign, type DesignPreview } from "@sds/analytic";
 import { IntractableError } from "@sds/analytic";
-import { STUDY_EXAMPLES } from "@sds/models";
 import {
   evaluateInWorker,
   cancelWorker,
@@ -106,8 +105,6 @@ export interface StudioState {
   clearResults(): void;
   /** Open a saved study by id. */
   openStudy(id: string): Promise<void>;
-  /** Open one of the worked examples. */
-  openExample(id: string): void;
   /** Saved studies, for the switcher. */
   storedStudies(): Promise<StoredStudy[]>;
   /** Whether the yardstick is frozen, and why. */
@@ -232,7 +229,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
         set({
           persistence: {
             status: "failed",
-            detail: `could not save: ${err instanceof Error ? err.message : String(err)}. Export the study to keep it.`,
+            detail: `could not save: ${err instanceof Error ? err.message : String(err)}. Export the project to keep it.`,
           },
         });
       });
@@ -301,7 +298,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
       try {
         get().loadStudyDocument(importStudy(json));
       } catch (err) {
-        set({ error: `that file could not be read as a study or a design: ${err instanceof Error ? err.message : String(err)}` });
+        set({ error: `that file could not be read as a project or design: ${err instanceof Error ? err.message : String(err)}` });
       }
     },
 
@@ -334,19 +331,10 @@ export const useStudyStore = create<StudioState>((set, get) => {
         set({
           error:
             result.status === "missing"
-              ? `there is no saved study "${id}".`
-              : `the study "${id}" could not be read: ${result.reason}. It has not been overwritten.`,
+              ? `there is no saved project "${id}".`
+              : `the project "${id}" could not be read: ${result.reason}. It has not been overwritten.`,
         });
       }
-    },
-
-    openExample: (id) => {
-      const found = STUDY_EXAMPLES.find((e) => e.id === id);
-      if (!found) {
-        set({ error: `there is no example "${id}".` });
-        return;
-      }
-      get().loadStudyDocument(found.build());
     },
 
     storedStudies: () => listStudies(),
@@ -526,7 +514,7 @@ export async function restoreStudy(): Promise<void> {
     // Named rather than silently replaced. "Your study could not be read" needs a different
     // reaction from the user than "no study found", and conflating them loses work quietly.
     useStudyStore.setState({
-      error: `the study "${id}" could not be read: ${result.reason}. An empty study is open instead; your saved study has not been overwritten.`,
+      error: `the project "${id}" could not be read: ${result.reason}. An empty project is open instead; your saved project has not been overwritten.`,
     });
   }
 }

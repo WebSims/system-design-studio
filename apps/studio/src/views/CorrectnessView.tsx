@@ -420,7 +420,7 @@ function InvariantEditor({ study }: { study: Study }) {
             what it costs when it breaks
             <input
               value={draft.message}
-              placeholder="two people are holding the same last pizza"
+              placeholder="one item was allocated twice"
               onChange={(e) => setDraft({ ...draft, message: e.target.value })}
             />
           </label>

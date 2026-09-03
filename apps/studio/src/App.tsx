@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PRESETS, EXAMPLES, STUDY_EXAMPLES } from "@sds/models";
+import { PRESETS, EXAMPLES } from "@sds/models";
 import { FlowCanvas } from "./canvas/FlowCanvas";
 import { Inspector } from "./panels/Inspector";
 import { ResultsRail } from "./panels/ResultsRail";
@@ -91,15 +91,10 @@ function ExampleMenu({ onClose }: { onClose: () => void }) {
 }
 
 /**
- * Saved studies and worked examples.
- *
- * Separated on purpose. A saved study is the user's own work and is what they came back for; an
- * example is a teaching aid, and each says what it teaches rather than what it contains, because
- * "seven architectures, four broken" is a reason to open something and "a pizza study" is not.
+ * Saved projects. `Study` remains the internal document type, but it is not a user concept.
  */
-function StudyMenu({ onClose }: { onClose: () => void }) {
+function ProjectMenu({ onClose }: { onClose: () => void }) {
   const openStudy = useStudyStore((s) => s.openStudy);
-  const openExample = useStudyStore((s) => s.openExample);
   const storedStudies = useStudyStore((s) => s.storedStudies);
   const currentId = useStudyStore((s) => s.study.id);
   const [saved, setSaved] = useState<Array<{ id: string; name: string; candidateCount: number }> | null>(null);
@@ -112,7 +107,7 @@ function StudyMenu({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="palette palette-wide" onClick={(e) => e.stopPropagation()}>
-      <div className="palette-title">studies</div>
+      <div className="palette-title">projects</div>
       {saved && saved.length > 0 && (
         <>
           <div className="palette-title">saved</div>
@@ -139,23 +134,7 @@ function StudyMenu({ onClose }: { onClose: () => void }) {
           ))}
         </>
       )}
-
-      <div className="palette-title">worked examples</div>
-      {STUDY_EXAMPLES.map((e) => (
-        <button
-          key={e.id}
-          className="palette-item"
-          onClick={() => {
-            openExample(e.id);
-            onClose();
-          }}
-        >
-          <span className="palette-body">
-            <span className="palette-label">{e.label}</span>
-            <span className="palette-blurb">{e.teaches}</span>
-          </span>
-        </button>
-      ))}
+      {saved?.length === 0 && <p className="muted">No saved projects yet.</p>}
     </div>
   );
 }
@@ -168,16 +147,14 @@ function StudyMenu({ onClose }: { onClose: () => void }) {
  * or read an example first. It is not a marketing panel; every line is an action or the reason to
  * take it.
  */
-function EmptyStudy() {
+function EmptyProject() {
   const webmcp = useStudyStore((s) => s.webmcp);
-  const openExample = useStudyStore((s) => s.openExample);
-  const example = STUDY_EXAMPLES[0];
 
   return (
     <div className="empty-study">
       <div className="empty-card">
         <div className="empty-kicker">Evidence-first system design</div>
-        <h1>Start a system study</h1>
+        <h1>Design a system with Codex</h1>
         <p className="empty-lede">
           Describe the real problem to Codex. It will draft options, test races and load, then
           bring the evidence back here.
@@ -189,14 +166,6 @@ function EmptyStudy() {
             Design three options for my system. Test races and bottlenecks, compare the
             trade-offs, and show the evidence.
           </p>
-        </div>
-
-        <div className="empty-actions">
-          {example && (
-            <button className="btn primary" onClick={() => openExample(example.id)}>
-              Open demo
-            </button>
-          )}
         </div>
 
         <p className="muted empty-agent">
@@ -227,11 +196,12 @@ function ViewTabs() {
   const view = useStudyStore((s) => s.view);
   const setView = useStudyStore((s) => s.setView);
   return (
-    <nav className="tabs">
+    <nav className="tabs" aria-label="Project views">
       {VIEWS.map((v) => (
         <button
           key={v.id}
           className={view === v.id ? "active" : ""}
+          aria-current={view === v.id ? "page" : undefined}
           title={v.hint}
           onClick={() => setView(v.id)}
         >
@@ -250,7 +220,8 @@ function Topbar() {
   const persistence = useStudyStore((s) => s.persistence);
   const webmcp = useStudyStore((s) => s.webmcp);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [menu, setMenu] = useState<"palette" | "examples" | "studies" | "activity" | null>(null);
+  const [menu, setMenu] = useState<"palette" | "examples" | "projects" | "activity" | null>(null);
+  const webmcpReady = webmcp.status.includes("tools");
 
   const download = useCallback(() => {
     // A STUDY, not a design. The design alone would lose the invariants, the bounds and every
@@ -297,13 +268,14 @@ function Topbar() {
             <button
               className="btn status-btn"
               title={webmcp.detail}
+              aria-expanded={menu === "activity"}
               onClick={(e) => {
                 e.stopPropagation();
                 setMenu(menu === "activity" ? null : "activity");
               }}
             >
-              <span className={`status-dot ${webmcp.status.includes("tools") ? "ready" : ""}`} />
-              {webmcp.status.includes("tools") ? "Codex ready" : "Codex"}
+              <span className={`status-dot ${webmcpReady ? "ready" : ""}`} />
+              {webmcpReady ? "Codex ready" : `Codex ${webmcp.status}`}
             </button>
             {menu === "activity" && <ActivityLog onClose={() => setMenu(null)} />}
           </div>
@@ -315,20 +287,22 @@ function Topbar() {
           <div className="menu-anchor">
             <button
               className="btn"
+              aria-expanded={menu === "projects"}
               onClick={(e) => {
                 e.stopPropagation();
-                setMenu(menu === "studies" ? null : "studies");
+                setMenu(menu === "projects" ? null : "projects");
               }}
             >
-              Studies
+              Projects
             </button>
-            {menu === "studies" && <StudyMenu onClose={() => setMenu(null)} />}
+            {menu === "projects" && <ProjectMenu onClose={() => setMenu(null)} />}
           </div>
           {study.candidates.length > 0 && (
             <>
               <div className="menu-anchor">
                 <button
                   className="btn"
+                  aria-expanded={menu === "palette"}
                   onClick={(e) => {
                     e.stopPropagation();
                     setMenu(menu === "palette" ? null : "palette");
@@ -341,6 +315,7 @@ function Topbar() {
               <div className="menu-anchor">
                 <button
                   className="btn"
+                  aria-expanded={menu === "examples"}
                   onClick={(e) => {
                     e.stopPropagation();
                     setMenu(menu === "examples" ? null : "examples");
@@ -386,7 +361,7 @@ function Topbar() {
 
 function DesignView() {
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
-  if (!hasCandidates) return <EmptyStudy />;
+  if (!hasCandidates) return <EmptyProject />;
   return (
     <>
       <ResultsRail />
@@ -438,17 +413,10 @@ function useWebmcp() {
           candidates: s.candidateCount,
           updatedAt: s.updatedAt,
         })),
-        examples: STUDY_EXAMPLES.map((e) => ({
-          id: e.id,
-          label: e.label,
-          summary: e.summary,
-          teaches: e.teaches,
-        })),
       }),
       openStudy: async (input) => {
         const store = useStudyStore.getState();
-        if (input.exampleId) store.openExample(input.exampleId);
-        else if (input.studyId) await store.openStudy(input.studyId);
+        await store.openStudy(input.studyId);
         const err = useStudyStore.getState().error;
         if (err) throw new Error(err);
         return useStudyStore.getState().study;

@@ -58,7 +58,7 @@ export interface CreateCandidateInput {
 export function createCandidate(study: Study, input: CreateCandidateInput): { study: Study; candidate: Candidate } {
   if (study.candidates.length >= MAX_CANDIDATES) {
     throw new MutationRefused(
-      `this study already holds ${MAX_CANDIDATES} candidates, which is the limit. Remove one before adding another.`,
+      `this project already holds ${MAX_CANDIDATES} candidates, which is the limit. Remove one before adding another.`,
       "too-many-candidates"
     );
   }
@@ -272,7 +272,7 @@ function resolveSource(study: Study, copyFrom: string | undefined): Candidate {
     throw new MutationRefused(
       copyFrom
         ? `no candidate "${copyFrom}" to copy from`
-        : "this study has no candidate to copy from, so a complete design is required",
+        : "this project has no candidate to copy from, so a complete design is required",
       "no-such-candidate"
     );
   }

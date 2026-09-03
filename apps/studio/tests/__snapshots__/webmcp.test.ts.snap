@@ -111,17 +111,15 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
   "studio_open_study": {
     "additionalProperties": false,
     "properties": {
-      "exampleId": {
-        "maxLength": 64,
-        "minLength": 1,
-        "type": "string",
-      },
       "studyId": {
         "maxLength": 64,
         "minLength": 1,
         "type": "string",
       },
     },
+    "required": [
+      "studyId",
+    ],
     "type": "object",
   },
   "studio_replace_candidate_draft": {

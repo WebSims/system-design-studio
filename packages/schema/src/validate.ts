@@ -1303,14 +1303,14 @@ export function validateStudy(study: Study): StudyIssue[] {
     issues.push({
       severity: "error",
       code: "active-candidate-missing",
-      message: `the active candidate "${study.activeCandidateId}" is not in this study`,
+      message: `the active candidate "${study.activeCandidateId}" is not in this project`,
     });
   }
   if (study.promotedCandidateId && !candidateById(study, study.promotedCandidateId)) {
     issues.push({
       severity: "error",
       code: "promoted-candidate-missing",
-      message: `the promoted candidate "${study.promotedCandidateId}" is not in this study`,
+      message: `the promoted candidate "${study.promotedCandidateId}" is not in this project`,
     });
   }
 
@@ -1370,7 +1370,7 @@ export function validateStudy(study: Study): StudyIssue[] {
       severity: "warning",
       code: "no-invariants",
       message:
-        "this study declares no invariants, so a correctness run can only report that nothing was checked",
+        "this project declares no invariants, so a correctness run can only report that nothing was checked",
     });
   }
 

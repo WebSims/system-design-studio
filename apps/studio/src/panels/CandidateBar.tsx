@@ -12,6 +12,7 @@ export function CandidateBar() {
   const study = useStudyStore((s) => s.study);
   const running = useStudyStore((s) => s.running);
   const select = useStudyStore((s) => s.selectCandidate);
+  const addCandidate = useStudyStore((s) => s.addCandidate);
   const removeCandidate = useStudyStore((s) => s.removeCandidate);
   const portfolio = useStudyStore((s) => s.portfolio);
 
@@ -19,6 +20,18 @@ export function CandidateBar() {
     (portfolio?.decisions ?? []).filter((d) => d.eligible).map((d) => d.candidateId)
   );
   const frontier = new Set(portfolio?.frontier ?? []);
+  const active = study.candidates.find((candidate) => candidate.id === study.activeCandidateId);
+
+  const duplicateActive = () => {
+    if (!active) return;
+    const candidate = addCandidate({
+      label: `${active.label} copy`.slice(0, 120),
+      intent: `Copy of ${active.label} for a new design variation.`,
+      copyFrom: active.id,
+      origin: "human",
+    });
+    select(candidate.id);
+  };
 
   return (
     <div className="candidate-bar">
@@ -72,6 +85,16 @@ export function CandidateBar() {
             </div>
           );
         })}
+        {active && (
+          <button
+            className="candidate-chip candidate-add"
+            disabled={study.candidates.length >= 64}
+            title="Duplicate the active candidate"
+            onClick={duplicateActive}
+          >
+            Duplicate
+          </button>
+        )}
       </div>
     </div>
   );

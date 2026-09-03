@@ -106,7 +106,7 @@ const CreateCandidateInput = z
       .unknown()
       .optional()
       .describe(
-        "A complete design document. Omit to copy the study's active candidate as a starting point. Validate with studio_validate_draft first."
+        "A complete design document. Omit to copy the project's active candidate as a starting point. Validate with studio_validate_draft first."
       ),
     copyFrom: z
       .string()
@@ -143,7 +143,7 @@ const CompareInput = z
       .array(z.string().min(1).max(64))
       .max(64)
       .default([])
-      .describe("Candidates to include. Empty means every candidate in the study."),
+      .describe("Candidates to include. Empty means every candidate in the project."),
   })
   .strict();
 
@@ -164,17 +164,16 @@ const EmptyInput = z.object({}).strict();
 export interface ToolHost {
   getStudy(): Study;
   getCatalog(): Catalog;
-  /** Start a new, empty study and open it. */
+  /** Start a new, empty project document and open it. */
   createStudy(input: { name?: string; problem?: string }): Promise<Study>;
   /** Patch the executable contract. Rejects once results exist. */
   updateStudyContract(patch: StudyContractPatch): Promise<Study>;
-  /** Saved studies and worked examples, for switching. */
+  /** Saved projects, for switching. */
   listStudies(): Promise<{
     saved: Array<{ id: string; name: string; candidates: number; updatedAt: number }>;
-    examples: Array<{ id: string; label: string; summary: string; teaches: string }>;
   }>;
-  /** Open a saved study, or a worked example. */
-  openStudy(input: { studyId?: string; exampleId?: string }): Promise<Study>;
+  /** Open a saved project. */
+  openStudy(input: { studyId: string }): Promise<Study>;
   /** Create an isolated, visibly-marked agent candidate. Returns the new candidate. */
   createCandidate(input: {
     label: string;
@@ -298,7 +297,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_create_study",
         description:
-                    "Start a new, empty study. Set the yardstick with studio_update_study, then add candidates. " +
+                    "Start a new project. Set its yardstick with studio_update_study, then add candidates. " +
           "Replaces whatever is open.",
         input: z
           .object({
@@ -313,7 +312,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             tool: "studio_create_study",
             at: Date.now(),
             ok: true,
-            summary: `created study "${study.name}"`,
+            summary: `created project "${study.name}"`,
           });
           return { studyId: study.id, name: study.name, contractLocked: false };
         },
@@ -326,7 +325,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_update_study",
         description:
                     "Set the shared yardstick: workload, SLOs, business goals, invariants, faults and exploration bounds. " +
-          "Every candidate is judged against these. Set the invariants BEFORE running anything: a study with " +
+          "Every candidate is judged against these. Set the invariants BEFORE running anything: a project with " +
           "none fails the correctness gate rather than passing it. Refused once any evaluation exists or a " +
           "candidate is promoted.",
         input: z
@@ -346,7 +345,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
               .unknown()
               .optional()
               .describe(
-                "Patch for the study contract: { workload?, targets?, contract?, correctness? }. " +
+                "Patch for the project contract: { workload?, targets?, contract?, correctness? }. " +
                   "correctness holds invariants, faults, bounds, identityDomains and stateOverrides. " +
                   "See studio_get_study for the current shape and studio_get_catalog for the vocabulary."
               ),
@@ -381,7 +380,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             tool: "studio_update_study",
             at: Date.now(),
             ok: true,
-            summary: `updated the study contract`,
+            summary: `updated the project contract`,
           });
           return summariseStudy(study);
         },
@@ -392,8 +391,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
     define(
       {
         name: "studio_list_studies",
-        description:
-                    "List saved studies and worked examples. An example shows how a study is put together.",
+        description: "List saved projects.",
         input: EmptyInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         async run() {
@@ -402,7 +400,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             tool: "studio_list_studies",
             at: Date.now(),
             ok: true,
-            summary: `${listed.saved.length} saved, ${listed.examples.length} examples`,
+            summary: `${listed.saved.length} saved project${listed.saved.length === 1 ? "" : "s"}`,
           });
           return listed;
         },
@@ -413,27 +411,14 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
     define(
       {
         name: "studio_open_study",
-        description:
-                    "Open a saved study by studyId, or a worked example by exampleId. Replaces what is open; nothing is deleted.",
-        /*
-         * The "exactly one of" rule is checked in `run`, not with `.refine`.
-         *
-         * A refinement is a ZodEffects, which has no faithful JSON Schema, and the converter
-         * refuses rather than emitting a shape that omits the constraint. Cross-field rules are
-         * not expressible in JSON Schema anyway, so the honest arrangement is a schema that
-         * describes the fields and a runtime check that names the rule.
-         */
+        description: "Open a saved project by studyId. Replaces what is open; nothing is deleted.",
         input: z
           .object({
-            studyId: z.string().min(1).max(64).optional(),
-            exampleId: z.string().min(1).max(64).optional(),
+            studyId: z.string().min(1).max(64),
           })
           .strict(),
         annotations: { untrustedContentHint: true },
         async run(args) {
-          if (!args.studyId === !args.exampleId) {
-            throw new Error("give exactly one of studyId or exampleId");
-          }
           const study = await host.openStudy(args);
           host.log({
             tool: "studio_open_study",
@@ -451,14 +436,14 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_get_study",
         description:
-                    "Read the current study: problem, workload, SLOs, business goals, invariants, bounds, and the candidates " +
-          "with their revisions. Start here. Workload, SLOs, invariants and bounds are study-level; a candidate " +
+                    "Read the current project: problem, workload, SLOs, business goals, invariants, bounds, and the candidates " +
+          "with their revisions. Start here. Workload, SLOs, invariants and bounds are project-level; a candidate " +
           "cannot change them. Contains user-authored text.",
         input: EmptyInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         async run() {
           const study = host.getStudy();
-          host.log({ tool: "studio_get_study", at: Date.now(), ok: true, summary: "read the study" });
+          host.log({ tool: "studio_get_study", at: Date.now(), ok: true, summary: "read the project" });
           return summariseStudy(study);
         },
       },
@@ -669,7 +654,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             return {
               evaluation: null,
               reason:
-                "No evaluation is cached for this candidate at the study's current design, seeds and bounds. Run studio_run_evaluation.",
+                "No evaluation is cached for this candidate at the project's current design, seeds and bounds. Run studio_run_evaluation.",
             };
           }
           return { evaluation };
@@ -757,7 +742,7 @@ export function summariseStudy(study: Study) {
     })),
     promotedCandidateId: study.promotedCandidateId,
     notes: [
-      "The workload, SLOs, invariants and exploration bounds are study-level. A candidate's local copies are overwritten from the study before every evaluation, so a candidate cannot improve its results by changing the workload.",
+      "The workload, SLOs, invariants and exploration bounds are project-level. A candidate's local copies are overwritten from the project before every evaluation, so a candidate cannot improve its results by changing the workload.",
       "There is no tool to delete or promote a candidate. Promotion is a human-only action in the interface.",
       "Every numeric and correctness claim you make must come from a studio result. Nothing here should be estimated.",
     ],

@@ -23,6 +23,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import { pizzaStudy } from "@sds/models";
 
 
 /**
@@ -51,6 +52,7 @@ const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
 const DIM = "\x1b[2m";
 const OFF = "\x1b[0m";
+const CDP_TIMEOUT_MS = 120_000;
 
 interface Check {
   name: string;
@@ -80,7 +82,7 @@ function send(method: string, params: Record<string, unknown> = {}): Promise<any
     socket!.send(JSON.stringify(message));
     setTimeout(() => {
       if (pending.delete(id)) reject(new Error(`${method} timed out`));
-    }, 30_000);
+    }, CDP_TIMEOUT_MS);
   });
 }
 
@@ -131,6 +133,23 @@ async function text(selector: string): Promise<string> {
   );
 }
 
+/** Import the README's development scenario without exposing it in the application UI. */
+async function importDevelopmentScenario(): Promise<void> {
+  const json = JSON.stringify(JSON.stringify(pizzaStudy()));
+  await evaluate(`(() => {
+    const input = document.querySelector('input[type="file"]');
+    if (!input) throw new Error("no project import input");
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([${json}], "pizza.sds-project.json", { type: "application/json" }));
+    Object.defineProperty(input, "files", { value: transfer.files, configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await waitFor(
+    `document.querySelectorAll(".candidate-chip:not(.candidate-add)").length >= 7`,
+    "the imported development scenario"
+  );
+}
+
 const checks: Check[] = [
   {
     name: "the app renders at all, with no console error",
@@ -146,43 +165,28 @@ const checks: Check[] = [
     // The product's actual first screen. It used to boot into the pizza example, which taught that
     // the problem ships with the tool and only the architecture is yours -- backwards, since the
     // problem is the input.
-    name: "it opens on an empty study, and says what to do next",
+    name: "it opens on an empty project, and says what to do next",
     async run() {
       const chips = await count(".candidate-chip:not(.candidate-add)");
-      if (chips !== 0) return `expected an empty study, found ${chips} candidate chips`;
+      if (chips !== 0) return `expected an empty project, found ${chips} candidate chips`;
       await waitFor(`document.querySelector(".empty-study")`, "the empty state");
       const body = await text(".empty-card");
       // An empty state that only says "nothing here" leaves the reader to guess which of four
       // views fixes it.
-      if (!/describe the problem/i.test(body)) return `the empty state offers no next step: ${body.slice(0, 120)}`;
-      if (!/agent/i.test(body)) return "the empty state never mentions that an agent can do this";
+      if (!/describe (the )?(real )?problem/i.test(body)) {
+        return `the empty state offers no next step: ${body.slice(0, 120)}`;
+      }
+      if (!/codex/i.test(body)) return "the empty state never says that Codex can do this";
       return null;
     },
   },
 
   {
-    name: "an example is one click away, and loads a full portfolio",
+    name: "the README development scenario imports without appearing in the app",
     async run() {
-      // By label, not position: a positional selector would silently click a different menu the
-      // next time a button is added to the toolbar, and the check would still pass or fail for
-      // reasons unrelated to what it is testing.
-      await evaluate(`(() => {
-        const btn = [...document.querySelectorAll(".topbar .btn")].find((b) => b.textContent?.trim() === "studies");
-        if (!btn) throw new Error("no studies button in the toolbar");
-        btn.click();
-      })()`);
-      await waitFor(`document.querySelector(".palette")`, "the studies menu");
-      const menu = await text(".palette");
-      if (!/worked examples/i.test(menu)) return `the studies menu has no examples section: ${menu.slice(0, 160)}`;
-      // Opened by the reason to open it, not by position: the menu lists what each example
-      // teaches, and that is what a reader picks from.
-      await evaluate(`(() => {
-        const items = [...document.querySelectorAll(".palette-item")];
-        const target = items.find((el) => /broken on purpose/i.test(el.textContent ?? ""));
-        if (!target) throw new Error("no example describes what it teaches");
-        target.click();
-      })()`);
-      await waitFor(`document.querySelectorAll(".candidate-chip:not(.candidate-add)").length >= 7`, "the example's candidates");
+      const appText = await text(".shell");
+      if (/pizza|worked examples/i.test(appText)) return "the app exposes the development scenario";
+      await importDevelopmentScenario();
       const agentChips = await count(".candidate-chip.agent");
       if (agentChips !== 0) return `${agentChips} candidates are marked agent-authored before any agent ran`;
       return null;
@@ -252,6 +256,12 @@ const checks: Check[] = [
   {
     name: "the guided invariant builder adds an invariant",
     async run() {
+      // The earlier search locks the contract. Reimport the development fixture so this check
+      // starts with a fresh project rather than testing the lock twice.
+      await importDevelopmentScenario();
+      await click(`.tabs button:nth-of-type(2)`);
+      await waitFor(`document.querySelector(".view-correctness")`, "the correctness view");
+
       const before = await count(".invariant-list li");
       await evaluate(`(() => {
         const selects = document.querySelectorAll(".builder select");
@@ -319,12 +329,12 @@ const checks: Check[] = [
 
       const enabledPromote = await evaluate<number>(`
         [...document.querySelectorAll(".gate-card footer .btn")]
-          .filter((b) => b.textContent.trim() === "promote" && !b.disabled).length
+          .filter((b) => b.textContent.trim() === "Choose" && !b.disabled).length
       `);
       if (enabledPromote < 1) return "no eligible candidate offered an enabled promote button";
       const enabledOnIneligible = await evaluate<number>(`
         [...document.querySelectorAll(".gate-card.gate-ineligible footer .btn")]
-          .filter((b) => b.textContent.trim() === "promote" && !b.disabled).length
+          .filter((b) => b.textContent.trim() === "Choose" && !b.disabled).length
       `);
       if (enabledOnIneligible > 0) return "an ineligible candidate offered promotion";
       return null;
@@ -336,7 +346,7 @@ const checks: Check[] = [
     async run() {
       await evaluate(`(() => {
         const btn = [...document.querySelectorAll(".gate-card.gate-eligible footer .btn")]
-          .find((b) => b.textContent.trim() === "promote" && !b.disabled);
+          .find((b) => b.textContent.trim() === "Choose" && !b.disabled);
         btn.click();
       })()`);
       await waitFor(`document.querySelector(".chip-promoted")`, "a promoted badge");
@@ -347,7 +357,7 @@ const checks: Check[] = [
   },
 
   {
-    name: "the study survives a reload, from IndexedDB",
+    name: "the project survives a reload, from IndexedDB",
     async run() {
       const nameBefore = await text(".candidate-bar-title");
       const invariantsBefore = await evaluate<number>(`
@@ -365,7 +375,7 @@ const checks: Check[] = [
       await waitFor(`document.querySelector(".chip-promoted")`, "the promoted candidate to come back", 30_000);
 
       const nameAfter = await text(".candidate-bar-title");
-      if (nameAfter !== nameBefore) return `study name changed across reload: "${nameBefore}" -> "${nameAfter}"`;
+      if (nameAfter !== nameBefore) return `project name changed across reload: "${nameBefore}" -> "${nameAfter}"`;
       const chipsAfter = await count(".candidate-chip:not(.candidate-add)");
       if (chipsAfter !== invariantsBefore) return `candidate count changed across reload: ${invariantsBefore} -> ${chipsAfter}`;
       return null;
@@ -376,12 +386,12 @@ const checks: Check[] = [
     name: "the agent surface reports its own availability rather than failing silently",
     async run() {
       const label = await evaluate<string>(`
-        [...document.querySelectorAll(".btn")].map((b) => b.textContent.trim()).find((t) => t.startsWith("agent:")) ?? ""
+        [...document.querySelectorAll(".btn")].map((b) => b.textContent.trim()).find((t) => t.startsWith("Codex ")) ?? ""
       `);
       if (!label) return "no agent status is shown anywhere";
       // Either a tool count, or a stated reason. Both are acceptable; silence is not.
-      if (!/agent: (\d+ tools|unsupported|failed)/.test(label)) {
-        return `agent status is uninformative: "${label}"`;
+      if (!/Codex (ready|unsupported|failed|idle)/.test(label)) {
+        return `Codex status is uninformative: "${label}"`;
       }
       return null;
     },

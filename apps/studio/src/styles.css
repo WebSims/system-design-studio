@@ -205,7 +205,23 @@ summary:focus-visible {
   0%, 100% { opacity: 0.25; }
   50% { opacity: 1; }
 }
-.candidate-add { border-style: dotted; }
+.candidate-add {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-style: dashed;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+
+.candidate-add:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.candidate-add:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 
 /* ---------- document views ---------- */
 
@@ -262,7 +278,7 @@ summary:focus-visible {
 .section-head h2 {
   font-size: 18px;
   line-height: 1.25;
-  text-transform: none;
+  text-transform: capitalize;
   letter-spacing: -0.01em;
   margin: 0;
 }
@@ -1936,8 +1952,8 @@ summary:focus-visible {
   }
 
   .brand-name {
-    max-width: 92px;
-    line-height: 1.15;
+    white-space: nowrap;
+    font-size: 12.5px;
   }
 
   .save-status {

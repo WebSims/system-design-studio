@@ -762,7 +762,7 @@ export const StudySchema = z
   .object({
     version: z.literal(STUDY_SCHEMA_VERSION),
     id: z.string().min(1).max(64),
-    name: z.string().default("untitled study"),
+    name: z.string().default("untitled project"),
     /**
      * The problem in the words of whoever has it.
      *
@@ -930,7 +930,7 @@ export function blankStudy(input: { id: string; name?: string; problem?: string;
   return StudySchema.parse({
     version: STUDY_SCHEMA_VERSION,
     id: input.id,
-    name: input.name ?? "untitled study",
+    name: input.name ?? "untitled project",
     problem: input.problem ?? "",
     workload: { arrival: { kind: "poisson", ratePerSec: 50 } },
     createdAt: now,
@@ -995,7 +995,7 @@ export function studyContractLock(study: Study): StudyLock {
 
 export class StudyContractLockedError extends Error {
   constructor(reason: string) {
-    super(`the study contract is locked: ${reason}. Clear the results or start a new study.`);
+    super(`the project contract is locked: ${reason}. Clear the results or start a new project.`);
     this.name = "StudyContractLockedError";
   }
 }

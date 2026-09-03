@@ -52,7 +52,7 @@ function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
-      reject(new Error("this browser has no IndexedDB, so studies cannot be saved"));
+      reject(new Error("this browser has no IndexedDB, so projects cannot be saved"));
       return;
     }
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -63,10 +63,10 @@ function openDb(): Promise<IDBDatabase> {
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("could not open the study database"));
+    request.onerror = () => reject(request.error ?? new Error("could not open project storage"));
     // Private-browsing modes and a full disk both surface here rather than as an error, and both
     // mean the same thing to the user: this session will not be saved.
-    request.onblocked = () => reject(new Error("the study database is blocked by another tab"));
+    request.onblocked = () => reject(new Error("project storage is blocked by another tab"));
   });
   return dbPromise;
 }
@@ -78,7 +78,7 @@ function tx<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequ
         const transaction = db.transaction(STORE, mode);
         const request = run(transaction.objectStore(STORE));
         request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error ?? new Error("study storage failed"));
+        request.onerror = () => reject(request.error ?? new Error("project storage failed"));
       })
   );
 }
@@ -176,7 +176,7 @@ export function writeActiveStudyId(id: string | null): void {
 // ---------------------------------------------------------------------------
 
 /** File extension for a study document, distinct from a design's `.sds.json`. */
-export const STUDY_EXTENSION = ".sds-study.json";
+export const STUDY_EXTENSION = ".sds-project.json";
 
 export function exportStudy(study: Study): string {
   return JSON.stringify(StudySchema.parse(study), null, 2);
@@ -199,5 +199,5 @@ export function studyFilename(study: Study): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 60);
-  return `${slug || "study"}${STUDY_EXTENSION}`;
+  return `${slug || "project"}${STUDY_EXTENSION}`;
 }

@@ -169,7 +169,7 @@ const api = {
 
 function requireCandidate(study: Study, id: string): Candidate {
   const candidate = study.candidates.find((c) => c.id === id);
-  if (!candidate) throw new Error(`no candidate "${id}" in this study`);
+  if (!candidate) throw new Error(`no candidate "${id}" in this project`);
   return candidate;
 }
 

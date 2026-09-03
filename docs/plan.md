@@ -11,7 +11,7 @@ design or prove that one is globally best.
 
 ## Done
 
-- One study with shared workload, rules and targets.
+- One project with shared workload, rules and targets.
 - Multiple isolated design candidates.
 - Bounded race search with short counterexample traces.
 - Replicated performance simulation with latency and business outcomes.
@@ -19,8 +19,8 @@ design or prove that one is globally best.
 - 13 WebMCP tools for AI creation, editing, testing and comparison.
 - Human-only promotion and deletion.
 - Local save, import and export.
-- Pizza portfolio kept only as a worked demo.
-- AI-first empty state; no hardcoded new-study generator.
+- Pizza scenario is not exposed by the app; the README is its user-facing entry.
+- AI-first empty state; no hardcoded project generator.
 
 ## Next
 
@@ -29,7 +29,7 @@ design or prove that one is globally best.
 3. Add clearer live views for contention, queues and resource bottlenecks.
 4. Add more fault models and test the explorer's bounds and claims.
 5. Add reusable non-domain-specific design patterns to the catalog.
-6. Add regression studies from every issue found in real use.
+6. Add regression scenarios from every issue found in real use.
 
 ## Acceptance test
 
