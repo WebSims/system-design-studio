@@ -15,10 +15,14 @@ import { buildCatalog } from "../src/webmcp/catalog";
 import { toJsonSchema, UnsupportedSchema } from "../src/webmcp/json-schema";
 import {
   MutationRefused,
+  applyArchitecturePatch,
+  attachArchitectureEvidence,
   createCandidate,
   deleteCandidate,
+  importRepositoryArchitecture,
   promoteCandidate,
   replaceCandidateDraft,
+  type ArchitecturePatchOperation,
 } from "../src/study/mutations";
 import { z } from "zod";
 
@@ -114,6 +118,12 @@ class TestHost implements ToolHost {
     return this.study;
   }
 
+  async importArchitecture(input: Parameters<ToolHost["importArchitecture"]>[0]) {
+    const result = importRepositoryArchitecture(this.study, { ...input, origin: "agent" });
+    this.study = result.study;
+    return result.candidate;
+  }
+
   async createCandidate(input: { label: string; intent: string; design: unknown; copyFrom?: string }) {
     const { study, candidate } = createCandidate(this.study, {
       label: input.label,
@@ -130,6 +140,22 @@ class TestHost implements ToolHost {
     const { study, candidate } = replaceCandidateDraft(this.study, { ...input, by: "agent" });
     this.study = study;
     return candidate;
+  }
+
+  async applyArchitecturePatch(input: {
+    candidateId: string;
+    expectedRevision: number;
+    operations: ArchitecturePatchOperation[];
+  }) {
+    const result = applyArchitecturePatch(this.study, { ...input, by: "agent" });
+    this.study = result.study;
+    return { candidate: result.candidate, changed: result.changed };
+  }
+
+  async attachArchitectureEvidence(input: Parameters<ToolHost["attachArchitectureEvidence"]>[0]) {
+    const result = attachArchitectureEvidence(this.study, { ...input, by: "agent" });
+    this.study = result.study;
+    return result.candidate;
   }
 
   async runEvaluation(input: {
@@ -255,12 +281,43 @@ async function call(name: string, input: unknown, ctx?: { signal?: AbortSignal }
   return (await mc.call(name, input, ctx)) as { content: Record<string, unknown>; isError?: boolean };
 }
 
+function repositoryArchitectureInput() {
+  const design = structuredClone(pizzaStudy().candidates[0]!.design);
+  const nodeId = design.nodes[0]!.id;
+  return {
+    repository: {
+      name: "checkout-service",
+      rootHint: "services/checkout",
+      branch: "main",
+      revision: "abc123",
+      dirty: false,
+      scope: ["src", "infra"],
+    },
+    label: "As-is · abc123",
+    design,
+    evidence: [
+      {
+        id: "entrypoint",
+        targetKind: "node",
+        targetId: nodeId,
+        confidence: "observed",
+        source: "code",
+        path: "src/server.ts",
+        lineStart: 12,
+        lineEnd: 28,
+        symbol: "startServer",
+        claim: "the process exposes the HTTP entrypoint",
+      },
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // registration
 // ---------------------------------------------------------------------------
 
 describe("registration", () => {
-  it("registers exactly the thirteen tools, imperatively, on the target given", () => {
+  it("registers the complete tool surface, imperatively, on the target given", () => {
     const { state } = register();
     expect(state.status).toBe("registered");
     expect(mc.registered.map((t) => t.name)).toEqual([
@@ -268,9 +325,13 @@ describe("registration", () => {
       "studio_update_study",
       "studio_list_studies",
       "studio_open_study",
+      "studio_import_architecture",
       "studio_get_study",
+      "studio_get_architecture",
       "studio_get_catalog",
       "studio_get_candidate",
+      "studio_apply_architecture_patch",
+      "studio_attach_code_evidence",
       "studio_validate_draft",
       "studio_create_candidate",
       "studio_replace_candidate_draft",
@@ -302,6 +363,7 @@ describe("registration", () => {
     expect(readOnly).toEqual([
       "studio_list_studies",
       "studio_get_study",
+      "studio_get_architecture",
       "studio_get_catalog",
       "studio_get_candidate",
       "studio_validate_draft",
@@ -322,8 +384,11 @@ describe("registration", () => {
     expect(untrusted).toEqual([
       "studio_list_studies",
       "studio_open_study",
+      "studio_import_architecture",
       "studio_get_study",
+      "studio_get_architecture",
       "studio_get_candidate",
+      "studio_attach_code_evidence",
       "studio_get_evaluation",
     ]);
   });
@@ -348,7 +413,7 @@ describe("registration", () => {
       expect(r.state.reason).toContain("remains usable by hand");
     }
     // And the tool definitions still exist, so the UI can list what an agent WOULD be able to do.
-    expect(r.tools.length).toBe(13);
+    expect(r.tools.length).toBe(17);
   });
 
   it("reports unsupported when registerTool is present but not a function", () => {
@@ -480,6 +545,134 @@ describe("reading the study", () => {
     expect(indivisible).toEqual(["acquireLease", "atomic", "conditionalWrite", "insertUnique", "releaseLease"]);
     // And that there is no exactly-once queue, which is the thing a model will otherwise assume.
     expect((content.notes as string[]).join(" ")).toContain("no exactly-once queue setting");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// repository-backed architecture round trip
+// ---------------------------------------------------------------------------
+
+describe("repository-backed architecture", () => {
+  it("imports an evidence-backed baseline atomically", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const result = await call("studio_import_architecture", repositoryArchitectureInput());
+    expect(result.isError).toBeFalsy();
+    expect(result.content.role).toBe("baseline");
+    expect(result.content.evidenceCount).toBe(1);
+    expect(host.study.repository?.revision).toBe("abc123");
+    const baseline = host.study.candidates.find((candidate) => candidate.id === result.content.candidateId)!;
+    expect(baseline.role).toBe("baseline");
+    expect(host.study.activeCandidateId).toBe(baseline.id);
+  });
+
+  it("reads coverage and confidence without inventing evidence", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const result = await call("studio_get_architecture", {
+      candidateId: imported.content.candidateId,
+    });
+    const summary = result.content.evidenceSummary as {
+      total: number;
+      observed: number;
+      inferred: number;
+      assumed: number;
+      uncoveredNodes: string[];
+    };
+    expect(summary.total).toBe(1);
+    expect(summary.observed).toBe(1);
+    expect(summary.inferred).toBe(0);
+    expect(summary.uncoveredNodes.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the as-is baseline immutable and patches an experiment instead", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const refused = await call("studio_apply_architecture_patch", {
+      candidateId: imported.content.candidateId,
+      expectedRevision: 0,
+      operations: [{ op: "set-design-name", name: "silently changed baseline" }],
+    });
+    expect(refused.isError).toBe(true);
+    expect(String(refused.content.error)).toContain("as-is baseline");
+
+    const created = await call("studio_create_candidate", {
+      label: "connection-pool experiment",
+      copyFrom: imported.content.candidateId,
+    });
+    const patched = await call("studio_apply_architecture_patch", {
+      candidateId: created.content.candidateId,
+      expectedRevision: 0,
+      operations: [{ op: "set-design-name", name: "larger connection pool" }],
+    });
+    expect(patched.isError).toBeFalsy();
+    expect(patched.content.revision).toBe(1);
+    expect((patched.content.changed as string[])).toContain("renamed design");
+  });
+
+  it("attaches evidence append-only with a revision guard", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const baseline = host.study.candidates.find(
+      (candidate) => candidate.id === imported.content.candidateId
+    )!;
+    const edge = baseline.design.edges[0]!;
+    const attached = await call("studio_attach_code_evidence", {
+      candidateId: baseline.id,
+      expectedRevision: 0,
+      evidence: [
+        {
+          id: "client-route",
+          targetKind: "edge",
+          targetId: edge.id,
+          confidence: "inferred",
+          source: "config",
+          path: "infra/routes.yaml",
+          claim: "routing configuration connects these services",
+        },
+      ],
+    });
+    expect(attached.isError).toBeFalsy();
+    expect(attached.content.revision).toBe(1);
+
+    const stale = await call("studio_attach_code_evidence", {
+      candidateId: baseline.id,
+      expectedRevision: 0,
+      evidence: [
+        {
+          id: "runtime-route",
+          targetKind: "edge",
+          targetId: edge.id,
+          confidence: "observed",
+          source: "runtime",
+          claim: "a trace crossed this link",
+        },
+      ],
+    });
+    expect(stale.isError).toBe(true);
+    expect(String(stale.content.error)).toContain("revision 1, not 0");
+  });
+
+  it("commits no partial patch when the final design is invalid", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const created = await call("studio_create_candidate", {
+      label: "broken experiment",
+      copyFrom: imported.content.candidateId,
+    });
+    const experiment = host.study.candidates.find(
+      (candidate) => candidate.id === created.content.candidateId
+    )!;
+    const before = JSON.stringify(experiment.design);
+    const target = experiment.design.nodes.find((node) => node.kind === "database")!;
+    const result = await call("studio_apply_architecture_patch", {
+      candidateId: experiment.id,
+      expectedRevision: 0,
+      operations: [{ op: "remove-node", nodeId: target.id }],
+    });
+    expect(result.isError).toBe(true);
+    const after = host.study.candidates.find((candidate) => candidate.id === experiment.id)!;
+    expect(after.revision).toBe(0);
+    expect(JSON.stringify(after.design)).toBe(before);
   });
 });
 

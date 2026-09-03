@@ -7,6 +7,7 @@ import {
   type ArchitectureEvidence,
   type Candidate,
   type CandidateRole,
+  type RepositorySnapshot,
   type Study,
 } from "@sds/schema";
 
@@ -121,6 +122,7 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
   const next = StudySchema.parse({
     ...study,
     candidates: [...study.candidates, candidate],
+    activeCandidateId: study.activeCandidateId ?? candidate.id,
     updatedAt: Date.now(),
   });
 
@@ -132,6 +134,39 @@ export interface ReplaceDraftInput {
   expectedRevision: number;
   design: unknown;
   /** Human edits skip the revision check; agent edits do not. */
+  by: "human" | "agent";
+}
+
+export type ArchitecturePatchOperation =
+  | { op: "add-node"; node: unknown }
+  | { op: "update-node"; nodeId: string; patch: Record<string, unknown> }
+  | { op: "remove-node"; nodeId: string }
+  | { op: "add-edge"; edge: unknown }
+  | { op: "update-edge"; edgeId: string; patch: Record<string, unknown> }
+  | { op: "remove-edge"; edgeId: string }
+  | { op: "set-workflow"; workflow: unknown }
+  | { op: "set-design-name"; name: string };
+
+export interface ApplyArchitecturePatchInput {
+  candidateId: string;
+  expectedRevision: number;
+  operations: ArchitecturePatchOperation[];
+  by: "human" | "agent";
+}
+
+export interface ImportRepositoryArchitectureInput {
+  repository: RepositorySnapshot;
+  label: string;
+  intent?: string;
+  design: unknown;
+  evidence?: ArchitectureEvidence[];
+  origin: "human" | "agent";
+}
+
+export interface AttachArchitectureEvidenceInput {
+  candidateId: string;
+  expectedRevision: number;
+  evidence: ArchitectureEvidence[];
   by: "human" | "agent";
 }
 
@@ -166,6 +201,14 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
       `"${existing.label}" is the promoted candidate and cannot be modified through this interface. ` +
         `Create a new candidate instead; promotion is a human-only action.`,
       "promoted-candidate"
+    );
+  }
+
+  if (input.by === "agent" && existing.role === "baseline") {
+    throw new MutationRefused(
+      `"${existing.label}" is an as-is baseline reconstructed from code and cannot be redesigned in place. ` +
+        `Create an experiment from it with studio_create_candidate, then patch that experiment.`,
+      "baseline-immutable"
     );
   }
 
@@ -219,6 +262,163 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
   });
 
   return { study: next, candidate };
+}
+
+/**
+ * Import one evidence-backed as-is snapshot and link the project to the revision it describes.
+ * The mutation is atomic: an invalid design or evidence record cannot leave repository metadata
+ * updated without the matching baseline.
+ */
+export function importRepositoryArchitecture(
+  study: Study,
+  input: ImportRepositoryArchitectureInput
+): { study: Study; candidate: Candidate } {
+  const linked = StudySchema.parse({
+    ...study,
+    repository: input.repository,
+    updatedAt: Date.now(),
+  });
+  const created = createCandidate(linked, {
+    label: input.label,
+    intent: input.intent ?? "As-is architecture reconstructed from repository evidence.",
+    design: input.design,
+    origin: input.origin,
+    role: "baseline",
+    basedOnCandidateId: null,
+    evidence: input.evidence ?? [],
+  });
+  return {
+    candidate: created.candidate,
+    study: StudySchema.parse({ ...created.study, activeCandidateId: created.candidate.id }),
+  };
+}
+
+/** Apply a small graph delta, then validate and commit it through the normal replacement path. */
+export function applyArchitecturePatch(
+  study: Study,
+  input: ApplyArchitecturePatchInput
+): { study: Study; candidate: Candidate; changed: string[] } {
+  const existing = study.candidates.find((candidate) => candidate.id === input.candidateId);
+  if (!existing) {
+    throw new MutationRefused(`no candidate "${input.candidateId}"`, "no-such-candidate");
+  }
+  if (input.operations.length === 0) {
+    throw new MutationRefused("an architecture patch needs at least one operation", "empty-patch");
+  }
+
+  const draft = structuredClone(existing.design) as unknown as {
+    name: string;
+    nodes: Array<Record<string, unknown> & { id?: unknown }>;
+    edges: Array<Record<string, unknown> & { id?: unknown }>;
+    workflow: unknown;
+  };
+  const changed: string[] = [];
+
+  for (const operation of input.operations) {
+    switch (operation.op) {
+      case "add-node":
+        draft.nodes.push(structuredClone(operation.node) as Record<string, unknown>);
+        changed.push("added node");
+        break;
+      case "update-node": {
+        if ("id" in operation.patch || "kind" in operation.patch) {
+          throw new MutationRefused(
+            "update-node cannot change id or kind; remove and add the node explicitly",
+            "patch-identity"
+          );
+        }
+        const index = draft.nodes.findIndex((node) => node.id === operation.nodeId);
+        if (index < 0) throw patchTargetMissing("node", operation.nodeId);
+        draft.nodes[index] = { ...draft.nodes[index]!, ...structuredClone(operation.patch) };
+        changed.push(`updated node ${operation.nodeId}`);
+        break;
+      }
+      case "remove-node": {
+        const before = draft.nodes.length;
+        draft.nodes = draft.nodes.filter((node) => node.id !== operation.nodeId);
+        if (draft.nodes.length === before) throw patchTargetMissing("node", operation.nodeId);
+        draft.edges = draft.edges.filter(
+          (edge) => edge.from !== operation.nodeId && edge.to !== operation.nodeId
+        );
+        changed.push(`removed node ${operation.nodeId} and its incident links`);
+        break;
+      }
+      case "add-edge":
+        draft.edges.push(structuredClone(operation.edge) as Record<string, unknown>);
+        changed.push("added link");
+        break;
+      case "update-edge": {
+        if ("id" in operation.patch) {
+          throw new MutationRefused("update-edge cannot change id", "patch-identity");
+        }
+        const index = draft.edges.findIndex((edge) => edge.id === operation.edgeId);
+        if (index < 0) throw patchTargetMissing("edge", operation.edgeId);
+        draft.edges[index] = { ...draft.edges[index]!, ...structuredClone(operation.patch) };
+        changed.push(`updated link ${operation.edgeId}`);
+        break;
+      }
+      case "remove-edge": {
+        const before = draft.edges.length;
+        draft.edges = draft.edges.filter((edge) => edge.id !== operation.edgeId);
+        if (draft.edges.length === before) throw patchTargetMissing("edge", operation.edgeId);
+        changed.push(`removed link ${operation.edgeId}`);
+        break;
+      }
+      case "set-workflow":
+        draft.workflow = structuredClone(operation.workflow);
+        changed.push("updated workflow");
+        break;
+      case "set-design-name":
+        draft.name = operation.name;
+        changed.push("renamed design");
+        break;
+    }
+  }
+
+  const replaced = replaceCandidateDraft(study, {
+    candidateId: input.candidateId,
+    expectedRevision: input.expectedRevision,
+    design: draft,
+    by: input.by,
+  });
+  return { ...replaced, changed };
+}
+
+/** Add evidence without replacing the topology. This is allowed on a baseline and is append-only. */
+export function attachArchitectureEvidence(
+  study: Study,
+  input: AttachArchitectureEvidenceInput
+): { study: Study; candidate: Candidate } {
+  const existing = study.candidates.find((candidate) => candidate.id === input.candidateId);
+  if (!existing) throw new MutationRefused(`no candidate "${input.candidateId}"`, "no-such-candidate");
+  if (input.by === "agent" && existing.revision !== input.expectedRevision) {
+    throw new MutationRefused(
+      `"${existing.label}" is at revision ${existing.revision}, not ${input.expectedRevision}. Re-read it with studio_get_architecture and try again.`,
+      "revision-conflict"
+    );
+  }
+  const ids = new Set(existing.evidence.map((item) => item.id));
+  const duplicate = input.evidence.find((item) => ids.has(item.id));
+  if (duplicate) {
+    throw new MutationRefused(`evidence id "${duplicate.id}" already exists`, "duplicate-evidence");
+  }
+  const candidate = CandidateSchema.parse({
+    ...existing,
+    evidence: [...existing.evidence, ...input.evidence],
+    revision: existing.revision + 1,
+  });
+  return {
+    study: StudySchema.parse({
+      ...study,
+      candidates: study.candidates.map((item) => (item.id === candidate.id ? candidate : item)),
+      updatedAt: Date.now(),
+    }),
+    candidate,
+  };
+}
+
+function patchTargetMissing(kind: "node" | "edge", id: string): MutationRefused {
+  return new MutationRefused(`cannot patch missing ${kind} "${id}"`, "patch-target-missing");
 }
 
 /**

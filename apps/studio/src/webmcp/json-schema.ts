@@ -152,6 +152,11 @@ function convert(schema: z.ZodTypeAny, depth: number): JsonSchema {
       return { ...inner, default: (def.defaultValue as () => unknown)() };
     }
 
+    case "ZodEffects":
+      // Refinements keep the same structural JSON shape. Runtime-only cross-field rules still
+      // come back through the validator's exact error messages.
+      return convert(def.schema as z.ZodTypeAny, depth + 1);
+
     case "ZodUnion":
       return described({
         anyOf: (def.options as z.ZodTypeAny[]).map((o) => convert(o, depth + 1)),

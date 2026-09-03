@@ -421,6 +421,8 @@ function useWebmcp() {
         if (err) throw new Error(err);
         return useStudyStore.getState().study;
       },
+      importArchitecture: async (input) =>
+        useStudyStore.getState().importArchitecture({ ...input, origin: "agent" }),
       createCandidate: async (input) =>
         useStudyStore.getState().addCandidate({
           label: input.label,
@@ -432,6 +434,10 @@ function useWebmcp() {
         }),
       replaceCandidateDraft: async (input) =>
         useStudyStore.getState().replaceDraft({ ...input, by: "agent" }),
+      applyArchitecturePatch: async (input) =>
+        useStudyStore.getState().patchArchitecture({ ...input, by: "agent" }),
+      attachArchitectureEvidence: async (input) =>
+        useStudyStore.getState().attachEvidence({ ...input, by: "agent" }),
       runEvaluation: async (input) => {
         if (input.signal?.aborted) throw new Error("evaluation aborted before it began");
         const abort = () => cancelWorker();

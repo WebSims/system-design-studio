@@ -41,12 +41,18 @@ import {
 } from "../persist";
 import {
   MutationRefused,
+  applyArchitecturePatch,
+  attachArchitectureEvidence,
   createCandidate,
   deleteCandidate,
   editActiveDesign,
+  importRepositoryArchitecture,
   promoteCandidate,
   replaceCandidateDraft,
   setActiveCandidate,
+  type ApplyArchitecturePatchInput,
+  type AttachArchitectureEvidenceInput,
+  type ImportRepositoryArchitectureInput,
 } from "./mutations";
 import type { ActivityEntry } from "../webmcp/tools";
 
@@ -117,6 +123,9 @@ export interface StudioState {
   // ---- candidates ----
   addCandidate(input: { label: string; intent?: string; copyFrom?: string; design?: unknown; origin: "human" | "agent" }): Candidate;
   replaceDraft(input: { candidateId: string; expectedRevision: number; design: unknown; by: "human" | "agent" }): Candidate;
+  importArchitecture(input: ImportRepositoryArchitectureInput): Candidate;
+  patchArchitecture(input: ApplyArchitecturePatchInput): { candidate: Candidate; changed: string[] };
+  attachEvidence(input: AttachArchitectureEvidenceInput): Candidate;
   removeCandidate(id: string): void;
   promote(id: string): void;
 
@@ -372,6 +381,28 @@ export const useStudyStore = create<StudioState>((set, get) => {
       commit(study, true);
       set({ portfolio: null });
       void get().refreshPortfolio();
+      return candidate;
+    },
+
+    importArchitecture: (input) => {
+      const { study, candidate } = importRepositoryArchitecture(get().study, input);
+      commit(study, true);
+      set({ portfolio: null, view: "design" });
+      void get().refreshPortfolio();
+      return candidate;
+    },
+
+    patchArchitecture: (input) => {
+      const { study, candidate, changed } = applyArchitecturePatch(get().study, input);
+      commit(study, true);
+      set({ portfolio: null });
+      void get().refreshPortfolio();
+      return { candidate, changed };
+    },
+
+    attachEvidence: (input) => {
+      const { study, candidate } = attachArchitectureEvidence(get().study, input);
+      commit(study, true);
       return candidate;
     },
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  ArchitectureEvidenceSchema,
   DesignSchema,
   contentHash,
   migrateAndParse,
@@ -8,13 +9,16 @@ import {
   validateWorkflow,
   type Candidate,
   type CandidateEvaluation,
+  type ArchitectureEvidence,
   type PortfolioResult,
+  type RepositorySnapshot,
   StudyContractLockedError,
   StudyContractPatchSchema,
   studyContractLock,
   type Study,
   type StudyContractPatch,
 } from "@sds/schema";
+import type { ArchitecturePatchOperation } from "../study/mutations";
 import { toJsonSchema, type JsonSchema } from "./json-schema";
 
 /**
@@ -137,6 +141,106 @@ const ValidateDraftInput = z
   })
   .strict();
 
+const RepositoryInput = z
+  .object({
+    name: z.string().min(1).max(160).describe("Repository or workspace display name."),
+    rootHint: z
+      .string()
+      .max(1024)
+      .default("")
+      .describe("Workspace path or stable hint. Prefer a repository-relative label when possible."),
+    branch: z.string().max(256).default(""),
+    revision: z
+      .string()
+      .max(256)
+      .default("")
+      .describe("Git commit or other immutable source revision when available."),
+    dirty: z
+      .boolean()
+      .nullable()
+      .default(null)
+      .describe("Whether uncommitted source changes were included; null when unknown."),
+    scope: z
+      .array(z.string().min(1).max(512))
+      .max(128)
+      .default([])
+      .describe("Repository-relative directories or packages included in the scan."),
+  })
+  .strict();
+
+const ImportArchitectureInput = z
+  .object({
+    repository: RepositoryInput,
+    label: z.string().min(1).max(120).default("As-is architecture"),
+    intent: z
+      .string()
+      .max(2000)
+      .default("As-is architecture reconstructed from repository evidence."),
+    design: z
+      .unknown()
+      .describe("Complete design document for the architecture observed at this repository revision."),
+    evidence: z
+      .array(ArchitectureEvidenceSchema)
+      .max(4096)
+      .default([])
+      .describe("Evidence records supporting nodes and links. Keep assumptions explicit."),
+  })
+  .strict();
+
+const GetArchitectureInput = z
+  .object({
+    candidateId: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe("Candidate to read. Omit for the active architecture."),
+  })
+  .strict();
+
+const ArchitecturePatchOperationInput = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("add-node"), node: z.unknown() }).strict(),
+  z
+    .object({
+      op: z.literal("update-node"),
+      nodeId: z.string().min(1).max(128),
+      patch: z.record(z.unknown()).describe("Shallow node field patch. Cannot contain id or kind."),
+    })
+    .strict(),
+  z.object({ op: z.literal("remove-node"), nodeId: z.string().min(1).max(128) }).strict(),
+  z.object({ op: z.literal("add-edge"), edge: z.unknown() }).strict(),
+  z
+    .object({
+      op: z.literal("update-edge"),
+      edgeId: z.string().min(1).max(128),
+      patch: z.record(z.unknown()).describe("Shallow link field patch. Cannot contain id."),
+    })
+    .strict(),
+  z.object({ op: z.literal("remove-edge"), edgeId: z.string().min(1).max(128) }).strict(),
+  z.object({ op: z.literal("set-workflow"), workflow: z.unknown() }).strict(),
+  z.object({ op: z.literal("set-design-name"), name: z.string().min(1).max(160) }).strict(),
+]);
+
+const ArchitecturePatchInput = z
+  .object({
+    candidateId: z.string().min(1).max(64),
+    expectedRevision: z.number().int().nonnegative(),
+    operations: z
+      .array(ArchitecturePatchOperationInput)
+      .min(1)
+      .max(128)
+      .describe("Atomic graph changes, applied in order and committed only if the final design validates."),
+  })
+  .strict();
+
+const AttachEvidenceInput = z
+  .object({
+    candidateId: z.string().min(1).max(64),
+    expectedRevision: z.number().int().nonnegative(),
+    evidence: z.array(ArchitectureEvidenceSchema).min(1).max(256),
+  })
+  .strict();
+
 const CompareInput = z
   .object({
     candidateIds: z
@@ -174,6 +278,14 @@ export interface ToolHost {
   }>;
   /** Open a saved project. */
   openStudy(input: { studyId: string }): Promise<Study>;
+  /** Atomically link a repository snapshot and add its immutable as-is baseline. */
+  importArchitecture(input: {
+    repository: RepositorySnapshot;
+    label: string;
+    intent: string;
+    design: unknown;
+    evidence: ArchitectureEvidence[];
+  }): Promise<Candidate>;
   /** Create an isolated, visibly-marked agent candidate. Returns the new candidate. */
   createCandidate(input: {
     label: string;
@@ -186,6 +298,18 @@ export interface ToolHost {
     candidateId: string;
     expectedRevision: number;
     design: unknown;
+  }): Promise<Candidate>;
+  /** Apply a validated, revision-guarded delta to an experiment. */
+  applyArchitecturePatch(input: {
+    candidateId: string;
+    expectedRevision: number;
+    operations: ArchitecturePatchOperation[];
+  }): Promise<{ candidate: Candidate; changed: string[] }>;
+  /** Append evidence to a baseline or experiment without replacing its topology. */
+  attachArchitectureEvidence(input: {
+    candidateId: string;
+    expectedRevision: number;
+    evidence: ArchitectureEvidence[];
   }): Promise<Candidate>;
   /** Run an evaluation. Must honour the abort signal. */
   runEvaluation(input: {
@@ -434,6 +558,48 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
 
     define(
       {
+        name: "studio_import_architecture",
+        description:
+          "Import the current as-is architecture of a repository revision. Atomically links the repository and creates an " +
+          "immutable baseline with code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
+          "supported by the cited source; mark deductions inferred and unknown production behaviour assumed.",
+        input: ImportArchitectureInput,
+        annotations: { readOnlyHint: false, untrustedContentHint: true },
+        async run(args) {
+          if (args.design === undefined) {
+            throw new Error("design is required: supply the complete as-is architecture document");
+          }
+          const candidate = await host.importArchitecture({
+            repository: { ...args.repository, capturedAt: Date.now() },
+            label: args.label,
+            intent: args.intent,
+            design: args.design,
+            evidence: args.evidence,
+          });
+          host.log({
+            tool: "studio_import_architecture",
+            at: Date.now(),
+            ok: true,
+            summary: `imported as-is baseline "${candidate.label}" with ${candidate.evidence.length} evidence records`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
+          });
+          return {
+            candidateId: candidate.id,
+            role: candidate.role,
+            revision: candidate.revision,
+            designHash: contentHash(candidate.design),
+            evidenceCount: candidate.evidence.length,
+            next:
+              "Create an experiment from this baseline with studio_create_candidate before proposing architecture changes.",
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
         name: "studio_get_study",
         description:
                     "Read the current project: problem, workload, SLOs, business goals, invariants, bounds, and the candidates " +
@@ -445,6 +611,34 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           const study = host.getStudy();
           host.log({ tool: "studio_get_study", at: Date.now(), ok: true, summary: "read the project" });
           return summariseStudy(study);
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_get_architecture",
+        description:
+          "Read the active or named architecture as a repository-linked model: role, ancestry, revision, full design and " +
+          "per-node/per-link evidence. Use this before proposing or patching an experiment. Contains repository paths and " +
+          "user- or agent-authored claims.",
+        input: GetArchitectureInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run({ candidateId }) {
+          const study = host.getStudy();
+          const id = candidateId ?? study.activeCandidateId ?? study.candidates[0]?.id;
+          if (!id) throw new Error("this project has no architecture yet; import an as-is baseline first");
+          const candidate = requireCandidate(study, id);
+          host.log({
+            tool: "studio_get_architecture",
+            at: Date.now(),
+            ok: true,
+            summary: `read ${candidate.role} "${candidate.label}"`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
+          });
+          return architecturePayload(study, candidate);
         },
       },
       host
@@ -490,11 +684,78 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             label: candidate.label,
             pattern: candidate.pattern,
             origin: candidate.origin,
+            role: candidate.role,
+            basedOnCandidateId: candidate.basedOnCandidateId,
             revision: candidate.revision,
             intent: candidate.intent,
             notes: candidate.notes,
+            evidence: candidate.evidence,
             isPromoted: host.getStudy().promotedCandidateId === candidate.id,
             design: candidate.design,
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_apply_architecture_patch",
+        description:
+          "Apply a small atomic graph delta to an experiment instead of resending the whole design. Operations can add, " +
+          "update or remove nodes and links, replace the workflow, or rename the design. Requires the revision read from " +
+          "studio_get_architecture and refuses baselines, promoted candidates, stale revisions, missing targets and invalid results.",
+        input: ArchitecturePatchInput,
+        annotations: { readOnlyHint: false },
+        async run(args) {
+          const result = await host.applyArchitecturePatch({
+            candidateId: args.candidateId,
+            expectedRevision: args.expectedRevision,
+            operations: args.operations as ArchitecturePatchOperation[],
+          });
+          host.log({
+            tool: "studio_apply_architecture_patch",
+            at: Date.now(),
+            ok: true,
+            summary: `patched "${result.candidate.label}": ${result.changed.join(", ")}`,
+            candidateId: result.candidate.id,
+            revision: result.candidate.revision,
+          });
+          return {
+            candidateId: result.candidate.id,
+            revision: result.candidate.revision,
+            designHash: contentHash(result.candidate.design),
+            changed: result.changed,
+            evidenceCount: result.candidate.evidence.length,
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_attach_code_evidence",
+        description:
+          "Append evidence to nodes or links without replacing the architecture. Requires the current candidate revision and " +
+          "refuses duplicate ids or missing targets. Evidence is append-only through WebMCP so an agent cannot silently erase " +
+          "the basis for an as-is claim.",
+        input: AttachEvidenceInput,
+        annotations: { readOnlyHint: false, untrustedContentHint: true },
+        async run(args) {
+          const candidate = await host.attachArchitectureEvidence(args);
+          host.log({
+            tool: "studio_attach_code_evidence",
+            at: Date.now(),
+            ok: true,
+            summary: `attached ${args.evidence.length} evidence records to "${candidate.label}"`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
+          });
+          return {
+            candidateId: candidate.id,
+            revision: candidate.revision,
+            evidenceCount: candidate.evidence.length,
           };
         },
       },
@@ -566,7 +827,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         description:
                     "Replace a candidate's design with a complete, validated document. Requires the revision you read, and is " +
           "refused if the candidate changed since, so two editors cannot silently overwrite each other. Refused for " +
-          "the promoted candidate.",
+          "the promoted candidate and for an as-is baseline; create an experiment before redesigning code-derived architecture.",
         input: ReplaceDraftInput,
         annotations: { readOnlyHint: false },
         async run(args) {
@@ -704,6 +965,46 @@ function requireCandidate(study: Study, id: string): Candidate {
   return candidate;
 }
 
+function architecturePayload(study: Study, candidate: Candidate) {
+  const confidence = { observed: 0, inferred: 0, assumed: 0 };
+  for (const evidence of candidate.evidence) confidence[evidence.confidence] += 1;
+  return {
+    repository: study.repository,
+    candidate: {
+      id: candidate.id,
+      label: candidate.label,
+      role: candidate.role,
+      origin: candidate.origin,
+      basedOnCandidateId: candidate.basedOnCandidateId,
+      revision: candidate.revision,
+      intent: candidate.intent,
+      isPromoted: study.promotedCandidateId === candidate.id,
+    },
+    design: candidate.design,
+    evidence: candidate.evidence,
+    evidenceSummary: {
+      total: candidate.evidence.length,
+      ...confidence,
+      uncoveredNodes: candidate.design.nodes
+        .filter(
+          (node) =>
+            !candidate.evidence.some(
+              (evidence) => evidence.targetKind === "node" && evidence.targetId === node.id
+            )
+        )
+        .map((node) => node.id),
+      uncoveredEdges: candidate.design.edges
+        .filter(
+          (edge) =>
+            !candidate.evidence.some(
+              (evidence) => evidence.targetKind === "edge" && evidence.targetId === edge.id
+            )
+        )
+        .map((edge) => edge.id),
+    },
+  };
+}
+
 /**
  * The study, minus every candidate's full design.
  *
@@ -718,6 +1019,7 @@ export function summariseStudy(study: Study) {
     id: study.id,
     name: study.name,
     problem: study.problem,
+    repository: study.repository,
     contract: study.contract,
     workload: study.workload,
     targets: study.targets,
@@ -733,8 +1035,11 @@ export function summariseStudy(study: Study) {
       label: c.label,
       pattern: c.pattern,
       origin: c.origin,
+      role: c.role,
+      basedOnCandidateId: c.basedOnCandidateId,
       revision: c.revision,
       intent: c.intent,
+      evidenceCount: c.evidence.length,
       nodeCount: c.design.nodes.length,
       hasWorkflow: c.design.workflow !== null,
       isPromoted: study.promotedCandidateId === c.id,

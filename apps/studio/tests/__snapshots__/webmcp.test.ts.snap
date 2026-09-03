@@ -2,6 +2,285 @@
 
 exports[`input schemas come from the validators > matches a snapshot, so widening a validator without regenerating fails a test 1`] = `
 {
+  "studio_apply_architecture_patch": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "expectedRevision": {
+        "minimum": 0,
+        "type": "integer",
+      },
+      "operations": {
+        "description": "Atomic graph changes, applied in order and committed only if the final design validates.",
+        "items": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "node": {},
+                "op": {
+                  "const": "add-node",
+                },
+              },
+              "required": [
+                "op",
+                "node",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "nodeId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "op": {
+                  "const": "update-node",
+                },
+                "patch": {
+                  "additionalProperties": {},
+                  "description": "Shallow node field patch. Cannot contain id or kind.",
+                  "type": "object",
+                },
+              },
+              "required": [
+                "op",
+                "nodeId",
+                "patch",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "nodeId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "op": {
+                  "const": "remove-node",
+                },
+              },
+              "required": [
+                "op",
+                "nodeId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "edge": {},
+                "op": {
+                  "const": "add-edge",
+                },
+              },
+              "required": [
+                "op",
+                "edge",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "edgeId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "op": {
+                  "const": "update-edge",
+                },
+                "patch": {
+                  "additionalProperties": {},
+                  "description": "Shallow link field patch. Cannot contain id.",
+                  "type": "object",
+                },
+              },
+              "required": [
+                "op",
+                "edgeId",
+                "patch",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "edgeId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "op": {
+                  "const": "remove-edge",
+                },
+              },
+              "required": [
+                "op",
+                "edgeId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "set-workflow",
+                },
+                "workflow": {},
+              },
+              "required": [
+                "op",
+                "workflow",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "maxLength": 160,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "op": {
+                  "const": "set-design-name",
+                },
+              },
+              "required": [
+                "op",
+                "name",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+        "maxItems": 128,
+        "minItems": 1,
+        "type": "array",
+      },
+    },
+    "required": [
+      "candidateId",
+      "expectedRevision",
+      "operations",
+    ],
+    "type": "object",
+  },
+  "studio_attach_code_evidence": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "evidence": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "claim": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string",
+            },
+            "confidence": {
+              "enum": [
+                "observed",
+                "inferred",
+                "assumed",
+              ],
+              "type": "string",
+            },
+            "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "lineEnd": {
+              "default": null,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null",
+              ],
+            },
+            "lineStart": {
+              "default": null,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null",
+              ],
+            },
+            "path": {
+              "default": "",
+              "maxLength": 1024,
+              "type": "string",
+            },
+            "source": {
+              "enum": [
+                "code",
+                "config",
+                "runtime",
+                "documentation",
+                "user",
+              ],
+              "type": "string",
+            },
+            "symbol": {
+              "default": "",
+              "maxLength": 512,
+              "type": "string",
+            },
+            "targetId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "targetKind": {
+              "enum": [
+                "node",
+                "edge",
+              ],
+              "type": "string",
+            },
+          },
+          "required": [
+            "id",
+            "targetKind",
+            "targetId",
+            "confidence",
+            "source",
+            "claim",
+          ],
+          "type": "object",
+        },
+        "maxItems": 256,
+        "minItems": 1,
+        "type": "array",
+      },
+      "expectedRevision": {
+        "minimum": 0,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "candidateId",
+      "expectedRevision",
+      "evidence",
+    ],
+    "type": "object",
+  },
   "studio_compare_candidates": {
     "additionalProperties": false,
     "properties": {
@@ -63,6 +342,17 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     ],
     "type": "object",
   },
+  "studio_get_architecture": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
   "studio_get_candidate": {
     "additionalProperties": false,
     "properties": {
@@ -101,6 +391,162 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
   "studio_get_study": {
     "additionalProperties": false,
     "properties": {},
+    "type": "object",
+  },
+  "studio_import_architecture": {
+    "additionalProperties": false,
+    "properties": {
+      "design": {
+        "description": "Complete design document for the architecture observed at this repository revision.",
+      },
+      "evidence": {
+        "default": [],
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "claim": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string",
+            },
+            "confidence": {
+              "enum": [
+                "observed",
+                "inferred",
+                "assumed",
+              ],
+              "type": "string",
+            },
+            "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "lineEnd": {
+              "default": null,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null",
+              ],
+            },
+            "lineStart": {
+              "default": null,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null",
+              ],
+            },
+            "path": {
+              "default": "",
+              "maxLength": 1024,
+              "type": "string",
+            },
+            "source": {
+              "enum": [
+                "code",
+                "config",
+                "runtime",
+                "documentation",
+                "user",
+              ],
+              "type": "string",
+            },
+            "symbol": {
+              "default": "",
+              "maxLength": 512,
+              "type": "string",
+            },
+            "targetId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "targetKind": {
+              "enum": [
+                "node",
+                "edge",
+              ],
+              "type": "string",
+            },
+          },
+          "required": [
+            "id",
+            "targetKind",
+            "targetId",
+            "confidence",
+            "source",
+            "claim",
+          ],
+          "type": "object",
+        },
+        "maxItems": 4096,
+        "type": "array",
+      },
+      "intent": {
+        "default": "As-is architecture reconstructed from repository evidence.",
+        "maxLength": 2000,
+        "type": "string",
+      },
+      "label": {
+        "default": "As-is architecture",
+        "maxLength": 120,
+        "minLength": 1,
+        "type": "string",
+      },
+      "repository": {
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "default": "",
+            "maxLength": 256,
+            "type": "string",
+          },
+          "dirty": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null",
+            ],
+          },
+          "name": {
+            "description": "Repository or workspace display name.",
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string",
+          },
+          "revision": {
+            "default": "",
+            "maxLength": 256,
+            "type": "string",
+          },
+          "rootHint": {
+            "default": "",
+            "maxLength": 1024,
+            "type": "string",
+          },
+          "scope": {
+            "default": [],
+            "items": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string",
+            },
+            "maxItems": 128,
+            "type": "array",
+          },
+        },
+        "required": [
+          "name",
+        ],
+        "type": "object",
+      },
+    },
+    "required": [
+      "repository",
+      "design",
+    ],
     "type": "object",
   },
   "studio_list_studies": {
