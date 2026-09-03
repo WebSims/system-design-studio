@@ -25,6 +25,20 @@ import {
  * editor shows the same rule as raw declarative JSON. Two projections of one `Invariant`, so
  * switching mid-edit is lossless: the guided form is a constructor, not a second representation.
  */
+/**
+ * Whether the agent just changed something under `prefix` of the study contract, so the section
+ * that shows it can flash. `correctness.invariants` lights the rules; `correctness.faults` and
+ * `correctness.bounds` light what can go wrong.
+ */
+const useStudyTouch = (...prefixes: string[]) =>
+  useStudyStore(
+    (s) =>
+      s.agentAttention?.scope === "study" &&
+      s.agentAttention.changedPaths.some((path) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`)))
+  )
+
+const sectionClass = (touched: boolean) => `section ${touched ? "agent-touched" : ""}`
+
 export function BehaviourRail() {
   const study = useStudyStore((s) => s.study)
   const active = useStudyStore((s) => s.activeCandidate())
@@ -175,9 +189,10 @@ function InvariantEditor({ study }: { study: Study }) {
   }
 
   const built = buildInvariant(draft)
+  const touched = useStudyTouch("correctness.invariants")
 
   return (
-    <section className="section">
+    <section className={sectionClass(touched)}>
       <header className="section-head">
         <h2>rules</h2>
         <div className="tabs tabs-small">
@@ -336,9 +351,10 @@ function BoundsEditor({ study }: { study: Study }) {
 
   const set = (patch: Partial<typeof b>) =>
     updateContract({ correctness: { ...study.correctness, bounds: { ...b, ...patch } } })
+  const touched = useStudyTouch("correctness.faults", "correctness.bounds")
 
   return (
-    <section className="section">
+    <section className={sectionClass(touched)}>
       <header className="section-head">
         <h2>what can go wrong</h2>
       </header>

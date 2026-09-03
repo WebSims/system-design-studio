@@ -7,7 +7,9 @@ import {
   ReactFlow,
   ReactFlowProvider,
   applyNodeChanges,
+  getViewportForBounds,
   useReactFlow,
+  useStore,
   type Edge,
   type Node,
   type NodeChange,
@@ -22,6 +24,7 @@ import {
   type Design,
 } from "@sds/schema";
 import { protocolFreeEdgeId } from "../ids";
+import { designBounds, neighbourhood } from "../agentAttention";
 import { NODE_HEIGHT, NODE_WIDTH } from "./geometry";
 import { nodeTypes } from "./nodes";
 import { PacketLayer } from "./PacketLayer";
@@ -35,6 +38,15 @@ import { compareDesignTopology, type DesignDelta } from "../topology";
 import { TopologyExplorer, type TopologyExploration } from "./TopologyExplorer";
 
 const edgeTypes = { pipe: PipeEdge };
+
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 2;
+/** Fitting the camera never zooms past 1: a drawing of two boxes should not fill the screen. */
+const FIT_MAX_ZOOM = 1;
+const FIT_PADDING = 0.25;
+/** Below this, fitting the whole drawing makes the labels unreadable; fit the changed part instead. */
+const WHOLE_DESIGN_MIN_ZOOM = 0.45;
+const CAMERA_MS = 500;
 
 type EvidenceTone = "observed" | "inferred" | "assumed" | "uncovered";
 
@@ -81,7 +93,9 @@ function useFocusRequests(design: Design) {
   const focusRequest = useStudyStore((s) => s.focusRequest);
   const requestFocus = useStudyStore((s) => s.requestFocus);
   const select = useStudio((s) => s.select);
-  const { setCenter, getZoom } = useReactFlow();
+  const { setCenter, getZoom, setViewport } = useReactFlow();
+  const width = useStore((s) => s.width);
+  const height = useStore((s) => s.height);
 
   useEffect(() => {
     if (!focusRequest) return;
@@ -90,10 +104,30 @@ function useFocusRequests(design: Design) {
       if (!node) return;
       void setCenter(node.x + NODE_WIDTH / 2, node.y + NODE_HEIGHT / 2, {
         zoom: Math.max(getZoom(), 0.8),
-        duration: 500,
+        duration: CAMERA_MS,
       });
     };
-    if (focusRequest.kind === "node") {
+    /**
+     * Cover the whole drawing when it still reads at that size; otherwise cover the changed part
+     * and its neighbours. Bounds come from design coordinates, so a node added this very frame is
+     * already accounted for without waiting for React Flow to measure it.
+     */
+    const reveal = (nodeIds: string[], edgeIds: string[]) => {
+      if (width === 0 || height === 0) return;
+      const fit = (ids: string[]) => {
+        const bounds = designBounds(design, ids);
+        return bounds ? getViewportForBounds(bounds, width, height, MIN_ZOOM, FIT_MAX_ZOOM, FIT_PADDING) : null;
+      };
+      const whole = fit([]);
+      if (!whole) return;
+      const local = nodeIds.length || edgeIds.length ? neighbourhood(design, nodeIds, edgeIds) : [];
+      const viewport = whole.zoom >= WHOLE_DESIGN_MIN_ZOOM || local.length === 0 ? whole : (fit(local) ?? whole);
+      void setViewport(viewport, { duration: CAMERA_MS });
+    };
+    if (focusRequest.kind === "reveal") {
+      reveal(focusRequest.nodeIds, focusRequest.edgeIds);
+      select(focusRequest.select);
+    } else if (focusRequest.kind === "node") {
       select({ kind: "node", id: focusRequest.id });
       centreOn(focusRequest.id);
     } else if (focusRequest.kind === "edge") {
@@ -107,7 +141,7 @@ function useFocusRequests(design: Design) {
       centreOn(step?.targetNodeId ?? step?.homeNodeId ?? null);
     }
     requestFocus(null);
-  }, [design, focusRequest, getZoom, requestFocus, select, setCenter]);
+  }, [design, focusRequest, getZoom, height, requestFocus, select, setCenter, setViewport, width]);
 }
 
 function Canvas() {
@@ -121,6 +155,16 @@ function Canvas() {
   const lens = useStudyStore((s) => s.lens);
   const annotations = useStudyStore((s) => s.annotations);
   const activeCandidateId = study.activeCandidateId;
+  /**
+   * What the agent touched a moment ago, so it pulses. Elements only; a whole-design reveal has
+   * nothing in particular to point at and the camera move is the whole message.
+   */
+  const attention = useStudyStore((s) =>
+    s.agentAttention && s.agentAttention.candidateId === s.study.activeCandidateId ? s.agentAttention : null
+  );
+  const touchedNodeIds = useMemo(() => new Set(attention?.nodeIds ?? []), [attention]);
+  const touchedEdgeIds = useMemo(() => new Set(attention?.edgeIds ?? []), [attention]);
+  const primaryTouch = attention?.primary ?? null;
   const activeCandidate =
     study.candidates.find((candidate) => candidate.id === activeCandidateId) ?? study.candidates[0];
   const evidenceByTarget = useMemo(() => {
@@ -262,6 +306,8 @@ function Canvas() {
           exploration && n.id === explorationEnd ? "topology-end" : "",
           linkFrom === n.id ? "link-source" : "",
           diffNodeStatus.has(n.id) ? `diff-${diffNodeStatus.get(n.id)}` : "",
+          touchedNodeIds.has(n.id) ? "agent-touched" : "",
+          primaryTouch?.kind === "node" && primaryTouch.id === n.id ? "agent-primary" : "",
         ]
           .filter(Boolean)
           .join(" ") || undefined,
@@ -276,8 +322,10 @@ function Canvas() {
       highlightedNodeIds,
       linkFrom,
       notesByTarget,
+      primaryTouch,
       selection,
       study.repository,
+      touchedNodeIds,
       uncalibratedTargets,
     ]
   );
@@ -294,6 +342,8 @@ function Canvas() {
           [
             exploration ? (highlightedEdgeIds.has(e.id) ? "topology-match" : "topology-muted") : "",
             diffEdgeStatus.has(e.id) ? `diff-${diffEdgeStatus.get(e.id)}` : "",
+            touchedEdgeIds.has(e.id) ? "agent-touched" : "",
+            primaryTouch?.kind === "edge" && primaryTouch.id === e.id ? "agent-primary" : "",
           ]
             .filter(Boolean)
             .join(" ") || undefined,
@@ -315,8 +365,10 @@ function Canvas() {
       evidenceByTarget,
       exploration,
       highlightedEdgeIds,
+      primaryTouch,
       selection,
       study.repository,
+      touchedEdgeIds,
       uncalibratedTargets,
     ]
   );
@@ -414,9 +466,9 @@ function Canvas() {
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
         fitView
-        fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
-        minZoom={0.2}
-        maxZoom={2}
+        fitViewOptions={{ padding: FIT_PADDING, maxZoom: FIT_MAX_ZOOM }}
+        minZoom={MIN_ZOOM}
+        maxZoom={MAX_ZOOM}
         proOptions={{ hideAttribution: false }}
         defaultEdgeOptions={{ type: "pipe" }}
       >

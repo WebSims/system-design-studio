@@ -112,7 +112,32 @@ export interface Annotation {
 export type FocusRequest =
   | { kind: "node"; id: string }
   | { kind: "edge"; id: string }
-  | { kind: "step"; index: number };
+  | { kind: "step"; index: number }
+  /**
+   * Fit the camera around a set of elements (every node when `nodeIds` is empty), then select
+   * `select`. What a mutating agent call asks for, so the person sees what just changed.
+   */
+  | { kind: "reveal"; nodeIds: string[]; edgeIds: string[]; select: { kind: "node" | "edge"; id: string } | null };
+
+/**
+ * What the agent just touched, for the two-and-a-half seconds it takes a person to notice.
+ *
+ * Session state, and short-lived on purpose: it drives a pulse on the canvas, a strip in the
+ * inspector naming the fields that were filled, and a flash on the rail whose section changed.
+ * `scope` says which of those applies; `changedPaths` are dotted leaf paths (or `new` for a
+ * freshly added element).
+ */
+export interface AgentAttention {
+  at: number;
+  candidateId: string | null;
+  scope: "element" | "design" | "study";
+  nodeIds: string[];
+  edgeIds: string[];
+  primary: { kind: "node" | "edge"; id: string } | null;
+  changedPaths: string[];
+}
+
+export const AGENT_ATTENTION_MS = 2500;
 
 export interface StudioState {
   study: Study;
@@ -123,6 +148,9 @@ export interface StudioState {
   agentOpen: boolean;
   annotations: Annotation[];
   focusRequest: FocusRequest | null;
+  agentAttention: AgentAttention | null;
+  /** Agent tool calls in flight right now. Zero means idle. */
+  agentBusy: number;
   /**
    * Version the canvas is being diffed against, or null for no diff.
    *
@@ -163,6 +191,9 @@ export interface StudioState {
   addAnnotation(annotation: Omit<Annotation, "id" | "at">): Annotation;
   dismissAnnotation(id: string): void;
   requestFocus(request: StudioState["focusRequest"]): void;
+  /** Mark what the agent just touched; clears itself after `AGENT_ATTENTION_MS`. */
+  setAgentAttention(attention: Omit<AgentAttention, "at">): void;
+  setAgentBusy(delta: 1 | -1): void;
   setDiffBase(candidateId: string | null): void;
   /**
    * Release the approval so a new source snapshot can become the current system.
@@ -299,6 +330,8 @@ function mergeEvaluation(
  */
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingStudy: Study | null = null;
+/** One timer for the attention marker: a newer touch restarts the clock rather than racing it. */
+let attentionTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useStudyStore = create<StudioState>((set, get) => {
   const write = (study: Study) =>
@@ -359,6 +392,8 @@ export const useStudyStore = create<StudioState>((set, get) => {
     agentOpen: false,
     annotations: [],
     focusRequest: null,
+    agentAttention: null,
+    agentBusy: 0,
     diffBaseId: null,
     verifyAgainstId: null,
     ...derive(initial),
@@ -384,6 +419,15 @@ export const useStudyStore = create<StudioState>((set, get) => {
     dismissAnnotation: (id) =>
       set((s) => ({ annotations: s.annotations.filter((note) => note.id !== id) })),
     requestFocus: (focusRequest) => set({ focusRequest }),
+    setAgentAttention: (attention) => {
+      if (attentionTimer) clearTimeout(attentionTimer);
+      set({ agentAttention: { ...attention, at: Date.now() } });
+      attentionTimer = setTimeout(() => {
+        attentionTimer = null;
+        set({ agentAttention: null });
+      }, AGENT_ATTENTION_MS);
+    },
+    setAgentBusy: (delta) => set((s) => ({ agentBusy: Math.max(0, s.agentBusy + delta) })),
     setDiffBase: (diffBaseId) => set({ diffBaseId }),
     releaseApprovalForReimport: () => {
       const study = get().study;
@@ -409,7 +453,15 @@ export const useStudyStore = create<StudioState>((set, get) => {
       commit(study, true);
       // Annotations narrate one document; carrying them into another would pin notes to elements
       // that happen to share an id.
-      set({ portfolio: null, reviewOpen: false, annotations: [], focusRequest: null, diffBaseId: null, verifyAgainstId: null });
+      set({
+        portfolio: null,
+        reviewOpen: false,
+        annotations: [],
+        focusRequest: null,
+        agentAttention: null,
+        diffBaseId: null,
+        verifyAgainstId: null,
+      });
       void get().refreshPortfolio();
     },
 

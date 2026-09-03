@@ -59,6 +59,13 @@ structured architecture evidence and results into the same live page a person re
 | `studio_annotate` | add a temporary agent note to a component or link |
 | `studio_focus` | move the canvas and inspector to a component or link |
 
+Every mutating call already behaves like a hand on the canvas: the studio switches to the
+candidate it touched, pans and zooms to cover the drawing (or the changed part when the
+whole no longer reads), selects the component or link the call worked on, opens it in the
+inspector with a strip naming the fields that were set, and pulses it for a moment. While
+a call is in flight the Agent button in the top bar says so. `studio_focus` is therefore
+for pointing at something the agent did *not* just change.
+
 ## The repository loop
 
 1. Codex reads the real workspace and records commit, branch, dirty state, and scope.

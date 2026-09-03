@@ -4121,6 +4121,83 @@ summary:focus-visible {
 .node.ghost .node-kind { color: var(--fg-3); }
 .node.ghost .node-service { color: var(--fg-3); font-style: italic; }
 
+/*
+ * The agent's hand on the drawing.
+ *
+ * While an agent call is settling, what it touched pulses the way a thing a person just clicked
+ * would draw the eye: a ring that swells twice and fades, stronger on the one element being
+ * worked on than on its neighbours. The panel that shows that element's values gets a sweep of
+ * the same accent, and a strip names the fields that were filled. All of it is gone in a few
+ * seconds; the selection ring stays, as it would after a click.
+ */
+@keyframes agent-ring {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 75%, transparent), 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  45% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent), 0 0 22px color-mix(in srgb, var(--accent) 45%, transparent); }
+  100% { box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent) 0%, transparent), 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+@keyframes agent-stroke {
+  0%, 100% { stroke-opacity: 1; stroke-width: 2.5; }
+  50% { stroke-opacity: 0.55; stroke-width: 5.5; }
+}
+@keyframes agent-sweep {
+  from { box-shadow: inset 4px 0 0 var(--accent), inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  35% { box-shadow: inset 4px 0 0 var(--accent), inset 60px 0 60px -40px color-mix(in srgb, var(--accent) 24%, transparent); }
+  to { box-shadow: inset 4px 0 0 color-mix(in srgb, var(--accent) 0%, transparent), inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+/* `node-enter` is kept in the list so a node that is both new and touched still settles in. */
+.react-flow__node.agent-touched .node {
+  animation: node-enter 260ms cubic-bezier(0.2, 0.8, 0.2, 1), agent-ring 1.2s ease-out 2;
+}
+.react-flow__node.agent-primary .node { border-color: var(--accent); }
+.react-flow__edge.agent-touched .pipe-core {
+  stroke: var(--accent);
+  animation: agent-stroke 1.2s ease-in-out 2;
+}
+.react-flow__edge.agent-primary .pipe-core { stroke-width: 3.5; }
+
+.rail.right.agent-touched { animation: agent-sweep 2.4s ease-out 1; }
+.doc-rail .section.agent-touched {
+  border-radius: 6px;
+  animation: agent-sweep 2.4s ease-out 1;
+}
+
+.agent-fill-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 8px 0 2px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
+  animation: node-enter 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.agent-fill-label {
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.status-btn.busy { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
+.status-dot.busy {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  animation: chip-pulse 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node.agent-touched .node,
+  .react-flow__edge.agent-touched .pipe-core,
+  .rail.right.agent-touched,
+  .doc-rail .section.agent-touched,
+  .status-dot.busy { animation: none; }
+  .react-flow__node.agent-touched .node { box-shadow: 0 0 0 2px var(--accent); }
+}
+
 /* After the hand-off: verify the change landed. */
 .handoff-verify {
   margin-top: 12px;

@@ -25,7 +25,12 @@ studio_create_study → studio_get_catalog → studio_update_study
 ```
 
 The canvas appears at `studio_create_candidate`, and from then on every accepted patch is
-drawn as it lands, so you watch the architecture form. Coordinates are part of the design:
+drawn as it lands, so you watch the architecture form: the camera pans and zooms to keep
+the whole drawing in view (or the changed part, once the whole is too small to read), the
+component or link the patch worked on is selected and pulses, and the inspector opens on it
+with a strip naming the fields the agent just set. Changes to the study's rules and faults
+flash the matching section of the left rail. The Agent button in the top bar reads
+"Agent working" while a call is in flight. Coordinates are part of the design:
 dependency depth runs left-to-right, parallel or asynchronous branches use separate rows,
 and shared dependencies sit between their callers. The agent gets there one of two ways.
 It can read `studio_get_catalog.layoutGuide` and supply `x` and `y` for every node itself,

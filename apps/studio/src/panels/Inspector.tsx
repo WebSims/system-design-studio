@@ -42,6 +42,42 @@ function CitationNote({ citation }: { citation: Citation | undefined }) {
 }
 
 /**
+ * The agent's touch on the selected element, while it is fresh.
+ *
+ * The panel already shows the values; what a person watching cannot tell is which of them the
+ * agent just set. This names them, the way a colleague at the keyboard would say "concurrency
+ * and fanout" while typing. Gone after a couple of seconds, like the pulse on the canvas.
+ */
+const fieldName = (path: string): string => path.split(".").pop() ?? path;
+
+function useAgentTouch(target: { kind: "node" | "edge"; id: string } | null) {
+  return useStudyStore((s) =>
+    target && s.agentAttention?.primary?.kind === target.kind && s.agentAttention.primary.id === target.id
+      ? s.agentAttention
+      : null
+  );
+}
+
+function AgentTouchStrip({ kind, id }: { kind: "node" | "edge"; id: string }) {
+  const touch = useAgentTouch({ kind, id });
+  if (!touch) return null;
+  const isNew = touch.changedPaths.includes("new");
+  const paths = touch.changedPaths.filter((path) => path !== "new");
+  return (
+    <div className="agent-fill-strip" role="status" aria-live="polite">
+      <span className="agent-fill-label">{isNew ? `agent added this ${kind === "node" ? "component" : "link"}` : "agent set"}</span>
+      {!isNew && paths.length === 0 && <span className="chip on">{kind === "node" ? "component" : "link"}</span>}
+      {!isNew &&
+        paths.map((path) => (
+          <span key={path} className="chip on" title={path}>
+            {fieldName(path)}
+          </span>
+        ))}
+    </div>
+  );
+}
+
+/**
  * The panel's masthead: what is selected, its name, and the one destructive action.
  *
  * The kind glyph is the same one the palette and the canvas use, so the eye does not have to
@@ -295,6 +331,8 @@ export function Inspector() {
   const preview = useStudio((s) => s.preview);
   const edit = useStudio((s) => s.edit);
   const lens = useStudyStore((s) => s.lens);
+  const agentTouch = useAgentTouch(selection);
+  const railClass = `rail right ${agentTouch ? "agent-touched" : ""}`;
 
   if (!selection) {
     return (
@@ -326,7 +364,7 @@ export function Inspector() {
     const labelOf = (id: string) => design.nodes.find((n) => n.id === id)?.label ?? id;
 
     return (
-      <aside className="rail right">
+      <aside className={railClass}>
         <PanelHead
           icon={
             <span className="kind-tile kind-link" aria-hidden="true">
@@ -342,6 +380,7 @@ export function Inspector() {
             })
           }
         />
+        <AgentTouchStrip kind="edge" id={edge.id} />
         <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
         <PerformanceCalibrationNote targetKind="edge" targetId={edge.id} />
 
@@ -474,7 +513,7 @@ export function Inspector() {
     ) : null;
 
   return (
-    <aside className="rail right">
+    <aside className={railClass}>
       <PanelHead
         icon={
           <span className={`kind-tile kind-${node.kind}`} aria-hidden="true">
@@ -492,6 +531,7 @@ export function Inspector() {
           })
         }
       />
+      <AgentTouchStrip kind="node" id={node.id} />
       <ArchitectureEvidence targetKind="node" targetId={node.id} />
       <PerformanceCalibrationNote targetKind="node" targetId={node.id} />
 

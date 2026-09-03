@@ -426,6 +426,11 @@ export interface ToolHost {
   focus(request: FocusInput): void;
   /** Record every call in the local activity log. */
   log(entry: ActivityEntry): void;
+  /**
+   * A call has started (`true`) or settled (`false`). Lets the interface show that the agent is
+   * working while it is, rather than only after, when the log entry lands.
+   */
+  busy?(tool: string, inFlight: boolean): void;
 }
 
 export interface AnnotationInput {
@@ -536,6 +541,7 @@ function define<S extends z.ZodTypeAny>(spec: ToolSpec<S>, host: ToolHost): Tool
         host.log({ tool: spec.name, at: Date.now(), ok: false, summary: `refused: ${detail}` });
         return { content: { error: "invalid input", detail }, isError: true };
       }
+      host.busy?.(spec.name, true);
       try {
         const content = await spec.run(parsed.data, ctx);
         return { content };
@@ -543,6 +549,8 @@ function define<S extends z.ZodTypeAny>(spec: ToolSpec<S>, host: ToolHost): Tool
         const message = err instanceof Error ? err.message : String(err);
         host.log({ tool: spec.name, at: Date.now(), ok: false, summary: message });
         return { content: { error: message }, isError: true };
+      } finally {
+        host.busy?.(spec.name, false);
       }
     },
   };

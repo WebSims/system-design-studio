@@ -233,6 +233,7 @@ export const Topbar = () => {
   const agentOpen = useStudyStore((s) => s.agentOpen)
   const setAgentOpen = useStudyStore((s) => s.setAgentOpen)
   const noteCount = useStudyStore((s) => s.annotations.length)
+  const agentBusy = useStudyStore((s) => s.agentBusy > 0)
   const fileRef = useRef<HTMLInputElement>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const hasCandidates = study.candidates.length > 0
@@ -295,9 +296,10 @@ export const Topbar = () => {
             </span>
           )}
           <button
-            className={`btn tool-btn status-btn ${agentOpen ? "active" : ""}`}
-            title={webmcp.detail}
+            className={`btn tool-btn status-btn ${agentOpen ? "active" : ""} ${agentBusy ? "busy" : ""}`}
+            title={agentBusy ? "The agent is working on this project right now." : webmcp.detail}
             aria-pressed={agentOpen}
+            aria-busy={agentBusy}
             onClick={(e) => {
               e.stopPropagation()
               setAgentOpen(!agentOpen)
@@ -305,9 +307,9 @@ export const Topbar = () => {
           >
             <span className="status-glyph">
               <BotIcon size={15} />
-              <span className={`status-dot ${webmcpReady ? "ready" : ""}`} />
+              <span className={`status-dot ${webmcpReady ? "ready" : ""} ${agentBusy ? "busy" : ""}`} />
             </span>
-            Agent
+            {agentBusy ? "Agent working" : "Agent"}
             {noteCount > 0 && <span className="count-pill tnum">{noteCount}</span>}
           </button>
           {hasCandidates && (

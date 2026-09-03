@@ -16,6 +16,55 @@ import { buildCatalog } from "./webmcp/catalog";
 import type { ToolHost } from "./webmcp/tools";
 import { cancelWorker, portfolioInWorker } from "./engine/client";
 import { useRaceModel } from "./raceModel";
+import { changedPaths, touchedByOperations, type ElementRef } from "./agentAttention";
+import type { Candidate, Design } from "@sds/schema";
+
+/**
+ * After an agent mutation, do what a person's hand would have done: look at the candidate it
+ * touched, mark what changed, and bring it into view with the worked-on element selected.
+ *
+ * The switch to the candidate is the same rule `studio_focus` applies: work the person cannot see
+ * is work that did not happen, as far as they can tell.
+ */
+const revealAgentWork = (input: {
+  candidateId: string;
+  scope: "element" | "design";
+  nodeIds: string[];
+  edgeIds: string[];
+  primary: ElementRef | null;
+  changedPaths: string[];
+}) => {
+  const store = useStudyStore.getState();
+  if (input.candidateId !== store.study.activeCandidateId) store.selectCandidate(input.candidateId);
+  store.setAgentAttention({
+    candidateId: input.candidateId,
+    scope: input.scope,
+    nodeIds: input.nodeIds,
+    edgeIds: input.edgeIds,
+    primary: input.primary,
+    changedPaths: input.changedPaths,
+  });
+  store.requestFocus({ kind: "reveal", nodeIds: input.nodeIds, edgeIds: input.edgeIds, select: input.primary });
+};
+
+/** A whole candidate arrived or was replaced: show all of it, nothing selected. */
+const revealWholeCandidate = (candidate: Candidate) =>
+  revealAgentWork({
+    candidateId: candidate.id,
+    scope: "design",
+    nodeIds: [],
+    edgeIds: [],
+    primary: null,
+    changedPaths: [],
+  });
+
+const elementIn = (design: Design | undefined, ref: ElementRef | null): unknown => {
+  if (!design || !ref) return undefined;
+  return ref.kind === "node" ? design.nodes.find((n) => n.id === ref.id) : design.edges.find((e) => e.id === ref.id);
+};
+
+const designOf = (candidateId: string): Design | undefined =>
+  useStudyStore.getState().study.candidates.find((c) => c.id === candidateId)?.design;
 
 /**
  * The bottom dock: the lens's results, in the DevTools position.
@@ -120,9 +169,24 @@ function useWebmcp() {
         // the executable half throws once results exist. Applying the contract FIRST means a
         // refusal cannot leave the name changed and the yardstick not.
         if (Object.keys(contract).length > 0) {
+          const before = store.study;
           store.updateContract(contract);
           const err = useStudyStore.getState().error;
           if (err) throw new Error(err);
+          // The yardstick lives in the left rail, not on the canvas: name the sections that moved
+          // so they can flash, and leave the camera alone.
+          useStudyStore.getState().setAgentAttention({
+            candidateId: null,
+            scope: "study",
+            nodeIds: [],
+            edgeIds: [],
+            primary: null,
+            changedPaths: Object.keys(contract).flatMap((key) =>
+              changedPaths(before[key as keyof typeof before], useStudyStore.getState().study[key as keyof typeof before]).map(
+                (path) => (path === "new" ? key : `${key}.${path}`)
+              )
+            ),
+          });
         }
         if (name !== undefined || problem !== undefined) {
           useStudyStore.getState().updateStudy((study) => ({
@@ -148,23 +212,62 @@ function useWebmcp() {
         if (err) throw new Error(err);
         return useStudyStore.getState().study;
       },
-      importArchitecture: async (input) =>
-        useStudyStore.getState().importArchitecture({ ...input, origin: "agent" }),
-      createCandidate: async (input) =>
-        useStudyStore.getState().addCandidate({
+      importArchitecture: async (input) => {
+        const candidate = useStudyStore.getState().importArchitecture({ ...input, origin: "agent" });
+        revealWholeCandidate(candidate);
+        return candidate;
+      },
+      createCandidate: async (input) => {
+        const candidate = useStudyStore.getState().addCandidate({
           label: input.label,
           intent: input.intent,
           ...(input.design !== undefined ? { design: input.design } : {}),
           ...(input.copyFrom ? { copyFrom: input.copyFrom } : {}),
           // Set here, not accepted as a parameter. An agent cannot mark its own work as a human's.
           origin: "agent",
-        }),
-      replaceCandidateDraft: async (input) =>
-        useStudyStore.getState().replaceDraft({ ...input, by: "agent" }),
-      applyArchitecturePatch: async (input) =>
-        useStudyStore.getState().patchArchitecture({ ...input, by: "agent" }),
-      attachArchitectureEvidence: async (input) =>
-        useStudyStore.getState().attachEvidence({ ...input, by: "agent" }),
+        });
+        revealWholeCandidate(candidate);
+        return candidate;
+      },
+      replaceCandidateDraft: async (input) => {
+        const candidate = useStudyStore.getState().replaceDraft({ ...input, by: "agent" });
+        revealWholeCandidate(candidate);
+        return candidate;
+      },
+      applyArchitecturePatch: async (input) => {
+        const before = designOf(input.candidateId);
+        const result = useStudyStore.getState().patchArchitecture({ ...input, by: "agent" });
+        if (before) {
+          const touched = touchedByOperations(input.operations, before, result.candidate.design);
+          revealAgentWork({
+            candidateId: result.candidate.id,
+            scope: touched.primary ? "element" : "design",
+            // A reshaped drawing is shown whole; a local change is shown around itself.
+            nodeIds: touched.wholeDesign ? [] : touched.nodeIds,
+            edgeIds: touched.wholeDesign ? [] : touched.edgeIds,
+            primary: touched.primary,
+            changedPaths: changedPaths(
+              elementIn(before, touched.primary),
+              elementIn(result.candidate.design, touched.primary)
+            ),
+          });
+        }
+        return result;
+      },
+      attachArchitectureEvidence: async (input) => {
+        const candidate = useStudyStore.getState().attachEvidence({ ...input, by: "agent" });
+        const last = input.evidence[input.evidence.length - 1];
+        const primary: ElementRef | null = last ? { kind: last.targetKind, id: last.targetId } : null;
+        revealAgentWork({
+          candidateId: candidate.id,
+          scope: primary ? "element" : "design",
+          nodeIds: input.evidence.filter((e) => e.targetKind === "node").map((e) => e.targetId),
+          edgeIds: input.evidence.filter((e) => e.targetKind === "edge").map((e) => e.targetId),
+          primary,
+          changedPaths: ["evidence"],
+        });
+        return candidate;
+      },
       runEvaluation: async (input) => {
         if (input.signal?.aborted) throw new Error("evaluation aborted before it began");
         const abort = () => cancelWorker();
@@ -213,6 +316,7 @@ function useWebmcp() {
         store.requestFocus(request.target);
       },
       log: (entry) => useStudyStore.getState().logActivity(entry),
+      busy: (_tool, inFlight) => useStudyStore.getState().setAgentBusy(inFlight ? 1 : -1),
     };
 
     const registration = registerWebmcpTools({ host });
