@@ -1,10 +1,12 @@
 <div align="center">
-
-<img src="docs/assets/system-design-studio-banner-v2.png" alt="System Design Studio architecture twin flowing through race detection, load measurement, comparison, and handoff" width="100%">
-
+    
 # System Design Studio
 
 **Draw a system. Watch it break. Fix it. Hand it to your agent.**
+
+<img src="docs/assets/system-design-studio-banner-v2.png" alt="System Design Studio architecture twin flowing through race detection, load measurement, comparison, and handoff" width="100%">
+
+
 
 An evidence-backed architecture workbench for finding races, measuring systems under load,
 comparing real trade-offs, and turning an approved design into an implementation-ready handoff.
