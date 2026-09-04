@@ -125,6 +125,7 @@ describe("the hard gates", () => {
     expect(d.gates.map((g) => g.gate)).toEqual([
       "schema-valid",
       "source-grounded",
+      "issues-verified",
       "correctness-exhausted",
       "no-violation",
       "performance-calibrated",

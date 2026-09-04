@@ -1,7 +1,12 @@
 import {
   activeRepositorySnapshot,
+  activeIssueBaselineRevision,
+  candidateIssueReadiness,
+  candidateIssueVerificationStatus,
   contentHash,
+  evidenceTargetKey,
   groundingReport,
+  issueStatus,
   type ArchitectureEvidence,
   type Candidate,
   type CandidateEvaluation,
@@ -25,6 +30,7 @@ export type ImplementationHandoffBlocker =
   | "source-not-grounded"
   | "evaluation-required"
   | "approval-ineligible"
+  | "issues-unverified"
   | "no-code-delta";
 
 export interface BlockedImplementationHandoff {
@@ -132,6 +138,19 @@ export interface ReadyImplementationHandoff {
     targetNodeId: string | null;
     targetEdgeId: string | null;
   }>;
+  issueChanges: Array<{
+    issueId: string;
+    title: string;
+    hypothesis: string;
+    tradeoffs: string[];
+    verificationPlan: string;
+    verificationResult: "pending" | "passed" | "failed" | "inconclusive" | "manual" | "accepted-risk";
+    architectureImpact: {
+      summary: string;
+      targets: string[];
+      changedTargets: string[];
+    };
+  }>;
   warnings: string[];
   instructions: string[];
   implementationPrompt: string;
@@ -209,6 +228,15 @@ export function buildImplementationHandoff(study: Study): ImplementationHandoff 
     return blocked(
       "source-not-grounded",
       `The as-is baseline is ${grounding.status}: ${grounding.gaps[0]?.message ?? "grounding is incomplete"}`
+    );
+  }
+  const issueReadiness = candidateIssueReadiness(study, approved);
+  if (!issueReadiness.ready) {
+    return blocked(
+      "issues-unverified",
+      issueReadiness.criticalRegressionIssueIds.length > 0
+        ? `Critical regression issues remain open: ${issueReadiness.criticalRegressionIssueIds.join(", ")}.`
+        : `Required issues need current verification or accepted risk: ${issueReadiness.pendingIssueIds.join(", ")}.`
     );
   }
 
@@ -299,6 +327,29 @@ export function buildImplementationHandoff(study: Study): ImplementationHandoff 
     unmappedTargets,
     unresolvedFindings,
   });
+  const baselineRevision = activeIssueBaselineRevision(study);
+  const issueChanges = approved.issuePlans.flatMap((plan) => {
+    const issue = study.issueRegistry.find((item) => item.id === plan.issueId);
+    if (!issue) return [];
+    const disposition = issueStatus(issue, baselineRevision);
+    const verificationResult = disposition === "accepted-risk"
+      ? "accepted-risk" as const
+      : candidateIssueVerificationStatus(study, approved, plan);
+    const targets = plan.expectedArchitectureImpact.targets.map(evidenceTargetKey);
+    return [{
+      issueId: issue.id,
+      title: issue.title,
+      hypothesis: plan.hypothesis,
+      tradeoffs: plan.tradeoffs,
+      verificationPlan: plan.verificationPlan,
+      verificationResult,
+      architectureImpact: {
+        summary: plan.expectedArchitectureImpact.summary,
+        targets,
+        changedTargets: targets.filter((target) => changedTargets.has(target)),
+      },
+    }];
+  });
   const handoff: Omit<ReadyImplementationHandoff, "implementationPrompt"> = {
     status: "ready",
     approval,
@@ -337,6 +388,7 @@ export function buildImplementationHandoff(study: Study): ImplementationHandoff 
       currentEvaluation,
     },
     unresolvedFindings,
+    issueChanges,
     warnings,
     instructions: [
       "Verify the workspace still matches the recorded repository revision and dirty-state before editing.",
@@ -360,6 +412,9 @@ export function buildImplementationPrompt(
     "Use the page's `studio_get_implementation_handoff` site tool as the authoritative approval receipt and exact design delta.",
     `Approval: ${handoff.approvedDesign.candidateId}@r${handoff.approvedDesign.revision} from ${handoff.baseline.candidateId}@r${handoff.baseline.revision}.`,
     `Repository snapshot: ${repositoryRevision}; dirty state: ${String(handoff.repository.dirty)}.`,
+    ...handoff.issueChanges.map((item) =>
+      `Issue ${item.issueId} (${item.title}) → ${item.architectureImpact.summary} → ${item.verificationResult}. Verification: ${item.verificationPlan}`
+    ),
     "Before editing, verify the workspace still matches that source state and re-read every relevant file; source paths in the handoff are hints, not authority.",
     "Implement only the approved component, link, and workflow changes. Preserve the listed product contract, invariants, SLOs, and business goals.",
     "Address or explicitly report every unresolved production finding. Add or update tests, then run the relevant checks.",

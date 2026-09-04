@@ -1,4 +1,4 @@
-import { groundingReportForCandidate, performanceCalibration } from "@sds/schema";
+import { candidateIssueReadiness, groundingReportForCandidate, performanceCalibration } from "@sds/schema";
 import type {
   BusinessGoal,
   CandidateEvaluation,
@@ -26,11 +26,12 @@ import type {
  *
  *   1. schema-valid              -- the document parses and its references resolve
  *   2. source-grounded           -- repository-derived claims have an auditable receipt
- *   3. correctness-exhausted     -- the search finished rather than running out of budget
- *   4. no-violation              -- and it found nothing
- *   5. performance-calibrated    -- repository timing and capacity inputs are measured
- *   6. slo-satisfied             -- the CONSERVATIVE end of the interval meets the SLO
- *   7. business-goals-satisfied  -- likewise for the business goals
+ *   3. issues-verified           -- every required issue passed or has explicit human disposition
+ *   4. correctness-exhausted     -- the search finished rather than running out of budget
+ *   5. no-violation              -- and it found nothing
+ *   6. performance-calibrated    -- repository timing and capacity inputs are measured
+ *   7. slo-satisfied             -- the CONSERVATIVE end of the interval meets the SLO
+ *   8. business-goals-satisfied  -- likewise for the business goals
  *
  * Gate two comes before gate three deliberately. A candidate that hit a state cap has not
  * been shown to be safe and has not been shown to be broken; it has been shown nothing. Every
@@ -85,7 +86,37 @@ export function decideEligibility(input: EligibilityInput): EligibilityDecision 
     });
   }
 
-  // ---- 3 and 4: correctness ----
+  // ---- 3: a fix is only as credible as its issue-specific verification ----
+  const issueReadiness = candidate ? candidateIssueReadiness(study, candidate) : null;
+  if (!candidate || !issueReadiness) {
+    gates.push({ gate: "issues-verified", passed: true, reason: "no issue-linked fix claim is present in this evaluation context" });
+  } else if (candidate.candidateType === "exploration" && candidate.issuePlans.length === 0) {
+    gates.push({
+      gate: "issues-verified",
+      passed: true,
+      reason: "explicit exploration candidate; it makes no repository-fix claim",
+    });
+  } else if (issueReadiness.criticalRegressionIssueIds.length > 0) {
+    gates.push({
+      gate: "issues-verified",
+      passed: false,
+      reason: `critical regression remains open: ${issueReadiness.criticalRegressionIssueIds.join(", ")}`,
+    });
+  } else if (!issueReadiness.ready) {
+    gates.push({
+      gate: "issues-verified",
+      passed: false,
+      reason: `${issueReadiness.pendingIssueIds.length} required issue ${issueReadiness.pendingIssueIds.length === 1 ? "is" : "are"} not verified: ${issueReadiness.pendingIssueIds.join(", ")}`,
+    });
+  } else {
+    gates.push({
+      gate: "issues-verified",
+      passed: true,
+      reason: `${issueReadiness.satisfied} of ${issueReadiness.required} required issues passed or have a human disposition`,
+    });
+  }
+
+  // ---- 4 and 5: correctness ----
   const c = evaluation.correctness;
   if (!c) {
     gates.push({

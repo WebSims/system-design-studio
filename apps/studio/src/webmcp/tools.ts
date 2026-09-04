@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   ArchitectureEvidenceSchema,
+  CandidateIssuePlanSchema,
   DesignSchema,
   EvidenceTargetSchema,
   IssueCategorySchema,
@@ -9,6 +10,7 @@ import {
   IssueVerificationContractSchema,
   SourceInventoryItemSchema,
   activeRepositorySnapshot,
+  candidateIssueVerificationStatus,
   contentHash,
   groundingReport,
   groundingReportForCandidate,
@@ -19,6 +21,8 @@ import {
   validateWorkflow,
   type Candidate,
   type CandidateEvaluation,
+  type CandidateIssuePlan,
+  type CandidateType,
   type ArchitectureEvidence,
   type PortfolioResult,
   type RepositorySnapshot,
@@ -149,6 +153,30 @@ const CreateCandidateInput = z
       .max(64)
       .optional()
       .describe("Version id to copy, when no design is supplied."),
+    candidateType: z
+      .enum(["exploration", "repository-fix"])
+      .default("exploration")
+      .describe("Use repository-fix only when this version explicitly addresses registered issues."),
+    issuePlans: z
+      .array(CandidateIssuePlanSchema.omit({ verification: true, required: true }))
+      .max(64)
+      .default([])
+      .describe("Hypotheses, trade-offs, verification plans and expected architecture impact for selected issues."),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.candidateType === "repository-fix" && input.issuePlans.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["issuePlans"],
+        message: "a repository-fix candidate must reference at least one issue",
+      });
+    }
+  });
+
+const ProposeAlternativesInput = z
+  .object({
+    alternatives: z.array(CreateCandidateInput).min(2).max(8),
   })
   .strict();
 
@@ -491,9 +519,20 @@ export interface ToolHost {
   createCandidate(input: {
     label: string;
     intent: string;
-    design: unknown;
+    design?: unknown;
     copyFrom?: string;
+    candidateType?: CandidateType;
+    issuePlans?: CandidateIssuePlan[];
   }): Promise<Candidate>;
+  /** Create two or more isolated alternatives in one committed mutation. */
+  createCandidateAlternatives(input: Array<{
+    label: string;
+    intent: string;
+    design?: unknown;
+    copyFrom?: string;
+    candidateType: CandidateType;
+    issuePlans: CandidateIssuePlan[];
+  }>): Promise<Candidate[]>;
   /** Replace a candidate's design, refusing if the revision has moved on. */
   replaceCandidateDraft(input: {
     candidateId: string;
@@ -1321,8 +1360,10 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           const candidate = await host.createCandidate({
             label: args.label,
             intent: args.intent,
-            design: args.design,
+            ...(args.design !== undefined ? { design: args.design } : {}),
             ...(args.copyFrom ? { copyFrom: args.copyFrom } : {}),
+            candidateType: args.candidateType,
+            issuePlans: args.issuePlans.map((plan) => ({ ...plan, required: true, verification: null })),
           });
           host.log({
             tool: "studio_create_candidate",
@@ -1340,6 +1381,45 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             note:
               "This version is isolated and marked as agent-authored in the interface. Promoting it is a human-only action.",
             ...(isDrawing(host.getStudy(), candidate) ? drawingNext(host.getStudy()) : {}),
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_propose_alternatives",
+        description:
+          "Create two to eight isolated alternatives together. Each repository-fix alternative must name registered " +
+          "issues and preserve its own hypothesis, trade-offs, verification plan and expected architecture impact. " +
+          "The alternatives are proposals only: this tool cannot verify issues or approve a version.",
+        input: ProposeAlternativesInput,
+        annotations: { readOnlyHint: false },
+        async run({ alternatives }) {
+          const candidates = await host.createCandidateAlternatives(alternatives.map((alternative) => ({
+            label: alternative.label,
+            intent: alternative.intent,
+            ...(alternative.design !== undefined ? { design: alternative.design } : {}),
+            ...(alternative.copyFrom ? { copyFrom: alternative.copyFrom } : {}),
+            candidateType: alternative.candidateType,
+            issuePlans: alternative.issuePlans.map((plan) => ({ ...plan, required: true, verification: null })),
+          })));
+          host.log({
+            tool: "studio_propose_alternatives",
+            at: Date.now(),
+            ok: true,
+            summary: `created ${candidates.length} issue-linked alternatives`,
+          });
+          return {
+            candidates: candidates.map((candidate) => ({
+              candidateId: candidate.id,
+              revision: candidate.revision,
+              candidateType: candidate.candidateType,
+              issueIds: candidate.issuePlans.map((plan) => plan.issueId),
+              designHash: contentHash(candidate.design),
+            })),
+            note: "Verification and approval remain check/human-only actions.",
           };
         },
       },
@@ -1536,7 +1616,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         description:
           "Compare versions. Returns each eligibility decision with the reason every gate opened or did not, and " +
           "the Pareto frontier among the ELIGIBLE ones. Eligible means the correctness search ran to exhaustion " +
-          "without a violation, repository performance inputs are calibrated, AND the conservative end of the performance interval meets every SLO and goal. " +
+          "without a violation, every required issue is verified or has a human disposition, no critical regression is open, " +
+          "repository performance inputs are calibrated, AND the conservative end of the performance interval meets every SLO and goal. " +
           "The frontier is Pareto-optimal among the versions tested: not globally best, and not ranked. " +
           "Differences within the measured intervals are ties, not wins.",
         input: CompareInput,
@@ -1560,7 +1641,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_get_implementation_handoff",
         description:
           "Read the exact revision-pinned architecture change a person approved for implementation: repository source state, " +
-          "before/after component and workflow values, source evidence, acceptance criteria, and unresolved production findings. " +
+          "before/after component and workflow values, issue-to-change-to-verification mappings, source evidence, acceptance criteria, " +
+          "and unresolved production findings. A new repository import invalidates old issue verification. " +
           "Returns a blocker until a repository-backed experiment has been approved in the interface. This tool does not approve, " +
           "edit repository files, run tests, deploy, or mark the visual model synchronized.",
         input: EmptyInput,
@@ -1725,6 +1807,8 @@ function architecturePayload(study: Study, candidate: Candidate) {
       id: candidate.id,
       label: candidate.label,
       role: candidate.role,
+      candidateType: candidate.candidateType,
+      issuePlans: candidate.issuePlans,
       origin: candidate.origin,
       basedOnCandidateId: candidate.basedOnCandidateId,
       revision: candidate.revision,
@@ -1798,6 +1882,16 @@ export function summariseStudy(study: Study) {
       pattern: c.pattern,
       origin: c.origin,
       role: c.role,
+      candidateType: c.candidateType,
+      issuePlans: c.issuePlans.map((plan) => ({
+        issueId: plan.issueId,
+        required: plan.required,
+        hypothesis: plan.hypothesis,
+        tradeoffs: plan.tradeoffs,
+        verificationPlan: plan.verificationPlan,
+        expectedArchitectureImpact: plan.expectedArchitectureImpact,
+        verificationStatus: candidateIssueVerificationStatus(study, c, plan),
+      })),
       basedOnCandidateId: c.basedOnCandidateId,
       revision: c.revision,
       intent: c.intent,

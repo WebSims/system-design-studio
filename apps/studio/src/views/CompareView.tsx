@@ -1,5 +1,11 @@
-import { useState } from "react";
-import type { EligibilityDecision, PortfolioResult } from "@sds/schema";
+import { useMemo, useState } from "react";
+import {
+  activeIssueBaselineRevision,
+  candidateIssueVerificationStatus,
+  issueStatus,
+  type EligibilityDecision,
+  type PortfolioResult,
+} from "@sds/schema";
 import { reimportPrompt } from "../codebase-prompt";
 import { buildImplementationHandoff } from "../implementation-handoff";
 import { baselineAncestor } from "../study/mutations";
@@ -75,6 +81,7 @@ export function CompareView() {
         </section>
 
         <ArchitectureDelta />
+        <IssueCandidateMatrix />
 
         {portfolio && (
           <section className="section">
@@ -175,6 +182,105 @@ export function CompareView() {
         )}
       </div>
     </div>
+  );
+}
+
+const ISSUE_RESULT_MARK = {
+  pending: "○",
+  passed: "✓",
+  failed: "×",
+  inconclusive: "?",
+  manual: "H",
+  "accepted-risk": "≈",
+} as const;
+
+function IssueCandidateMatrix() {
+  const study = useStudyStore((state) => state.study);
+  const verify = useStudyStore((state) => state.verifyCandidateIssue);
+  const candidates = useMemo(
+    () => study.candidates.filter((candidate) => candidate.issuePlans.length > 0),
+    [study.candidates]
+  );
+  const issueIds = useMemo(
+    () => [...new Set(candidates.flatMap((candidate) => candidate.issuePlans.map((plan) => plan.issueId)))],
+    [candidates]
+  );
+  const issues = useMemo(() => new Map(study.issueRegistry.map((issue) => [issue.id, issue])), [study.issueRegistry]);
+  if (candidates.length === 0 || issueIds.length === 0) return null;
+  const baselineRevision = activeIssueBaselineRevision(study);
+
+  return (
+    <section className="section candidate-issue-matrix">
+      <header className="section-head">
+        <div>
+          <h2>issue coverage</h2>
+          <p className="section-subtitle">One row per problem, one evidence-pinned result per proposed solution.</p>
+        </div>
+      </header>
+      <div className="matrix-scroll">
+        <table>
+          <caption className="sr-only">Issue by candidate verification comparison</caption>
+          <thead>
+            <tr>
+              <th scope="col">issue</th>
+              {candidates.map((candidate) => <th scope="col" key={candidate.id}>{candidate.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {issueIds.map((issueId) => {
+              const issue = issues.get(issueId);
+              if (!issue) return null;
+              const registryStatus = issueStatus(issue, baselineRevision);
+              return (
+                <tr key={issueId}>
+                  <th scope="row">
+                    <span className={`severity-label severity-${issue.severity}`}>{issue.severity}</span>
+                    {issue.title}
+                  </th>
+                  {candidates.map((candidate) => {
+                    const plan = candidate.issuePlans.find((item) => item.issueId === issueId);
+                    if (!plan) return <td key={candidate.id} className="matrix-empty">—</td>;
+                    const checked = candidateIssueVerificationStatus(study, candidate, plan);
+                    const status = registryStatus === "accepted-risk" ? "accepted-risk" : checked;
+                    return (
+                      <td key={candidate.id} className={`matrix-result result-${status}`}>
+                        <span className="result-mark" aria-hidden="true">{ISSUE_RESULT_MARK[status]}</span>
+                        <strong>{status.replace("-", " ")}</strong>
+                        <details>
+                          <summary>plan</summary>
+                          <p>{plan.hypothesis}</p>
+                          <p><b>Verify:</b> {plan.verificationPlan}</p>
+                          <p><b>Impact:</b> {plan.expectedArchitectureImpact.summary}</p>
+                          {plan.tradeoffs.length > 0 && <p><b>Trade-offs:</b> {plan.tradeoffs.join("; ")}</p>}
+                        </details>
+                        {status !== "passed" && status !== "manual" && status !== "accepted-risk" && (
+                          <button
+                            type="button"
+                            className="btn small"
+                            onClick={() => verify({
+                              candidateId: candidate.id,
+                              issueId,
+                              expectedCandidateRevision: candidate.revision,
+                              expectedIssueRevision: issue.revision,
+                              status: "manual",
+                              authority: "human",
+                              notes: "Manually verified by a person in the comparison matrix.",
+                            })}
+                          >
+                            record manual pass
+                          </button>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="matrix-legend">✓ passed · × failed · ? inconclusive · H human verified · ≈ accepted risk · ○ pending</p>
+    </section>
   );
 }
 
@@ -327,6 +433,24 @@ function ImplementationHandoffPanel() {
           <span>source paths</span>
         </div>
       </div>
+
+      {handoff.issueChanges.length > 0 && (
+        <div className="handoff-issue-map">
+          <h3>Why each change is in the handoff</h3>
+          <ul>
+            {handoff.issueChanges.map((item) => (
+              <li key={item.issueId}>
+                <span className="handoff-map-mark" aria-hidden="true">→</span>
+                <div>
+                  <strong>{item.title}</strong>
+                  <p>{item.architectureImpact.summary}</p>
+                  <small>{item.verificationResult.replace("-", " ")} · {item.verificationPlan}</small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {handoff.sourcePaths.length > 0 && (
         <div className="handoff-sources">

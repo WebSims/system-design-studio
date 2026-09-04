@@ -21,6 +21,7 @@ import { accountResources, resourceGapNote } from "./resources";
 import { decideEligibility } from "./eligibility";
 import { buildPortfolio } from "./pareto";
 import { runProductionScenarioSuite } from "./production-scenarios";
+import { applyCandidateIssueEvaluation } from "./issue-plans";
 
 /**
  * Evaluation, caching and portfolio assembly.
@@ -213,7 +214,11 @@ export function evaluateStudy(
     evaluations[key] = evaluateCandidate(study, candidate, opts);
   }
 
-  const next: Study = { ...study, evaluations, updatedAt: Date.now() };
+  let next: Study = { ...study, evaluations, updatedAt: Date.now() };
+  for (const candidate of next.candidates) {
+    const evaluation = cachedEvaluation(next, candidate);
+    if (evaluation) next = applyCandidateIssueEvaluation(next, evaluation);
+  }
   return { study: next, portfolio: assemblePortfolio(next) };
 }
 

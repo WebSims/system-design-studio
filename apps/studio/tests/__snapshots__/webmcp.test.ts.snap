@@ -486,6 +486,14 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
   "studio_create_candidate": {
     "additionalProperties": false,
     "properties": {
+      "candidateType": {
+        "default": "exploration",
+        "enum": [
+          "exploration",
+          "repository-fix",
+        ],
+        "type": "string",
+      },
       "copyFrom": {
         "maxLength": 64,
         "minLength": 1,
@@ -496,6 +504,167 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "default": "",
         "maxLength": 2000,
         "type": "string",
+      },
+      "issuePlans": {
+        "default": [],
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "expectedArchitectureImpact": {
+              "additionalProperties": false,
+              "properties": {
+                "summary": {
+                  "maxLength": 2000,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "targets": {
+                  "default": [],
+                  "items": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "node",
+                          },
+                          "nodeId": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string",
+                          },
+                        },
+                        "required": [
+                          "kind",
+                          "nodeId",
+                        ],
+                        "type": "object",
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "edgeId": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string",
+                          },
+                          "kind": {
+                            "const": "edge",
+                          },
+                        },
+                        "required": [
+                          "kind",
+                          "edgeId",
+                        ],
+                        "type": "object",
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "collectionId": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string",
+                          },
+                          "kind": {
+                            "const": "collection",
+                          },
+                        },
+                        "required": [
+                          "kind",
+                          "collectionId",
+                        ],
+                        "type": "object",
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "handlerId": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string",
+                          },
+                          "kind": {
+                            "const": "handler",
+                          },
+                        },
+                        "required": [
+                          "kind",
+                          "handlerId",
+                        ],
+                        "type": "object",
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "handlerId": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string",
+                          },
+                          "kind": {
+                            "const": "operation",
+                          },
+                          "operationId": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string",
+                          },
+                        },
+                        "required": [
+                          "kind",
+                          "handlerId",
+                          "operationId",
+                        ],
+                        "type": "object",
+                      },
+                    ],
+                  },
+                  "maxItems": 128,
+                  "type": "array",
+                },
+              },
+              "required": [
+                "summary",
+              ],
+              "type": "object",
+            },
+            "hypothesis": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string",
+            },
+            "issueId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "tradeoffs": {
+              "default": [],
+              "items": {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 32,
+              "type": "array",
+            },
+            "verificationPlan": {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "issueId",
+            "hypothesis",
+            "verificationPlan",
+            "expectedArchitectureImpact",
+          ],
+          "type": "object",
+        },
+        "maxItems": 64,
+        "type": "array",
       },
       "label": {
         "description": "Short human-readable name.",
@@ -1368,6 +1537,215 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     },
     "required": [
       "studyId",
+    ],
+    "type": "object",
+  },
+  "studio_propose_alternatives": {
+    "additionalProperties": false,
+    "properties": {
+      "alternatives": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "candidateType": {
+              "default": "exploration",
+              "enum": [
+                "exploration",
+                "repository-fix",
+              ],
+              "type": "string",
+            },
+            "copyFrom": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string",
+            },
+            "design": {},
+            "intent": {
+              "default": "",
+              "maxLength": 2000,
+              "type": "string",
+            },
+            "issuePlans": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "expectedArchitectureImpact": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "summary": {
+                        "maxLength": 2000,
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                      "targets": {
+                        "default": [],
+                        "items": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "kind": {
+                                  "const": "node",
+                                },
+                                "nodeId": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "type": "string",
+                                },
+                              },
+                              "required": [
+                                "kind",
+                                "nodeId",
+                              ],
+                              "type": "object",
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "edgeId": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "type": "string",
+                                },
+                                "kind": {
+                                  "const": "edge",
+                                },
+                              },
+                              "required": [
+                                "kind",
+                                "edgeId",
+                              ],
+                              "type": "object",
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "collectionId": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "type": "string",
+                                },
+                                "kind": {
+                                  "const": "collection",
+                                },
+                              },
+                              "required": [
+                                "kind",
+                                "collectionId",
+                              ],
+                              "type": "object",
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "handlerId": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "type": "string",
+                                },
+                                "kind": {
+                                  "const": "handler",
+                                },
+                              },
+                              "required": [
+                                "kind",
+                                "handlerId",
+                              ],
+                              "type": "object",
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "handlerId": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "type": "string",
+                                },
+                                "kind": {
+                                  "const": "operation",
+                                },
+                                "operationId": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "type": "string",
+                                },
+                              },
+                              "required": [
+                                "kind",
+                                "handlerId",
+                                "operationId",
+                              ],
+                              "type": "object",
+                            },
+                          ],
+                        },
+                        "maxItems": 128,
+                        "type": "array",
+                      },
+                    },
+                    "required": [
+                      "summary",
+                    ],
+                    "type": "object",
+                  },
+                  "hypothesis": {
+                    "maxLength": 2000,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "issueId": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "tradeoffs": {
+                    "default": [],
+                    "items": {
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "maxItems": 32,
+                    "type": "array",
+                  },
+                  "verificationPlan": {
+                    "maxLength": 2000,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "issueId",
+                  "hypothesis",
+                  "verificationPlan",
+                  "expectedArchitectureImpact",
+                ],
+                "type": "object",
+              },
+              "maxItems": 64,
+              "type": "array",
+            },
+            "label": {
+              "description": "Short human-readable name.",
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "label",
+          ],
+          "type": "object",
+        },
+        "maxItems": 8,
+        "minItems": 2,
+        "type": "array",
+      },
+    },
+    "required": [
+      "alternatives",
     ],
     "type": "object",
   },

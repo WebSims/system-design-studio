@@ -231,11 +231,21 @@ function useWebmcp() {
           intent: input.intent,
           ...(input.design !== undefined ? { design: input.design } : {}),
           ...(input.copyFrom ? { copyFrom: input.copyFrom } : {}),
+          candidateType: input.candidateType,
+          issuePlans: input.issuePlans,
           // Set here, not accepted as a parameter. An agent cannot mark its own work as a human's.
           origin: "agent",
         });
         revealWholeCandidate(candidate);
         return candidate;
+      },
+      createCandidateAlternatives: async (inputs) => {
+        const candidates = useStudyStore.getState().addCandidateAlternatives(inputs.map((input) => ({
+          ...input,
+          origin: "agent" as const,
+        })));
+        for (const candidate of candidates) revealWholeCandidate(candidate);
+        return candidates;
       },
       replaceCandidateDraft: async (input) => {
         const candidate = useStudyStore.getState().replaceDraft({ ...input, by: "agent" });

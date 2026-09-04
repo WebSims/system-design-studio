@@ -10,7 +10,7 @@ import {
   type Design,
   type Study,
 } from "@sds/schema";
-import { evaluateCandidate } from "@sds/study";
+import { applyCandidateIssueEvaluation, evaluateCandidate } from "@sds/study";
 import { reimportPrompt } from "../src/codebase-prompt";
 import { buildImplementationHandoff } from "../src/implementation-handoff";
 import {
@@ -19,6 +19,7 @@ import {
   promoteCandidate,
   releaseApproval,
   replaceCandidateDraft,
+  upsertIssue,
 } from "../src/study/mutations";
 import { compareDesignTopology } from "../src/topology";
 
@@ -281,6 +282,77 @@ describe("implementation handoff", () => {
     );
     expect(result.implementationPrompt).toContain("studio_get_implementation_handoff");
     expect(result.implementationPrompt).toContain("Do not deploy");
+  });
+
+  it("maps each approved issue to its architecture impact and verification result", () => {
+    const fixture = repositoryStudy();
+    const registered = upsertIssue(fixture.study, {
+      title: "Admission must remain correct under concurrency",
+      description: "The changed entrypoint must preserve the inventory invariant.",
+      source: "user",
+      severity: "critical",
+      category: "correctness",
+      targets: [{ kind: "node", nodeId: fixture.changedNodeId }],
+      evidence: [{ kind: "user-observation", observationId: "admission-review" }],
+      verification: {
+        kind: "correctness",
+        summary: "Exhaust the bounded concurrent-request state space.",
+        requiredSignals: ["No invariant violation."],
+      },
+      by: "human",
+    }, 600);
+    const created = createCandidate(registered.study, {
+      label: "Issue-linked admission control",
+      copyFrom: fixture.baselineId,
+      origin: "human",
+      candidateType: "repository-fix",
+      issuePlans: [{
+        issueId: registered.issue.id,
+        required: true,
+        hypothesis: "Admission control preserves the atomic allocation path.",
+        tradeoffs: ["Adds one policy check at the entrypoint."],
+        verificationPlan: registered.issue.verification.summary,
+        expectedArchitectureImpact: {
+          summary: "Add admission control to the request entrypoint.",
+          targets: registered.issue.targets,
+        },
+        verification: null,
+      }],
+    });
+    const design = structuredClone(created.candidate.design);
+    design.nodes[0] = { ...design.nodes[0]!, label: `${design.nodes[0]!.label} with admission control` };
+    const changed = replaceCandidateDraft(created.study, {
+      candidateId: created.candidate.id,
+      expectedRevision: created.candidate.revision,
+      design,
+      by: "human",
+    });
+    const evaluation = evaluateCandidate(changed.study, changed.candidate);
+    const key = evaluationKey({
+      candidateHash: evaluation.candidateHash,
+      engineVersion: evaluation.engineVersion,
+      seeds: evaluation.seeds,
+      boundsHash: evaluation.boundsHash,
+    });
+    const evaluated = applyCandidateIssueEvaluation({
+      ...changed.study,
+      evaluations: { ...changed.study.evaluations, [key]: evaluation },
+    }, evaluation, 700);
+    const approved = promoteCandidate(evaluated, changed.candidate.id, 800);
+    const result = buildImplementationHandoff(approved);
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+    expect(result.issueChanges).toEqual([
+      expect.objectContaining({
+        issueId: registered.issue.id,
+        verificationResult: "passed",
+        architectureImpact: expect.objectContaining({
+          summary: "Add admission control to the request entrypoint.",
+          changedTargets: [`node:${fixture.changedNodeId}`],
+        }),
+      }),
+    ]);
+    expect(result.implementationPrompt).toContain(`Issue ${registered.issue.id}`);
   });
 
   it("refuses stale receipts and experiments with no code-facing delta", () => {

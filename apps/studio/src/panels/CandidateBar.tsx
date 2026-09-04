@@ -67,6 +67,9 @@ export function CandidateBar() {
                   {candidate.role === "baseline" ? "CURRENT" : "VERSION"}
                 </span>
                 {candidate.origin === "agent" && <span className="chip-mark">AI</span>}
+                {candidate.candidateType === "repository-fix" && (
+                  <span className="chip-mark chip-fix">FIX {candidate.issuePlans.length}</span>
+                )}
                 {isPromoted && <span className="chip-mark chip-promoted">✓</span>}
                 <span className="chip-label">{candidate.label}</span>
                 <span className="chip-rev tnum">r{candidate.revision}</span>

@@ -23,7 +23,7 @@ import {
   type StudyIssue,
   type StudyLock,
 } from "@sds/schema";
-import { STUDY_ENGINE_VERSION } from "@sds/study";
+import { STUDY_ENGINE_VERSION, applyCandidateIssueEvaluation } from "@sds/study";
 import { previewDesign, type DesignPreview } from "@sds/analytic";
 import { IntractableError } from "@sds/analytic";
 import {
@@ -50,12 +50,14 @@ import {
   applyArchitecturePatch,
   attachArchitectureEvidence,
   createCandidate,
+  createCandidateAlternatives,
   deleteCandidate,
   editActiveDesign,
   importRepositoryArchitecture,
   promoteCandidate,
   releaseApproval,
   recordIssueDecision,
+  recordCandidateIssueVerification,
   replaceCandidateDraft,
   setActiveCandidate,
   upsertIssue as upsertRegistryIssue,
@@ -63,6 +65,8 @@ import {
   type ApplyArchitecturePatchInput,
   type AttachArchitectureEvidenceInput,
   type ImportRepositoryArchitectureInput,
+  type CreateCandidateInput,
+  type RecordCandidateIssueVerificationInput,
   type RecordIssueDecisionInput,
   type UpsertIssueInput,
   type UpsertSourceInventoryInput,
@@ -259,7 +263,9 @@ export interface StudioState {
   editActive(mutate: (design: Design) => Design): void;
 
   // ---- candidates ----
-  addCandidate(input: { label: string; intent?: string; copyFrom?: string; design?: unknown; origin: "human" | "agent" }): Candidate;
+  addCandidate(input: CreateCandidateInput): Candidate;
+  addCandidateAlternatives(inputs: CreateCandidateInput[]): Candidate[];
+  verifyCandidateIssue(input: RecordCandidateIssueVerificationInput): Candidate;
   replaceDraft(input: { candidateId: string; expectedRevision: number; design: unknown; by: "human" | "agent" }): Candidate;
   importArchitecture(input: ImportRepositoryArchitectureInput): Candidate;
   patchArchitecture(input: ApplyArchitecturePatchInput): { candidate: Candidate; changed: string[] };
@@ -674,6 +680,22 @@ export const useStudyStore = create<StudioState>((set, get) => {
       return candidate;
     },
 
+    addCandidateAlternatives: (inputs) => {
+      const { study, candidates } = createCandidateAlternatives(get().study, inputs);
+      commit(study, true);
+      set({ portfolio: null, homeOpen: false });
+      void get().refreshPortfolio();
+      return candidates;
+    },
+
+    verifyCandidateIssue: (input) => {
+      const { study, candidate } = recordCandidateIssueVerification(get().study, input);
+      commit(study, true);
+      set({ portfolio: null });
+      void get().refreshPortfolio();
+      return candidate;
+    },
+
     replaceDraft: (input) => {
       const { study, candidate } = replaceCandidateDraft(get().study, input);
       commit(study, true);
@@ -787,7 +809,8 @@ export const useStudyStore = create<StudioState>((set, get) => {
         // Immediate: an evaluation is minutes of work, and losing it to a reload would send the
         // user back to the beginning of the slowest thing the product does.
         const withEvaluation = StudySchema.parse({ ...study, evaluations: { ...study.evaluations, [key]: merged } });
-        commit(syncEvaluationIssues(withEvaluation, merged), true);
+        const withIssues = syncEvaluationIssues(withEvaluation, merged);
+        commit(applyCandidateIssueEvaluation(withIssues, merged), true);
         await get().refreshPortfolio();
         return merged;
       } catch (err) {

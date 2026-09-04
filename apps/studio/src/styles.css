@@ -72,6 +72,18 @@ summary:focus-visible {
   font-feature-settings: "tnum";
 }
 
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
 /* ---------- shell ---------- */
 
 /*
@@ -1201,7 +1213,7 @@ summary:focus-visible {
 }
 
 .registry-batch {
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   position: sticky;
   bottom: 4px;
   padding: 6px;
@@ -1214,6 +1226,102 @@ summary:focus-visible {
 .density-guided .expert-only {
   display: none !important;
 }
+
+.candidate-issue-matrix .matrix-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.candidate-issue-matrix table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.candidate-issue-matrix th,
+.candidate-issue-matrix td {
+  min-width: 150px;
+  padding: 9px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.candidate-issue-matrix tr:last-child > * { border-bottom: 0; }
+.candidate-issue-matrix tr > *:last-child { border-right: 0; }
+
+.candidate-issue-matrix thead th {
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 9px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.candidate-issue-matrix tbody th {
+  max-width: 230px;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.severity-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.severity-label.severity-critical { color: var(--bad); }
+.severity-label.severity-warning { color: var(--warn); }
+.severity-label.severity-info { color: var(--sky); }
+
+.matrix-result .result-mark {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  margin-right: 5px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-weight: 800;
+}
+
+.matrix-result > strong {
+  font-size: 9px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.matrix-result details { margin: 7px 0; color: var(--fg-2); }
+.matrix-result details p { margin: 5px 0; }
+.matrix-result summary { cursor: pointer; color: var(--fg-3); }
+.matrix-empty { color: var(--fg-3); text-align: center !important; }
+.result-passed, .result-manual { color: var(--ok); }
+.result-failed { color: var(--bad); }
+.result-inconclusive, .result-accepted-risk { color: var(--warn); }
+.result-pending { color: var(--fg-3); }
+.matrix-result details, .matrix-result button { color: var(--fg-2); }
+.matrix-legend { margin: 8px 0 0; color: var(--fg-3); font-size: 10px; }
+
+.handoff-issue-map {
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ok) 5%, var(--bg-2));
+}
+
+.handoff-issue-map h3 { margin: 0 0 8px; }
+.handoff-issue-map ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.handoff-issue-map li { display: grid; grid-template-columns: 20px 1fr; gap: 7px; }
+.handoff-map-mark { color: var(--ok); font-weight: 800; }
+.handoff-issue-map p { margin: 2px 0; color: var(--fg-2); }
+.handoff-issue-map small { color: var(--fg-3); }
 
 .behaviour-evidence {
   margin-left: 6px;

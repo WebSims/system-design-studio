@@ -166,9 +166,21 @@ same corner, and the pill brings it back.
 Both lenses begin with the same persisted **issues** registry. Issues from people, agents,
 grounding checks, correctness checks, and load analysis are deduplicated against the current
 baseline. Filter by state or severity, select several rows for a human decision, or focus a
-targeted issue on the canvas. **Open**, **verified**, **accepted risk**, and **dismissed** are
+targeted issue on the canvas. Select one or more current issues and choose **new solution** to
+fork the open architecture into a repository-fix version linked to those exact problems.
+**Open**, **verified**, **accepted risk**, and **dismissed** are
 shown with text and symbols as well as colour. Agent tools may propose issues but cannot verify,
 dismiss, accept risk, or approve them.
+
+Repository-fix versions retain a hypothesis, trade-offs, verification plan, and expected
+architecture impact for every selected issue. The Review view renders those relationships as an
+issue-by-version matrix. Check outcomes are pinned to the issue revision, architecture revision,
+repository revision, and evaluation hash; a later edit or re-import returns the cell to pending.
+A person can record a clearly labelled manual result or accept a risk, but an agent cannot certify
+its own proposal. Approval remains closed until every required issue passes or has a human
+disposition, and an open critical regression always blocks it. Agents can create several
+alternatives together with `studio_propose_alternatives`; an unrelated experiment must identify
+itself as `candidateType: "exploration"`.
 
 The **Guided / Expert** switch in the top bar is stored on this device. Guided is the default;
 Expert reveals stable evidence-reference identifiers and issue revisions without changing the
@@ -193,7 +205,10 @@ of the claim; it does not call a version globally best.
 
 After you review and approve an eligible version, the agent can read
 `studio_get_implementation_handoff` and use its normal repository tools to implement the
-pinned delta. WebMCP does not edit source code or deploy the application.
+pinned delta. The handoff carries issue → architecture impact → verification result mappings.
+After implementation, release the approval and re-import the resulting source revision; the new
+baseline deliberately invalidates old verification receipts so the as-built system must be
+checked again. WebMCP does not edit source code or deploy the application.
 
 ## What remains human-only
 

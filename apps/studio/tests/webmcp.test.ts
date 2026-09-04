@@ -25,6 +25,7 @@ import {
   applyArchitecturePatch,
   attachArchitectureEvidence,
   createCandidate,
+  createCandidateAlternatives,
   deleteCandidate,
   importRepositoryArchitecture,
   promoteCandidate,
@@ -133,16 +134,24 @@ class TestHost implements ToolHost {
     return result.candidate;
   }
 
-  async createCandidate(input: { label: string; intent: string; design: unknown; copyFrom?: string }) {
+  async createCandidate(input: Parameters<ToolHost["createCandidate"]>[0]) {
     const { study, candidate } = createCandidate(this.study, {
       label: input.label,
       intent: input.intent,
       ...(input.design !== undefined ? { design: input.design } : {}),
       ...(input.copyFrom ? { copyFrom: input.copyFrom } : {}),
+      candidateType: input.candidateType,
+      issuePlans: input.issuePlans,
       origin: "agent",
     });
     this.study = study;
     return candidate;
+  }
+
+  async createCandidateAlternatives(inputs: Parameters<ToolHost["createCandidateAlternatives"]>[0]) {
+    const result = createCandidateAlternatives(this.study, inputs.map((input) => ({ ...input, origin: "agent" as const })));
+    this.study = result.study;
+    return result.candidates;
   }
 
   async replaceCandidateDraft(input: { candidateId: string; expectedRevision: number; design: unknown }) {
@@ -514,6 +523,7 @@ describe("registration", () => {
       "studio_get_issues",
       "studio_validate_draft",
       "studio_create_candidate",
+      "studio_propose_alternatives",
       "studio_replace_candidate_draft",
       "studio_run_evaluation",
       "studio_run_production_scenarios",
@@ -607,7 +617,7 @@ describe("registration", () => {
       expect(r.state.reason).toContain("remains usable by hand");
     }
     // And the tool definitions still exist, so the UI can list what an agent WOULD be able to do.
-    expect(r.tools.length).toBe(25);
+    expect(r.tools.length).toBe(26);
   });
 
   it("reports unsupported when registerTool is present but not a function", () => {
@@ -836,6 +846,36 @@ describe("agent issue proposals", () => {
     });
     expect(updated.content.issue).toMatchObject({ severity: "critical", revision: 1, status: "open" });
     expect(buildTools(host).map((tool) => tool.name).join(" ")).not.toMatch(/verify_issue|dismiss_issue|accept_risk/);
+  });
+
+  it("proposes multiple issue-linked alternatives without self-verification", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const proposed = await call("studio_upsert_issue", proposedIssue());
+    const issueId = (proposed.content.issue as { id: string }).id;
+    const issuePlan = {
+      issueId,
+      hypothesis: "Bounded consumers prevent runaway queue growth.",
+      tradeoffs: ["Lower peak acceptance rate."],
+      verificationPlan: "Run the measured load profile and check utilization.",
+      expectedArchitectureImpact: { summary: "Add bounded consumer capacity.", targets: [] },
+    };
+    const result = await call("studio_propose_alternatives", {
+      alternatives: [
+        { label: "scale consumers", candidateType: "repository-fix", issuePlans: [issuePlan] },
+        { label: "bound ingress", candidateType: "repository-fix", issuePlans: [issuePlan] },
+      ],
+    });
+    expect(result.isError).toBeFalsy();
+    expect((result.content.candidates as unknown[])).toHaveLength(2);
+    expect(host.study.candidates).toHaveLength(2);
+    expect(host.study.candidates.every((candidate) => candidate.issuePlans[0]?.verification === null)).toBe(true);
+
+    const selfVerified = await call("studio_create_candidate", {
+      label: "self verified",
+      candidateType: "repository-fix",
+      issuePlans: [{ ...issuePlan, verification: { status: "passed" } }],
+    });
+    expect(selfVerified.isError).toBe(true);
   });
 });
 

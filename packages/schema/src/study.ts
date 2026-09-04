@@ -701,6 +701,69 @@ export type CandidateOrigin = z.infer<typeof CandidateOriginSchema>;
 export const CandidateRoleSchema = z.enum(["baseline", "experiment"]);
 export type CandidateRole = z.infer<typeof CandidateRoleSchema>;
 
+/** Experiments either explore the space or claim to resolve one or more registered issues. */
+export const CandidateTypeSchema = z.enum(["exploration", "repository-fix"]);
+export type CandidateType = z.infer<typeof CandidateTypeSchema>;
+
+export const CandidateIssueVerificationStatusSchema = z.enum([
+  "passed",
+  "failed",
+  "inconclusive",
+  "manual",
+]);
+export type CandidateIssueVerificationStatus = z.infer<typeof CandidateIssueVerificationStatusSchema>;
+
+export const CandidateIssueVerificationSchema = z
+  .object({
+    status: CandidateIssueVerificationStatusSchema,
+    authority: z.enum(["check", "human"]),
+    candidateRevision: z.number().int().nonnegative(),
+    issueRevision: z.number().int().nonnegative(),
+    baselineRevision: z.string().min(1).max(256),
+    /** Content hash of the evaluation/report used by a check. Empty only for a human manual receipt. */
+    evaluationHash: z.string().max(256).default(""),
+    notes: z.string().max(2000).default(""),
+    recordedAt: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((verification, ctx) => {
+    if (verification.authority === "check" && verification.evaluationHash.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evaluationHash"],
+        message: "check-backed issue verification requires an evaluation hash",
+      });
+    }
+    if (verification.status === "manual" && verification.authority !== "human") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["authority"],
+        message: "manual verification must be recorded by a human",
+      });
+    }
+  });
+export type CandidateIssueVerification = z.infer<typeof CandidateIssueVerificationSchema>;
+
+/** A candidate's explicit claim about one issue, including how the claim will be tested. */
+export const CandidateIssuePlanSchema = z
+  .object({
+    issueId: z.string().min(1).max(128),
+    required: z.boolean().default(true),
+    hypothesis: z.string().min(1).max(2000),
+    tradeoffs: z.array(z.string().min(1).max(1000)).max(32).default([]),
+    verificationPlan: z.string().min(1).max(2000),
+    expectedArchitectureImpact: z
+      .object({
+        summary: z.string().min(1).max(2000),
+        targets: z.array(EvidenceTargetSchema).max(128).default([]),
+      })
+      .strict(),
+    /** Status is trusted only while all pinned revisions still match. */
+    verification: CandidateIssueVerificationSchema.nullable().default(null),
+  })
+  .strict();
+export type CandidateIssuePlan = z.infer<typeof CandidateIssuePlanSchema>;
+
 export const CandidateSchema = z
   .object({
     id: z.string().min(1).max(64),
@@ -712,6 +775,8 @@ export const CandidateSchema = z
     pattern: z.string().default(""),
     origin: CandidateOriginSchema.default("human"),
     role: CandidateRoleSchema.default("experiment"),
+    candidateType: CandidateTypeSchema.default("exploration"),
+    issuePlans: z.array(CandidateIssuePlanSchema).max(256).default([]),
     /** The baseline or earlier experiment this candidate was forked from. */
     basedOnCandidateId: z.string().min(1).max(64).nullable().default(null),
     /**
@@ -737,6 +802,25 @@ export const CandidateSchema = z
   })
   .strict()
   .superRefine((candidate, ctx) => {
+    if (candidate.role === "experiment" && candidate.candidateType === "repository-fix" && candidate.issuePlans.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["issuePlans"],
+        message: "a repository-fix candidate must reference at least one issue",
+      });
+    }
+    const plannedIssueIds = new Set<string>();
+    for (let index = 0; index < candidate.issuePlans.length; index += 1) {
+      const issueId = candidate.issuePlans[index]!.issueId;
+      if (plannedIssueIds.has(issueId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["issuePlans", index, "issueId"],
+          message: `duplicate candidate issue plan for "${issueId}"`,
+        });
+      }
+      plannedIssueIds.add(issueId);
+    }
     const nodeIds = new Set(candidate.design.nodes.map((node) => node.id));
     const edgeIds = new Set(candidate.design.edges.map((edge) => edge.id));
     const evidenceIds = new Set<string>();
@@ -1119,6 +1203,7 @@ export type CandidateEvaluation = z.infer<typeof CandidateEvaluationSchema>;
 export const EligibilityGateSchema = z.enum([
   "schema-valid",
   "source-grounded",
+  "issues-verified",
   "correctness-exhausted",
   "no-violation",
   "performance-calibrated",
@@ -1486,8 +1571,89 @@ export const StudySchema = z
       issueIds.add(issue.id);
       issueFingerprints.add(issue.fingerprint);
     }
+    for (let candidateIndex = 0; candidateIndex < study.candidates.length; candidateIndex += 1) {
+      const candidate = study.candidates[candidateIndex]!;
+      for (let planIndex = 0; planIndex < candidate.issuePlans.length; planIndex += 1) {
+        const plan = candidate.issuePlans[planIndex]!;
+        if (!issueIds.has(plan.issueId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["candidates", candidateIndex, "issuePlans", planIndex, "issueId"],
+            message: `candidate issue plan references missing issue "${plan.issueId}"`,
+          });
+        }
+      }
+    }
   });
 export type Study = z.infer<typeof StudySchema>;
+
+/** The revision that invalidates issue and candidate-verification receipts when source moves. */
+export function activeIssueBaselineRevision(study: Study): string {
+  const snapshot = activeRepositorySnapshot(study);
+  if (snapshot) return snapshot.revision || `snapshot:${snapshot.id}`;
+  const baseline = study.candidates.find((candidate) => candidate.role === "baseline") ?? study.candidates[0];
+  return `freehand:${contentHash(baseline?.design ?? null)}`;
+}
+
+/** A stored per-issue outcome is pending whenever any input it was pinned to has changed. */
+export function candidateIssueVerificationStatus(
+  study: Study,
+  candidate: Candidate,
+  plan: CandidateIssuePlan
+): CandidateIssueVerificationStatus | "pending" {
+  const verification = plan.verification;
+  const issue = study.issueRegistry.find((item) => item.id === plan.issueId);
+  if (!verification || !issue) return "pending";
+  if (verification.candidateRevision !== candidate.revision) return "pending";
+  if (verification.issueRevision !== issue.revision) return "pending";
+  if (verification.baselineRevision !== activeIssueBaselineRevision(study)) return "pending";
+  if (verification.authority === "check" && verification.evaluationHash.length === 0) return "pending";
+  return verification.status;
+}
+
+export interface CandidateIssueReadiness {
+  ready: boolean;
+  required: number;
+  satisfied: number;
+  pendingIssueIds: string[];
+  criticalRegressionIssueIds: string[];
+}
+
+/** Trusted approval projection for issue-linked candidates. */
+export function candidateIssueReadiness(study: Study, candidate: Candidate): CandidateIssueReadiness {
+  const baselineRevision = activeIssueBaselineRevision(study);
+  const pendingIssueIds: string[] = [];
+  let satisfied = 0;
+  const requiredPlans = candidate.issuePlans.filter((plan) => plan.required);
+  for (const plan of requiredPlans) {
+    const issue = study.issueRegistry.find((item) => item.id === plan.issueId);
+    const registryStatus = issue ? issueStatus(issue, baselineRevision) : "open";
+    const registryResolved = registryStatus === "accepted-risk" || registryStatus === "dismissed" || registryStatus === "verified";
+    const status = candidateIssueVerificationStatus(study, candidate, plan);
+    if (registryResolved || status === "passed" || status === "manual") satisfied += 1;
+    else pendingIssueIds.push(plan.issueId);
+  }
+
+  const planned = new Map(candidate.issuePlans.map((plan) => [plan.issueId, plan]));
+  const criticalRegressionIssueIds = study.issueRegistry
+    .filter((issue) => {
+      if (issue.severity !== "critical") return false;
+      if (issue.candidateId !== null && issue.candidateId !== candidate.id) return false;
+      const registryStatus = issueStatus(issue, baselineRevision);
+      if (registryStatus === "accepted-risk" || registryStatus === "dismissed" || registryStatus === "verified") return false;
+      const plan = planned.get(issue.id);
+      return plan ? candidateIssueVerificationStatus(study, candidate, plan) === "failed" : issue.candidateId === candidate.id;
+    })
+    .map((issue) => issue.id);
+
+  return {
+    ready: pendingIssueIds.length === 0 && criticalRegressionIssueIds.length === 0,
+    required: requiredPlans.length,
+    satisfied,
+    pendingIssueIds,
+    criticalRegressionIssueIds,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // helpers

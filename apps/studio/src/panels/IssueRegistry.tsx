@@ -19,6 +19,8 @@ export function IssueRegistry() {
   const density = useStudyStore((state) => state.uiDensity);
   const upsert = useStudyStore((state) => state.upsertIssue);
   const decide = useStudyStore((state) => state.decideIssue);
+  const addCandidate = useStudyStore((state) => state.addCandidate);
+  const selectCandidate = useStudyStore((state) => state.selectCandidate);
   const requestFocus = useStudyStore((state) => state.requestFocus);
   const select = useStudio((state) => state.select);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
@@ -95,6 +97,32 @@ export function IssueRegistry() {
     });
     setTitle("");
     setAdding(false);
+  };
+
+  const createSolution = () => {
+    const active = study.candidates.find((candidate) => candidate.id === study.activeCandidateId);
+    if (!active || selectedIssues.length === 0) return;
+    const candidate = addCandidate({
+      label: `solution for ${selectedIssues.length} issue${selectedIssues.length === 1 ? "" : "s"}`,
+      intent: `Resolve ${selectedIssues.map(({ issue }) => issue.title).join("; ")}.`,
+      copyFrom: active.id,
+      origin: "human",
+      candidateType: "repository-fix",
+      issuePlans: selectedIssues.map(({ issue }) => ({
+        issueId: issue.id,
+        required: true,
+        hypothesis: `Changing the architecture around ${issue.title} will resolve the observed failure without weakening the project contract.`,
+        tradeoffs: ["The implementation cost and operational impact must be measured during evaluation."],
+        verificationPlan: issue.verification.summary,
+        expectedArchitectureImpact: {
+          summary: issue.targets.length > 0 ? "Change the architecture elements named by this issue." : "Architecture impact is not mapped yet.",
+          targets: issue.targets,
+        },
+        verification: null,
+      })),
+    });
+    setSelected(new Set());
+    selectCandidate(candidate.id);
   };
 
   return (
@@ -193,6 +221,14 @@ export function IssueRegistry() {
 
       {selected.size > 0 && (
         <div className="registry-batch" role="group" aria-label={`Actions for ${selected.size} selected issues`}>
+          <button
+            className="btn primary small"
+            type="button"
+            onClick={createSolution}
+            disabled={selectedIssues.some(({ issue }) => issue.baselineRevision !== baselineRevision)}
+          >
+            new solution
+          </button>
           <button className="btn small" type="button" onClick={() => decideSelected("verified")}>verify</button>
           <button className="btn small" type="button" onClick={() => decideSelected("accepted-risk")}>accept risk</button>
           <button className="btn small" type="button" onClick={() => decideSelected("dismissed")}>dismiss</button>

@@ -1,9 +1,12 @@
 import {
   CandidateSchema,
+  CandidateIssueVerificationSchema,
   IssueReceiptSchema,
   IssueSchema,
   StudySchema,
   activeRepositorySnapshot,
+  activeIssueBaselineRevision,
+  candidateIssueReadiness,
   blankDesign,
   contentHash,
   distributionHasPositiveMean,
@@ -16,7 +19,10 @@ import {
   validateWorkflow,
   type ArchitectureEvidence,
   type Candidate,
+  type CandidateIssuePlan,
+  type CandidateIssueVerificationStatus,
   type CandidateRole,
+  type CandidateType,
   type Design,
   type EvidenceTarget,
   type Issue,
@@ -91,9 +97,7 @@ export interface RecordIssueDecisionInput {
 /** The source revision every issue/receipt is pinned to, including deterministic freehand work. */
 export function activeIssueBaseline(study: Study): { snapshotId: string | null; revision: string } {
   const snapshot = activeRepositorySnapshot(study);
-  if (snapshot) return { snapshotId: snapshot.id, revision: snapshot.revision || `snapshot:${snapshot.id}` };
-  const active = study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ?? study.candidates[0];
-  return { snapshotId: null, revision: `freehand:${contentHash(active?.design ?? null)}` };
+  return { snapshotId: snapshot?.id ?? null, revision: activeIssueBaselineRevision(study) };
 }
 
 const sameIssueCore = (left: Issue, right: Issue): boolean =>
@@ -459,6 +463,8 @@ export interface CreateCandidateInput {
   origin: "human" | "agent";
   /** Internal classification. Agent-facing tools choose this rather than accepting authority. */
   role?: CandidateRole;
+  candidateType?: CandidateType;
+  issuePlans?: CandidateIssuePlan[];
   basedOnCandidateId?: string | null;
   evidence?: ArchitectureEvidence[];
 }
@@ -513,6 +519,8 @@ function adoptDrawing(
     intent: input.intent ?? drawing.intent,
     notes: input.notes ?? drawing.notes,
     role: input.role ?? drawing.role,
+    candidateType: input.candidateType ?? drawing.candidateType,
+    issuePlans: structuredClone(input.issuePlans ?? drawing.issuePlans),
     basedOnCandidateId: input.basedOnCandidateId !== undefined ? input.basedOnCandidateId : drawing.basedOnCandidateId,
     evidence: structuredClone(input.evidence ?? drawing.evidence),
     design,
@@ -528,6 +536,32 @@ function adoptDrawing(
   };
 }
 
+function assertCandidateIssuePlans(study: Study, input: CreateCandidateInput): void {
+  const plans = input.issuePlans ?? [];
+  if ((input.candidateType ?? "exploration") === "repository-fix" && plans.length === 0) {
+    throw new MutationRefused("a repository-fix candidate must reference at least one registered issue", "candidate-issues-required");
+  }
+  const known = new Map(study.issueRegistry.map((issue) => [issue.id, issue]));
+  const seen = new Set<string>();
+  for (const plan of plans) {
+    if (seen.has(plan.issueId)) {
+      throw new MutationRefused(`issue "${plan.issueId}" is planned more than once`, "duplicate-candidate-issue");
+    }
+    seen.add(plan.issueId);
+    const issue = known.get(plan.issueId);
+    if (!issue) throw new MutationRefused(`no issue "${plan.issueId}"`, "no-such-issue");
+    if (issue.baselineRevision !== activeIssueBaselineRevision(study)) {
+      throw new MutationRefused(`issue "${plan.issueId}" belongs to a stale baseline`, "stale-issue");
+    }
+    if (input.origin === "agent" && plan.verification !== null) {
+      throw new MutationRefused("agents cannot supply candidate verification receipts", "candidate-verification-authority");
+    }
+    if (input.origin === "agent" && input.candidateType === "repository-fix" && !plan.required) {
+      throw new MutationRefused("agents cannot make a selected repository issue optional", "candidate-issue-authority");
+    }
+  }
+}
+
 /**
  * Add a candidate.
  *
@@ -537,6 +571,7 @@ function adoptDrawing(
  * reviewer uses to decide how much scrutiny something needs.
  */
 export function createCandidate(study: Study, input: CreateCandidateInput): { study: Study; candidate: Candidate } {
+  assertCandidateIssuePlans(study, input);
   if (study.candidates.length >= MAX_CANDIDATES) {
     throw new MutationRefused(
       `this project already holds ${MAX_CANDIDATES} versions, which is the limit. Remove one before adding another.`,
@@ -565,6 +600,8 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
     pattern: source?.pattern ?? "",
     origin: input.origin,
     role: input.role ?? "experiment",
+    candidateType: input.candidateType ?? "exploration",
+    issuePlans: structuredClone(input.issuePlans ?? []),
     basedOnCandidateId:
       input.basedOnCandidateId !== undefined
         ? input.basedOnCandidateId
@@ -584,6 +621,108 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
   });
 
   return { study: next, candidate };
+}
+
+/** Atomically create several alternatives from the same project state. */
+export function createCandidateAlternatives(
+  study: Study,
+  inputs: CreateCandidateInput[]
+): { study: Study; candidates: Candidate[] } {
+  if (inputs.length < 2) {
+    throw new MutationRefused("propose at least two alternatives", "alternatives-required");
+  }
+  if (study.candidates.length + inputs.length > MAX_CANDIDATES) {
+    throw new MutationRefused(
+      `these alternatives would exceed the ${MAX_CANDIDATES}-candidate limit`,
+      "too-many-candidates"
+    );
+  }
+  let next = study;
+  const candidates: Candidate[] = [];
+  let anchorId = study.activeCandidateId ?? study.candidates[0]?.id;
+  for (let index = 0; index < inputs.length; index += 1) {
+    const input = inputs[index]!;
+    const independent = index > 0 && input.design === undefined && input.copyFrom === undefined && anchorId
+      ? { ...input, copyFrom: anchorId }
+      : input;
+    const created = createCandidate(next, independent);
+    next = created.study;
+    candidates.push(created.candidate);
+    anchorId ??= created.candidate.id;
+  }
+  return { study: next, candidates };
+}
+
+export interface RecordCandidateIssueVerificationInput {
+  candidateId: string;
+  issueId: string;
+  expectedCandidateRevision: number;
+  expectedIssueRevision: number;
+  status: CandidateIssueVerificationStatus;
+  authority: "human" | "check" | "agent";
+  evaluationHash?: string;
+  notes?: string;
+  now?: number;
+}
+
+/** Record a revision-pinned per-issue result. No agent-facing tool reaches this boundary. */
+export function recordCandidateIssueVerification(
+  study: Study,
+  input: RecordCandidateIssueVerificationInput
+): { study: Study; candidate: Candidate } {
+  if (input.authority === "agent") {
+    throw new MutationRefused("agents cannot verify their own candidate claims", "candidate-verification-authority");
+  }
+  if ((input.authority === "human") !== (input.status === "manual")) {
+    throw new MutationRefused(
+      "human verification is recorded as manual; passed, failed and inconclusive are check outcomes",
+      "candidate-verification-authority"
+    );
+  }
+  const candidate = study.candidates.find((item) => item.id === input.candidateId);
+  if (!candidate) throw new MutationRefused(`no candidate "${input.candidateId}"`, "no-such-candidate");
+  if (candidate.revision !== input.expectedCandidateRevision) {
+    throw new MutationRefused(
+      `"${candidate.label}" is at revision ${candidate.revision}, not ${input.expectedCandidateRevision}`,
+      "revision-conflict"
+    );
+  }
+  const issue = study.issueRegistry.find((item) => item.id === input.issueId);
+  if (!issue) throw new MutationRefused(`no issue "${input.issueId}"`, "no-such-issue");
+  if (issue.revision !== input.expectedIssueRevision) {
+    throw new MutationRefused(
+      `issue "${issue.id}" is at revision ${issue.revision}, not ${input.expectedIssueRevision}`,
+      "revision-conflict"
+    );
+  }
+  const planIndex = candidate.issuePlans.findIndex((plan) => plan.issueId === issue.id);
+  if (planIndex < 0) {
+    throw new MutationRefused(`"${candidate.label}" has no plan for issue "${issue.id}"`, "candidate-issue-not-planned");
+  }
+  const now = input.now ?? Date.now();
+  const verification = CandidateIssueVerificationSchema.parse({
+    status: input.status,
+    authority: input.authority,
+    candidateRevision: candidate.revision,
+    issueRevision: issue.revision,
+    baselineRevision: activeIssueBaselineRevision(study),
+    evaluationHash: input.evaluationHash ?? "",
+    notes: input.notes ?? "",
+    recordedAt: now,
+  });
+  const plans = candidate.issuePlans.map((plan, index) =>
+    index === planIndex ? { ...plan, verification } : plan
+  );
+  const revised = CandidateSchema.parse({ ...candidate, issuePlans: plans });
+  return {
+    candidate: revised,
+    study: StudySchema.parse({
+      ...study,
+      ...approvalAfterCandidateEdit(study, candidate.id),
+      candidates: study.candidates.map((item) => item.id === revised.id ? revised : item),
+      updatedAt: now,
+    }),
+  };
 }
 
 export interface ReplaceDraftInput {
@@ -1158,6 +1297,17 @@ export function promoteCandidate(study: Study, candidateId: string, now = Date.n
     throw new MutationRefused(
       `"${candidate.label}" cannot be approved because its repository baseline is ${grounding.status}: ${grounding.gaps[0]?.message ?? "grounding is incomplete"}`,
       "source-not-grounded"
+    );
+  }
+  const issueReadiness = candidateIssueReadiness(study, candidate);
+  if (!issueReadiness.ready) {
+    const critical = issueReadiness.criticalRegressionIssueIds[0];
+    const pending = issueReadiness.pendingIssueIds[0];
+    throw new MutationRefused(
+      critical
+        ? `"${candidate.label}" cannot be approved while critical regression issue "${critical}" is open`
+        : `"${candidate.label}" cannot be approved until required issue "${pending}" passes or a person accepts its risk`,
+      critical ? "critical-regression" : "candidate-issues-unverified"
     );
   }
   const baseline = baselineAncestor(study, candidateId);
