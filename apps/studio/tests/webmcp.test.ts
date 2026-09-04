@@ -884,6 +884,43 @@ describe("agent issue proposals", () => {
 // ---------------------------------------------------------------------------
 
 describe("repository-backed architecture", () => {
+  it("keeps prior-snapshot issues out of the default agent view after a same-commit re-import", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const firstInput = repositoryArchitectureInput();
+    await call("studio_import_architecture", firstInput);
+    const proposed = await call("studio_upsert_issue", {
+      title: "queue consumers have no visible capacity margin",
+      description: "The current topology does not establish consumer headroom.",
+      severity: "warning",
+      category: "scalability",
+      evidence: [{ kind: "analysis", analysisHash: "analysis-1", findingId: "queue-headroom" }],
+      verification: {
+        kind: "performance",
+        summary: "Run a matching load evaluation with measured consumer headroom.",
+        requiredSignals: ["consumer utilization below target"],
+      },
+    });
+    const issueId = (proposed.content.issue as { id: string }).id;
+
+    const correctedInput = repositoryArchitectureInput();
+    correctedInput.repository = {
+      ...correctedInput.repository,
+      scope: [...correctedInput.repository.scope, "config"],
+    };
+    const reimported = await call("studio_import_architecture", correctedInput);
+    expect(reimported.isError).toBeFalsy();
+    const currentSnapshotId = (reimported.content.grounding as { repositorySnapshotId: string }).repositorySnapshotId;
+
+    const current = await call("studio_get_issues", {});
+    expect(current.content.issues).toEqual([]);
+    expect(current.content.baselineSnapshotId).toBe(currentSnapshotId);
+
+    const history = await call("studio_get_issues", { status: "historical" });
+    expect(history.content.issues).toEqual([
+      expect.objectContaining({ id: issueId, status: "historical" }),
+    ]);
+  });
+
   it("seals an incomplete baseline as provisional and reports the gap", async () => {
     await call("studio_create_study", { name: "checkout" });
     const input = repositoryArchitectureInput();

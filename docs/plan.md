@@ -21,7 +21,7 @@ design or prove that one is globally best.
 - Replicated performance simulation with latency and business outcomes.
 - A standard production suite for concurrency, spike recovery, capacity limits, and dependency degradation.
 - Correctness gates and Pareto trade-off comparison.
-- 19 WebMCP tools for repository import, evidence, experiments, testing, comparison, and handoff.
+- A registered WebMCP tool surface for repository import, evidence, experiments, testing, comparison, and handoff.
 - Exact-ID architecture deltas with before/after component, link, and workflow values.
 - Human-only approval and deletion.
 - Approval receipts pinned to both the as-is and experiment revisions; editing either withdraws approval.

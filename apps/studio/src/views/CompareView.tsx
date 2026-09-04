@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import {
-  activeIssueBaselineRevision,
+  activeIssueBaseline,
   candidateIssueVerificationStatus,
+  currentBaselineCandidate,
   issueStatus,
   type EligibilityDecision,
   type PortfolioResult,
@@ -207,7 +208,7 @@ function IssueCandidateMatrix() {
   );
   const issues = useMemo(() => new Map(study.issueRegistry.map((issue) => [issue.id, issue])), [study.issueRegistry]);
   if (candidates.length === 0 || issueIds.length === 0) return null;
-  const baselineRevision = activeIssueBaselineRevision(study);
+  const baseline = activeIssueBaseline(study);
 
   return (
     <section className="section candidate-issue-matrix">
@@ -230,7 +231,7 @@ function IssueCandidateMatrix() {
             {issueIds.map((issueId) => {
               const issue = issues.get(issueId);
               if (!issue) return null;
-              const registryStatus = issueStatus(issue, baselineRevision);
+              const registryStatus = issueStatus(issue, baseline);
               return (
                 <tr key={issueId}>
                   <th scope="row">
@@ -553,12 +554,13 @@ function ArchitectureDelta() {
    * is approved -> as built rather than current -> approved.
    */
   const approvedForVerify = verifyAgainstId && candidateIds.has(verifyAgainstId) ? verifyAgainstId : null;
-  // Candidates are appended in creation order, so "a baseline imported after the approval"
-  // is the last baseline positioned after the approved version.
+  const currentBaseline = currentBaselineCandidate(study);
+  // The as-built side must be the baseline grounded to the active source snapshot, not merely
+  // the first or last candidate carrying the baseline role.
   const approvedIndex = approvedForVerify ? study.candidates.findIndex((c) => c.id === approvedForVerify) : -1;
   const asBuilt =
-    approvedIndex >= 0
-      ? [...study.candidates.slice(approvedIndex + 1)].reverse().find((c) => c.role === "baseline") ?? null
+    approvedIndex >= 0 && currentBaseline && study.candidates.findIndex((c) => c.id === currentBaseline.id) > approvedIndex
+      ? currentBaseline
       : null;
   const verifying = approvedForVerify !== null && asBuilt !== null;
   const preferredHead = study.promotedCandidateId ?? study.activeCandidateId;
@@ -566,7 +568,7 @@ function ArchitectureDelta() {
   const defaultBaseId = verifying
     ? approvedForVerify!
     : (preferredBaseline?.id ??
-      study.candidates.find((candidate) => candidate.role === "baseline")?.id ??
+      currentBaseline?.id ??
       study.candidates[0]!.id);
   const baseId = candidateIds.has(baseChoice) ? baseChoice : defaultBaseId;
   const activeCandidateId = study.activeCandidateId;

@@ -2,8 +2,9 @@ import {
   CandidateIssueVerificationSchema,
   CandidateSchema,
   StudySchema,
-  activeIssueBaselineRevision,
+  activeIssueBaseline,
   contentHash,
+  issueMatchesBaseline,
   issueStatus,
   syncCandidateToStudy,
   type Candidate,
@@ -23,7 +24,7 @@ function outcomeFor(
     case "manual":
       return null;
     case "grounding": {
-      const status = issueStatus(issue, activeIssueBaselineRevision(study));
+      const status = issueStatus(issue, activeIssueBaseline(study));
       return status === "verified" || status === "dismissed" ? "passed" : "inconclusive";
     }
     case "correctness":
@@ -61,11 +62,12 @@ export function applyCandidateIssueEvaluation(
     contentHash(syncCandidateToStudy(study, candidate).design) !== evaluation.candidateHash
   ) return study;
   const evaluationHash = contentHash(evaluation);
-  const baselineRevision = activeIssueBaselineRevision(study);
+  const baseline = activeIssueBaseline(study);
   let changed = false;
   const issuePlans = candidate.issuePlans.map((plan) => {
     const issue = study.issueRegistry.find((item) => item.id === plan.issueId);
     if (!issue) return plan;
+    if (!issueMatchesBaseline(issue, baseline)) return plan;
     const status = outcomeFor(study, issue, evaluation);
     if (status === null) return plan;
     const verification = CandidateIssueVerificationSchema.parse({
@@ -73,7 +75,8 @@ export function applyCandidateIssueEvaluation(
       authority: "check",
       candidateRevision: candidate.revision,
       issueRevision: issue.revision,
-      baselineRevision,
+      baselineSnapshotId: baseline.snapshotId,
+      baselineRevision: baseline.revision,
       evaluationHash,
       notes: `Derived from ${issue.verification.kind} evaluation ${evaluation.evaluationId}.`,
       recordedAt: now,

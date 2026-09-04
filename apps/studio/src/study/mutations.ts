@@ -4,15 +4,18 @@ import {
   IssueReceiptSchema,
   IssueSchema,
   StudySchema,
+  activeIssueBaseline,
   activeRepositorySnapshot,
-  activeIssueBaselineRevision,
+  candidateBaselineIdentity,
   candidateIssueReadiness,
+  currentBaselineCandidate,
   blankDesign,
   contentHash,
   distributionHasPositiveMean,
   groundingReportForCandidate,
   issueEvidenceRefKey,
   issueFingerprint,
+  issueMatchesBaseline,
   issueStatus,
   migrateAndParse,
   validateDesign,
@@ -101,12 +104,6 @@ export interface RemoveIssueInput {
   now?: number;
 }
 
-/** The source revision every issue/receipt is pinned to, including deterministic freehand work. */
-export function activeIssueBaseline(study: Study): { snapshotId: string | null; revision: string } {
-  const snapshot = activeRepositorySnapshot(study);
-  return { snapshotId: snapshot?.id ?? null, revision: activeIssueBaselineRevision(study) };
-}
-
 const sameIssueCore = (left: Issue, right: Issue): boolean =>
   contentHash({
     title: left.title,
@@ -137,18 +134,24 @@ const sameIssueCore = (left: Issue, right: Issue): boolean =>
 
 /** Deterministic, authority-safe registry upsert used by people, checks and the agent tool. */
 export function upsertIssue(study: Study, input: UpsertIssueInput, now = Date.now()): { study: Study; issue: Issue } {
-  if (input.candidateId && !study.candidates.some((candidate) => candidate.id === input.candidateId)) {
+  const issueCandidate = input.candidateId
+    ? study.candidates.find((candidate) => candidate.id === input.candidateId)
+    : null;
+  if (input.candidateId && !issueCandidate) {
     throw new MutationRefused(`no candidate "${input.candidateId}"`, "no-such-candidate");
   }
   if (input.by === "agent" && input.source !== "agent") {
     throw new MutationRefused("agents may only propose agent-sourced issues", "issue-source-authority");
   }
-  const baseline = activeIssueBaseline(study);
+  const baseline = issueCandidate
+    ? candidateBaselineIdentity(study, issueCandidate)
+    : activeIssueBaseline(study);
   const targets = [...(input.targets ?? [])].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   const fingerprint = issueFingerprint({
     source: input.source,
     category: input.category,
     targets,
+    baselineSnapshotId: baseline.snapshotId,
     baselineRevision: baseline.revision,
     title: input.title,
   });
@@ -211,6 +214,13 @@ export function removeIssue(study: Study, input: RemoveIssueInput): Study {
       "revision-conflict"
     );
   }
+  const baseline = activeIssueBaseline(study);
+  if (!issueMatchesBaseline(existing, baseline)) {
+    throw new MutationRefused(
+      `issue "${existing.id}" belongs to a historical baseline and is read-only`,
+      "stale-issue"
+    );
+  }
   if (existing.source !== "user") {
     throw new MutationRefused(
       "only manually added issues can be permanently deleted. Dismiss derived findings to keep their audit trail.",
@@ -249,6 +259,13 @@ export function recordIssueDecision(study: Study, input: RecordIssueDecisionInpu
       "revision-conflict"
     );
   }
+  const baseline = activeIssueBaseline(study);
+  if (!issueMatchesBaseline(existing, baseline)) {
+    throw new MutationRefused(
+      `issue "${existing.id}" belongs to a historical baseline and is read-only`,
+      "stale-issue"
+    );
+  }
   const evidenceRefs = [...new Set(input.evidenceRefs ?? [])].sort();
   const knownEvidence = new Set(existing.evidence.map(issueEvidenceRefKey));
   if (evidenceRefs.some((key) => !knownEvidence.has(key))) {
@@ -275,6 +292,7 @@ export function recordIssueDecision(study: Study, input: RecordIssueDecisionInpu
     outcome: input.outcome,
     authority: input.authority,
     issueRevision: existing.revision,
+    baselineSnapshotId: existing.baselineSnapshotId,
     baselineRevision: existing.baselineRevision,
     candidateId: input.candidateId ?? existing.candidateId,
     evaluationHash,
@@ -287,7 +305,7 @@ export function recordIssueDecision(study: Study, input: RecordIssueDecisionInpu
   if (duplicate) return { study, issue: existing };
   const issue = IssueSchema.parse({ ...existing, receipts: [...existing.receipts, receipt], updatedAt: now });
   // Assert the trusted projection while still inside the mutation boundary.
-  issueStatus(issue, activeIssueBaseline(study).revision);
+  issueStatus(issue, baseline);
   return {
     issue,
     study: StudySchema.parse({
@@ -610,7 +628,7 @@ function assertCandidateIssuePlans(study: Study, input: CreateCandidateInput): v
     seen.add(plan.issueId);
     const issue = known.get(plan.issueId);
     if (!issue) throw new MutationRefused(`no issue "${plan.issueId}"`, "no-such-issue");
-    if (issue.baselineRevision !== activeIssueBaselineRevision(study)) {
+    if (!issueMatchesBaseline(issue, activeIssueBaseline(study))) {
       throw new MutationRefused(`issue "${plan.issueId}" belongs to a stale baseline`, "stale-issue");
     }
     if (input.origin === "agent" && plan.verification !== null) {
@@ -726,7 +744,7 @@ export interface RecordCandidateIssueVerificationInput {
   now?: number;
 }
 
-/** Record a revision-pinned per-issue result. No agent-facing tool reaches this boundary. */
+/** Record a candidate-, issue-, and source-baseline-pinned result. No agent tool reaches this boundary. */
 export function recordCandidateIssueVerification(
   study: Study,
   input: RecordCandidateIssueVerificationInput
@@ -756,6 +774,10 @@ export function recordCandidateIssueVerification(
       "revision-conflict"
     );
   }
+  const baseline = activeIssueBaseline(study);
+  if (!issueMatchesBaseline(issue, baseline)) {
+    throw new MutationRefused(`issue "${issue.id}" belongs to a stale baseline`, "stale-issue");
+  }
   const planIndex = candidate.issuePlans.findIndex((plan) => plan.issueId === issue.id);
   if (planIndex < 0) {
     throw new MutationRefused(`"${candidate.label}" has no plan for issue "${issue.id}"`, "candidate-issue-not-planned");
@@ -766,7 +788,8 @@ export function recordCandidateIssueVerification(
     authority: input.authority,
     candidateRevision: candidate.revision,
     issueRevision: issue.revision,
-    baselineRevision: activeIssueBaselineRevision(study),
+    baselineSnapshotId: baseline.snapshotId,
+    baselineRevision: baseline.revision,
     evaluationHash: input.evaluationHash ?? "",
     notes: input.notes ?? "",
     recordedAt: now,
@@ -1415,6 +1438,13 @@ export function deleteCandidate(study: Study, candidateId: string): Study {
     throw new MutationRefused(
       "the CURRENT version the approved change is based on cannot be removed. Clear the decision first.",
       "approved-baseline"
+    );
+  }
+  const currentBaseline = currentBaselineCandidate(study);
+  if (currentBaseline?.id === candidateId) {
+    throw new MutationRefused(
+      "the CURRENT source baseline cannot be removed. Import another source snapshot first.",
+      "current-baseline"
     );
   }
   const candidates = study.candidates

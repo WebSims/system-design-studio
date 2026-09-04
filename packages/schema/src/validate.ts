@@ -27,6 +27,8 @@ import {
   STUDY_SCHEMA_VERSION,
   StudySchema,
   candidateById,
+  issueFingerprint,
+  type Issue,
   type Study,
 } from "./study";
 
@@ -2230,6 +2232,72 @@ const STUDY_MIGRATIONS: Record<number, StudyMigration> = {
           })
         : [],
     };
+  },
+  3: (doc) => {
+    const issueRegistry = Array.isArray(doc.issueRegistry)
+      ? doc.issueRegistry.map((item) => {
+          if (typeof item !== "object" || item === null) return item;
+          const issue = item as Record<string, unknown>;
+          const baselineSnapshotId =
+            typeof issue.baselineSnapshotId === "string" ? issue.baselineSnapshotId : null;
+          const receipts = Array.isArray(issue.receipts)
+            ? issue.receipts.map((item) => {
+                if (typeof item !== "object" || item === null) return item;
+                const receipt = item as Record<string, unknown>;
+                return {
+                  ...receipt,
+                  baselineSnapshotId:
+                    typeof receipt.baselineSnapshotId === "string"
+                      ? receipt.baselineSnapshotId
+                      : baselineSnapshotId,
+                };
+              })
+            : issue.receipts;
+          const migrated = { ...issue, baselineSnapshotId, receipts };
+          return {
+            ...migrated,
+            // v4 distinguishes immutable snapshots even when two imports name the same commit.
+            fingerprint: issueFingerprint(migrated as Issue),
+          };
+        })
+      : doc.issueRegistry;
+    const snapshotByIssueId = new Map<string, string | null>();
+    for (const item of Array.isArray(issueRegistry) ? issueRegistry : []) {
+      if (typeof item !== "object" || item === null) continue;
+      const issue = item as Record<string, unknown>;
+      if (typeof issue.id !== "string") continue;
+      snapshotByIssueId.set(
+        issue.id,
+        typeof issue.baselineSnapshotId === "string" ? issue.baselineSnapshotId : null
+      );
+    }
+    const candidates = Array.isArray(doc.candidates)
+      ? doc.candidates.map((item) => {
+          if (typeof item !== "object" || item === null) return item;
+          const candidate = item as Record<string, unknown>;
+          if (!Array.isArray(candidate.issuePlans)) return candidate;
+          return {
+            ...candidate,
+            issuePlans: candidate.issuePlans.map((item) => {
+              if (typeof item !== "object" || item === null) return item;
+              const plan = item as Record<string, unknown>;
+              if (typeof plan.verification !== "object" || plan.verification === null) return plan;
+              const verification = plan.verification as Record<string, unknown>;
+              return {
+                ...plan,
+                verification: {
+                  ...verification,
+                  baselineSnapshotId:
+                    typeof verification.baselineSnapshotId === "string"
+                      ? verification.baselineSnapshotId
+                      : (typeof plan.issueId === "string" ? snapshotByIssueId.get(plan.issueId) ?? null : null),
+                },
+              };
+            }),
+          };
+        })
+      : doc.candidates;
+    return { ...doc, version: 4, issueRegistry, candidates };
   },
 };
 

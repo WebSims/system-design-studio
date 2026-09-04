@@ -14,7 +14,8 @@ for the same things.
 | --- | --- | --- |
 | **project** | `study` (`studyId`) | one problem statement, one workload, the rules, and its versions |
 | **version** | `candidate` (`candidateId`) | one architecture inside a project |
-| **CURRENT** | role `baseline` | the sealed as-is design reconstructed from a repository |
+| **CURRENT** | role `baseline` grounded to `activeRepositorySnapshotId` | the sealed as-is design for the active repository snapshot |
+| **PRIOR** | role `baseline` grounded to an older snapshot | immutable as-is history retained after a re-import |
 
 Tool names (`studio_create_study`, `studio_create_candidate`) keep the schema words because
 every agent configuration already points at them; their descriptions and `next` hints say
@@ -151,7 +152,8 @@ it and its problem statement, duplicate it (results cleared, so the copy's yards
 unlocked), export it as a file, or import a file. Export and Import act on the project, so
 they live here rather than in the top bar.
 
-The strip under the top bar shows only versions: CURRENT, the others, and **New version**.
+The strip under the top bar shows only versions: CURRENT, PRIOR source snapshots, proposed
+versions, and **New version**.
 
 The rest of the top bar is six controls: the Behaviour and Load lenses, one Play button
 whose label follows the lens, **+ Component**, **Agent** and **Review**.
@@ -195,14 +197,15 @@ grounding checks, correctness checks, and load analysis are deduplicated against
 baseline. Filter by state or severity, select several rows for a human decision, or focus a
 targeted issue on the canvas. Select one or more current issues and choose **new solution** to
 fork the open architecture into a repository-fix version linked to those exact problems.
-**Open**, **verified**, **accepted risk**, and **dismissed** are
-shown with text and symbols as well as colour. Agent tools may propose issues but cannot verify,
-dismiss, accept risk, or approve them.
+**Open**, **verified**, **accepted risk**, **dismissed**, and read-only **historical** findings
+are shown with text and symbols as well as colour. A re-import moves findings from older source
+snapshots into historical state even when the Git revision is unchanged. Agent tools may propose
+issues but cannot verify, dismiss, accept risk, or approve them.
 
 Repository-fix versions retain a hypothesis, trade-offs, verification plan, and expected
 architecture impact for every selected issue. The Review view renders those relationships as an
 issue-by-version matrix. Check outcomes are pinned to the issue revision, architecture revision,
-repository revision, and evaluation hash; a later edit or re-import returns the cell to pending.
+repository snapshot and revision, and evaluation hash; a later edit or re-import returns the cell to pending.
 A person can record a clearly labelled manual result or accept a risk, but an agent cannot certify
 its own proposal. Approval remains closed until every required issue passes or has a human
 disposition, and an open critical regression always blocks it. Agents can create several

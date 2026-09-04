@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { pizzaStudy } from "@sds/models";
-import { issueEvidenceRefKey, issueStatus } from "@sds/schema";
+import { activeIssueBaseline, issueEvidenceRefKey, issueStatus } from "@sds/schema";
 import {
   MutationRefused,
-  activeIssueBaseline,
   recordIssueDecision,
   upsertIssue,
 } from "../src/study/mutations";
@@ -73,7 +72,7 @@ describe("the unified issue registry", () => {
       now: 20,
     });
     expect(issueStatus(decided.issue)).toBe("verified");
-    expect(issueStatus(decided.issue, "another-baseline")).toBe("open");
+    expect(issueStatus(decided.issue, { snapshotId: null, revision: "another-baseline" })).toBe("historical");
   });
 
   it("reserves risk acceptance for people", () => {

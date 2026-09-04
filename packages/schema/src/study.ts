@@ -719,6 +719,7 @@ export const CandidateIssueVerificationSchema = z
     authority: z.enum(["check", "human"]),
     candidateRevision: z.number().int().nonnegative(),
     issueRevision: z.number().int().nonnegative(),
+    baselineSnapshotId: z.string().min(1).max(128).nullable().default(null),
     baselineRevision: z.string().min(1).max(256),
     /** Content hash of the evaluation/report used by a check. Empty only for a human manual receipt. */
     evaluationHash: z.string().max(256).default(""),
@@ -1387,6 +1388,7 @@ export const IssueReceiptSchema = z.object({
   authority: z.enum(["human", "check"]),
   /** Issue revision this decision evaluated; edits invalidate older decisions. */
   issueRevision: z.number().int().nonnegative(),
+  baselineSnapshotId: z.string().min(1).max(128).nullable().default(null),
   baselineRevision: z.string().min(1).max(256),
   candidateId: z.string().min(1).max(64).nullable().default(null),
   /** Required for check-backed correctness/performance verification. */
@@ -1397,7 +1399,7 @@ export const IssueReceiptSchema = z.object({
 }).strict();
 export type IssueReceipt = z.infer<typeof IssueReceiptSchema>;
 
-export const IssueStatusSchema = z.enum(["open", "verified", "accepted-risk", "dismissed"]);
+export const IssueStatusSchema = z.enum(["open", "verified", "accepted-risk", "dismissed", "historical"]);
 export type IssueStatus = z.infer<typeof IssueStatusSchema>;
 
 export const IssueSchema = z.object({
@@ -1427,6 +1429,20 @@ export const IssueSchema = z.object({
       message: "issue fingerprint does not match its source, category, targets, baseline and title",
     });
   }
+  const baseline = issueBaseline(issue);
+  for (let index = 0; index < issue.receipts.length; index += 1) {
+    const receipt = issue.receipts[index]!;
+    if (!sameBaselineIdentity(
+      { snapshotId: receipt.baselineSnapshotId, revision: receipt.baselineRevision },
+      baseline
+    )) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["receipts", index, "baselineSnapshotId"],
+        message: "issue receipt baseline does not match its issue",
+      });
+    }
+  }
 });
 export type Issue = z.infer<typeof IssueSchema>;
 
@@ -1445,11 +1461,34 @@ export function issueEvidenceRefKey(reference: IssueEvidenceRef): string {
   }
 }
 
-/** The same finding on the same baseline deterministically resolves to the same registry row. */
-export function issueFingerprint(input: Pick<Issue, "source" | "category" | "targets" | "baselineRevision" | "title">): string {
+export interface BaselineIdentity {
+  snapshotId: string | null;
+  revision: string;
+}
+
+export function issueBaseline(issue: Pick<Issue, "baselineSnapshotId" | "baselineRevision">): BaselineIdentity {
+  return { snapshotId: issue.baselineSnapshotId, revision: issue.baselineRevision };
+}
+
+export function sameBaselineIdentity(left: BaselineIdentity, right: BaselineIdentity): boolean {
+  return left.snapshotId === right.snapshotId && left.revision === right.revision;
+}
+
+export function issueMatchesBaseline(
+  issue: Pick<Issue, "baselineSnapshotId" | "baselineRevision">,
+  baseline: BaselineIdentity
+): boolean {
+  return sameBaselineIdentity(issueBaseline(issue), baseline);
+}
+
+/** The same finding on the same immutable baseline deterministically resolves to the same row. */
+export function issueFingerprint(
+  input: Pick<Issue, "source" | "category" | "targets" | "baselineSnapshotId" | "baselineRevision" | "title">
+): string {
   return contentHash({
     source: input.source,
     category: input.category,
+    baselineSnapshotId: input.baselineSnapshotId,
     baselineRevision: input.baselineRevision,
     title: input.title.trim().toLowerCase(),
     targets: input.targets.map(evidenceTargetKey).sort(),
@@ -1457,16 +1496,23 @@ export function issueFingerprint(input: Pick<Issue, "source" | "category" | "tar
 }
 
 /**
- * Status is a projection of revision-pinned receipts, never a writable issue field.
- * A receipt from an older baseline is deliberately ignored.
+ * Status is a projection of baseline-pinned receipts, never a writable issue field.
+ * Findings from another immutable source snapshot stay visible as read-only history.
  */
-export function issueStatus(issue: Issue, activeBaselineRevision: string = issue.baselineRevision): IssueStatus {
-  if (activeBaselineRevision !== issue.baselineRevision) return "open";
+export function issueStatus(
+  issue: Issue,
+  activeBaseline: BaselineIdentity = issueBaseline(issue)
+): IssueStatus {
+  if (!issueMatchesBaseline(issue, activeBaseline)) return "historical";
+  const issueIdentity = issueBaseline(issue);
   const evidence = new Set(issue.evidence.map(issueEvidenceRefKey));
   const valid = issue.receipts
     .filter((receipt) => {
       if (receipt.issueRevision !== issue.revision) return false;
-      if (receipt.baselineRevision !== issue.baselineRevision) return false;
+      if (!sameBaselineIdentity(
+        { snapshotId: receipt.baselineSnapshotId, revision: receipt.baselineRevision },
+        issueIdentity
+      )) return false;
       if (receipt.outcome === "accepted-risk" && receipt.authority !== "human") return false;
       if (receipt.outcome !== "verified") return true;
       if (issue.verification.kind === "manual") return receipt.authority === "human";
@@ -1486,7 +1532,7 @@ export function issueStatus(issue: Issue, activeBaselineRevision: string = issue
 // the study document
 // ---------------------------------------------------------------------------
 
-export const STUDY_SCHEMA_VERSION = 3 as const;
+export const STUDY_SCHEMA_VERSION = 4 as const;
 
 /**
  * The exact architecture revisions a person approved.
@@ -1596,6 +1642,7 @@ export const StudySchema = z
       }
     }
     const issueIds = new Set<string>();
+    const issuesById = new Map<string, Issue>();
     const issueFingerprints = new Set<string>();
     for (let index = 0; index < study.issueRegistry.length; index += 1) {
       const issue = study.issueRegistry[index]!;
@@ -1605,7 +1652,15 @@ export const StudySchema = z
       if (issueFingerprints.has(issue.fingerprint)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["issueRegistry", index, "fingerprint"], message: `duplicate issue fingerprint "${issue.fingerprint}"` });
       }
+      if (issue.baselineSnapshotId !== null && !snapshotIds.has(issue.baselineSnapshotId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["issueRegistry", index, "baselineSnapshotId"],
+          message: `issue references missing repository snapshot "${issue.baselineSnapshotId}"`,
+        });
+      }
       issueIds.add(issue.id);
+      issuesById.set(issue.id, issue);
       issueFingerprints.add(issue.fingerprint);
     }
     for (let candidateIndex = 0; candidateIndex < study.candidates.length; candidateIndex += 1) {
@@ -1619,17 +1674,90 @@ export const StudySchema = z
             message: `candidate issue plan references missing issue "${plan.issueId}"`,
           });
         }
+        const issue = issuesById.get(plan.issueId);
+        if (plan.verification && issue && !sameBaselineIdentity(
+          {
+            snapshotId: plan.verification.baselineSnapshotId,
+            revision: plan.verification.baselineRevision,
+          },
+          issueBaseline(issue)
+        )) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["candidates", candidateIndex, "issuePlans", planIndex, "verification", "baselineSnapshotId"],
+            message: "candidate issue verification baseline does not match its issue",
+          });
+        }
       }
     }
   });
 export type Study = z.infer<typeof StudySchema>;
 
+/**
+ * The baseline that represents the current source state.
+ *
+ * Repository imports are immutable history, so several candidates may have the baseline role.
+ * Only the one grounded to `activeRepositorySnapshotId` is CURRENT. The single ungrounded
+ * fallback preserves pre-grounding studies; freehand studies use their selected baseline.
+ */
+export function currentBaselineCandidate(
+  study: Pick<Study, "candidates" | "activeCandidateId" | "activeRepositorySnapshotId">
+): Candidate | null {
+  const baselines = study.candidates.filter((candidate) => candidate.role === "baseline");
+  if (study.activeRepositorySnapshotId !== null) {
+    const grounded = baselines.find(
+      (candidate) => candidate.grounding?.repositorySnapshotId === study.activeRepositorySnapshotId
+    );
+    if (grounded) return grounded;
+    return baselines.length === 1 ? baselines[0]! : null;
+  }
+  const selected = study.candidates.find((candidate) => candidate.id === study.activeCandidateId);
+  if (selected?.role === "baseline") return selected;
+  return baselines[0] ?? null;
+}
+
 /** The revision that invalidates issue and candidate-verification receipts when source moves. */
 export function activeIssueBaselineRevision(study: Study): string {
   const snapshot = activeRepositorySnapshot(study);
   if (snapshot) return snapshot.revision || `snapshot:${snapshot.id}`;
-  const baseline = study.candidates.find((candidate) => candidate.role === "baseline") ?? study.candidates[0];
+  const baseline = currentBaselineCandidate(study) ?? study.candidates[0];
   return `freehand:${contentHash(baseline?.design ?? null)}`;
+}
+
+/** Immutable source identity every issue, decision and candidate verification is pinned to. */
+export function activeIssueBaseline(study: Study): BaselineIdentity {
+  const snapshot = activeRepositorySnapshot(study);
+  return {
+    snapshotId: snapshot?.id ?? null,
+    revision: activeIssueBaselineRevision(study),
+  };
+}
+
+/** The immutable source baseline that governs one candidate and any findings produced from it. */
+export function candidateBaselineIdentity(study: Study, candidate: Candidate): BaselineIdentity {
+  const seen = new Set<string>();
+  let current: Candidate | undefined = candidate;
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.role === "baseline") {
+      const snapshotId = current.grounding?.repositorySnapshotId ?? null;
+      const snapshot = snapshotId
+        ? study.repositorySnapshots.find((item) => item.id === snapshotId)
+        : null;
+      if (snapshot) {
+        return {
+          snapshotId: snapshot.id,
+          revision: snapshot.revision || `snapshot:${snapshot.id}`,
+        };
+      }
+      if (currentBaselineCandidate(study)?.id === current.id) return activeIssueBaseline(study);
+      return { snapshotId: null, revision: `freehand:${contentHash(current.design)}` };
+    }
+    current = current.basedOnCandidateId
+      ? study.candidates.find((item) => item.id === current!.basedOnCandidateId)
+      : undefined;
+  }
+  return activeIssueBaseline(study);
 }
 
 /** A stored per-issue outcome is pending whenever any input it was pinned to has changed. */
@@ -1641,9 +1769,14 @@ export function candidateIssueVerificationStatus(
   const verification = plan.verification;
   const issue = study.issueRegistry.find((item) => item.id === plan.issueId);
   if (!verification || !issue) return "pending";
+  const activeBaseline = activeIssueBaseline(study);
+  if (!issueMatchesBaseline(issue, activeBaseline)) return "pending";
   if (verification.candidateRevision !== candidate.revision) return "pending";
   if (verification.issueRevision !== issue.revision) return "pending";
-  if (verification.baselineRevision !== activeIssueBaselineRevision(study)) return "pending";
+  if (!sameBaselineIdentity(
+    { snapshotId: verification.baselineSnapshotId, revision: verification.baselineRevision },
+    activeBaseline
+  )) return "pending";
   if (verification.authority === "check" && verification.evaluationHash.length === 0) return "pending";
   return verification.status;
 }
@@ -1658,13 +1791,13 @@ export interface CandidateIssueReadiness {
 
 /** Trusted approval projection for issue-linked candidates. */
 export function candidateIssueReadiness(study: Study, candidate: Candidate): CandidateIssueReadiness {
-  const baselineRevision = activeIssueBaselineRevision(study);
+  const baseline = activeIssueBaseline(study);
   const pendingIssueIds: string[] = [];
   let satisfied = 0;
   const requiredPlans = candidate.issuePlans.filter((plan) => plan.required);
   for (const plan of requiredPlans) {
     const issue = study.issueRegistry.find((item) => item.id === plan.issueId);
-    const registryStatus = issue ? issueStatus(issue, baselineRevision) : "open";
+    const registryStatus = issue ? issueStatus(issue, baseline) : "open";
     const registryResolved = registryStatus === "accepted-risk" || registryStatus === "dismissed" || registryStatus === "verified";
     const status = candidateIssueVerificationStatus(study, candidate, plan);
     if (registryResolved || status === "passed" || status === "manual") satisfied += 1;
@@ -1676,7 +1809,8 @@ export function candidateIssueReadiness(study: Study, candidate: Candidate): Can
     .filter((issue) => {
       if (issue.severity !== "critical") return false;
       if (issue.candidateId !== null && issue.candidateId !== candidate.id) return false;
-      const registryStatus = issueStatus(issue, baselineRevision);
+      const registryStatus = issueStatus(issue, baseline);
+      if (registryStatus === "historical") return false;
       if (registryStatus === "accepted-risk" || registryStatus === "dismissed" || registryStatus === "verified") return false;
       const plan = planned.get(issue.id);
       return plan ? candidateIssueVerificationStatus(study, candidate, plan) === "failed" : issue.candidateId === candidate.id;

@@ -3,6 +3,7 @@ import {
   MAX_CONCURRENCY,
   MAX_QUEUE_CAPACITY,
   MAX_REPLICAS,
+  currentBaselineCandidate,
   isPlaceholderWorkload,
   isTimeVarying,
   performanceCalibration,
@@ -173,6 +174,12 @@ function ArchitectureEvidence({
   const candidate =
     study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
   if (!candidate || study.repositorySnapshots.length === 0) return null;
+  const isCurrentBaseline = currentBaselineCandidate(study)?.id === candidate.id;
+  const evidenceVersionLabel = isCurrentBaseline
+    ? "current"
+    : candidate.role === "baseline"
+      ? "prior"
+      : "version";
   const evidence = candidate.evidence.filter(
     (item) => item.targetKind === targetKind && item.targetId === targetId
   );
@@ -181,8 +188,8 @@ function ArchitectureEvidence({
     <section className="architecture-evidence" aria-label="Architecture evidence">
       <div className="evidence-heading">
         <span>source evidence</span>
-        <span className={`badge ${candidate.role === "baseline" ? "badge-info" : "badge-muted"}`}>
-          {candidate.role === "baseline" ? "current" : "version"}
+        <span className={`badge ${isCurrentBaseline ? "badge-info" : "badge-muted"}`}>
+          {evidenceVersionLabel}
         </span>
       </div>
       {evidence.length === 0 ? (

@@ -1,6 +1,6 @@
 import {
+  activeIssueBaseline,
   activeRepositorySnapshot,
-  activeIssueBaselineRevision,
   candidateIssueReadiness,
   candidateIssueVerificationStatus,
   contentHash,
@@ -327,11 +327,11 @@ export function buildImplementationHandoff(study: Study): ImplementationHandoff 
     unmappedTargets,
     unresolvedFindings,
   });
-  const baselineRevision = activeIssueBaselineRevision(study);
+  const issueBaseline = activeIssueBaseline(study);
   const issueChanges = approved.issuePlans.flatMap((plan) => {
     const issue = study.issueRegistry.find((item) => item.id === plan.issueId);
     if (!issue) return [];
-    const disposition = issueStatus(issue, baselineRevision);
+    const disposition = issueStatus(issue, issueBaseline);
     const verificationResult = disposition === "accepted-risk"
       ? "accepted-risk" as const
       : candidateIssueVerificationStatus(study, approved, plan);

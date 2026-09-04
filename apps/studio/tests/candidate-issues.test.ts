@@ -111,6 +111,7 @@ describe("issue-linked candidates", () => {
           authority: "check",
           candidateRevision: 0,
           issueRevision: registered.issue.revision,
+          baselineSnapshotId: registered.issue.baselineSnapshotId,
           baselineRevision: registered.issue.baselineRevision,
           evaluationHash: "invented",
           notes: "",

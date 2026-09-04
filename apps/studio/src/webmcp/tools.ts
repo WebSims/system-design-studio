@@ -9,10 +9,12 @@ import {
   IssueSeveritySchema,
   IssueVerificationContractSchema,
   SourceInventoryItemSchema,
+  activeIssueBaseline,
   activeRepositorySnapshot,
   analyzeDistributedSemantics,
   candidateIssueVerificationStatus,
   contentHash,
+  currentBaselineCandidate,
   groundingReport,
   groundingReportForCandidate,
   issueStatus,
@@ -43,7 +45,6 @@ import {
   DRAWING_INTENT,
   DRAWING_LABEL,
   MutationRefused,
-  activeIssueBaseline,
   assertAgentModelFields,
   type ArchitecturePatchOperation,
 } from "../study/mutations";
@@ -408,7 +409,7 @@ const UpsertIssueInput = z.object({
 }).strict();
 
 const GetIssuesInput = z.object({
-  status: z.enum(["open", "verified", "accepted-risk", "dismissed"]).optional(),
+  status: z.enum(["open", "verified", "accepted-risk", "dismissed", "historical"]).optional(),
   severity: IssueSeveritySchema.optional(),
   source: z.enum(["user", "agent", "grounding-gap", "correctness-check", "performance-analysis"]).optional(),
 }).strict();
@@ -1252,7 +1253,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           const study = host.getStudy();
           const candidate = args.candidateId
             ? requireCandidate(study, args.candidateId)
-            : study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
+            : currentBaselineCandidate(study) ??
+              study.candidates.find((item) => item.id === study.activeCandidateId) ??
+              study.candidates[0];
           if (!candidate) throw new Error("the project has no version to report");
           const report = groundingReport(study, candidate);
           host.log({
@@ -1291,7 +1294,12 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             ...(issue.candidateId ? { candidateId: issue.candidateId } : {}),
             revision: issue.revision,
           });
-          return { issue: { ...issue, status: issueStatus(issue) } };
+          return {
+            issue: {
+              ...issue,
+              status: issueStatus(issue, activeIssueBaseline(host.getStudy())),
+            },
+          };
         },
       },
       host
@@ -1301,15 +1309,16 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_get_issues",
         description:
-          "Read the unified issue registry with computed states. States come from revision-pinned evidence and trusted receipts; they are not agent-authored fields.",
+          "Read current-baseline issues with computed states. States come from snapshot-pinned evidence and trusted receipts; " +
+          "they are not agent-authored fields. Pass status=historical to inspect findings from prior source snapshots.",
         input: GetIssuesInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
         async run(args) {
           const study = host.getStudy();
-          const baselineRevision = activeIssueBaseline(study).revision;
+          const baseline = activeIssueBaseline(study);
           const issues = study.issueRegistry
-            .map((issue) => ({ ...issue, status: issueStatus(issue, baselineRevision) }))
-            .filter((issue) => args.status === undefined || issue.status === args.status)
+            .map((issue) => ({ ...issue, status: issueStatus(issue, baseline) }))
+            .filter((issue) => args.status === undefined ? issue.status !== "historical" : issue.status === args.status)
             .filter((issue) => args.severity === undefined || issue.severity === args.severity)
             .filter((issue) => args.source === undefined || issue.source === args.source);
           host.log({
@@ -1318,7 +1327,11 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             ok: true,
             summary: `read ${issues.length} issue${issues.length === 1 ? "" : "s"}`,
           });
-          return { baselineRevision, issues };
+          return {
+            baselineSnapshotId: baseline.snapshotId,
+            baselineRevision: baseline.revision,
+            issues,
+          };
         },
       },
       host
@@ -1868,6 +1881,8 @@ function architecturePayload(study: Study, candidate: Candidate) {
  * `studio_get_candidate`.
  */
 export function summariseStudy(study: Study) {
+  const currentBaselineId = currentBaselineCandidate(study)?.id ?? null;
+  const issueBaseline = activeIssueBaseline(study);
   return {
     id: study.id,
     name: study.name,
@@ -1891,6 +1906,8 @@ export function summariseStudy(study: Study) {
       pattern: c.pattern,
       origin: c.origin,
       role: c.role,
+      baselineState:
+        c.role === "baseline" ? (c.id === currentBaselineId ? "current" : "prior") : null,
       candidateType: c.candidateType,
       issuePlans: c.issuePlans.map((plan) => ({
         issueId: plan.issueId,
@@ -1916,10 +1933,11 @@ export function summariseStudy(study: Study) {
     approval: study.approval,
     issueSummary: {
       total: study.issueRegistry.length,
-      open: study.issueRegistry.filter((issue) => issueStatus(issue, activeIssueBaseline(study).revision) === "open").length,
+      open: study.issueRegistry.filter((issue) => issueStatus(issue, issueBaseline) === "open").length,
+      historical: study.issueRegistry.filter((issue) => issueStatus(issue, issueBaseline) === "historical").length,
     },
     notes: [
-      "Vocabulary: the person sees a project (study in this schema), versions (candidates) and CURRENT (the sealed as-is baseline). Use those words with them.",
+      "Vocabulary: the person sees a project (study in this schema), versions (candidates), CURRENT (the baseline for the active source snapshot), and PRIOR (older immutable baselines). Use those words with them.",
       "The workload, SLOs, invariants and exploration bounds are project-level. A version's local copies are overwritten from the project before every evaluation, so a version cannot improve its results by changing the workload.",
       "There is no tool to delete or promote a version. Promotion is a human-only action in the interface.",
       "Every numeric and correctness claim you make must come from a studio result. Nothing here should be estimated.",

@@ -1,7 +1,13 @@
 import { useMemo, useState } from "react";
-import { issueEvidenceRefKey, issueStatus, type Issue, type IssueSeverity, type IssueStatus } from "@sds/schema";
+import {
+  activeIssueBaseline,
+  issueEvidenceRefKey,
+  issueStatus,
+  type Issue,
+  type IssueSeverity,
+  type IssueStatus,
+} from "@sds/schema";
 import { useStudio } from "../store";
-import { activeIssueBaseline } from "../study/mutations";
 import { useStudyStore } from "../study/store";
 
 const STATUS_MARK: Record<IssueStatus, string> = {
@@ -9,6 +15,7 @@ const STATUS_MARK: Record<IssueStatus, string> = {
   verified: "✓",
   "accepted-risk": "≈",
   dismissed: "×",
+  historical: "↶",
 };
 
 type StatusFilter = "all" | IssueStatus;
@@ -32,25 +39,32 @@ export function IssueRegistry() {
   const [severity, setSeverity] = useState<IssueSeverity>("warning");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [announcement, setAnnouncement] = useState("");
-  const baselineRevision = activeIssueBaseline(study).revision;
+  const { snapshotId: baselineSnapshotId, revision: baselineRevision } = activeIssueBaseline(study);
   const rows = useMemo(
-    () => study.issueRegistry.map((issue) => ({ issue, status: issueStatus(issue, baselineRevision) })),
-    [baselineRevision, study.issueRegistry]
+    () => study.issueRegistry.map((issue) => ({
+      issue,
+      status: issueStatus(issue, { snapshotId: baselineSnapshotId, revision: baselineRevision }),
+    })),
+    [baselineSnapshotId, baselineRevision, study.issueRegistry]
   );
   const visible = rows.filter(({ issue, status }) =>
     (statusFilter === "all" || status === statusFilter) &&
     (severityFilter === "all" || issue.severity === severityFilter)
   );
   const selectedIssues = rows.filter(({ issue }) => selected.has(issue.id));
+  const historicalSelection = selectedIssues.find(({ status }) => status === "historical")?.issue;
   const derivedSelection = selectedIssues.find(({ issue }) => issue.source !== "user")?.issue;
   const referencedSelection = selectedIssues.find(({ issue }) =>
     study.candidates.some((candidate) => candidate.issuePlans.some((plan) => plan.issueId === issue.id))
   )?.issue;
-  const deleteBlocker = derivedSelection
+  const historicalBlocker = historicalSelection
+    ? `“${historicalSelection.title}” belongs to a prior source snapshot and is read-only.`
+    : null;
+  const deleteBlocker = historicalBlocker ?? (derivedSelection
     ? `“${derivedSelection.title}” is a derived finding. Dismiss it to retain its audit trail.`
     : referencedSelection
       ? `“${referencedSelection.title}” is used by a solution version. Remove that version first, or dismiss the issue.`
-      : null;
+      : null);
 
   const toggle = (id: string) => {
     setConfirmingDelete(false);
@@ -62,7 +76,8 @@ export function IssueRegistry() {
   };
 
   const decideSelected = (outcome: "verified" | "accepted-risk" | "dismissed") => {
-    for (const { issue } of selectedIssues) {
+    for (const { issue, status } of selectedIssues) {
+      if (status === "historical") continue;
       const evidenceRefs = issue.evidence.map(issueEvidenceRefKey);
       if (outcome === "verified" && issue.verification.kind !== "manual" && evidenceRefs.length === 0) continue;
       decide({
@@ -180,6 +195,7 @@ export function IssueRegistry() {
             <option value="verified">verified</option>
             <option value="accepted-risk">accepted risk</option>
             <option value="dismissed">dismissed</option>
+            <option value="historical">historical</option>
           </select>
         </label>
         <label>
@@ -260,13 +276,14 @@ export function IssueRegistry() {
               className="btn primary small"
               type="button"
               onClick={createSolution}
-              disabled={selectedIssues.some(({ issue }) => issue.baselineRevision !== baselineRevision)}
+              disabled={historicalBlocker !== null}
+              title={historicalBlocker ?? undefined}
             >
               new solution
             </button>
-            <button className="btn small" type="button" onClick={() => decideSelected("verified")}>verify</button>
-            <button className="btn small" type="button" onClick={() => decideSelected("accepted-risk")}>accept risk</button>
-            <button className="btn small" type="button" onClick={() => decideSelected("dismissed")}>dismiss</button>
+            <button className="btn small" type="button" disabled={historicalBlocker !== null} title={historicalBlocker ?? undefined} onClick={() => decideSelected("verified")}>verify</button>
+            <button className="btn small" type="button" disabled={historicalBlocker !== null} title={historicalBlocker ?? undefined} onClick={() => decideSelected("accepted-risk")}>accept risk</button>
+            <button className="btn small" type="button" disabled={historicalBlocker !== null} title={historicalBlocker ?? undefined} onClick={() => decideSelected("dismissed")}>dismiss</button>
             <button className="btn small danger" type="button" onClick={() => setConfirmingDelete(true)}>delete…</button>
           </div>
           {confirmingDelete && (

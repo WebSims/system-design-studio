@@ -3,6 +3,7 @@ import { pizzaStudy } from "@sds/models";
 import {
   ArchitectureEvidenceSchema,
   RepositorySnapshotSchema,
+  STUDY_SCHEMA_VERSION,
   StudySchema,
   contentHash,
   groundingReport,
@@ -190,7 +191,7 @@ describe("repository grounding", () => {
     for (const item of raw.candidates as Array<Record<string, unknown>>) delete item.grounding;
 
     const migrated = migrateAndParseStudy(raw);
-    expect(migrated.version).toBe(3);
+    expect(migrated.version).toBe(STUDY_SCHEMA_VERSION);
     expect(migrated.repositorySnapshots).toHaveLength(1);
     expect(migrated.candidates[0]!.grounding).toBeNull();
     expect(groundingReport(migrated, migrated.candidates[0]!)).toMatchObject({

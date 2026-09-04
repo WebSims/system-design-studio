@@ -5,6 +5,8 @@ import {
   CandidateSchema,
   STUDY_SCHEMA_VERSION,
   StudySchema,
+  contentHash,
+  issueFingerprint,
   migrateAndParse,
   migrateAndParseStudy,
   studyFromDesign,
@@ -400,6 +402,78 @@ describe("a study round-trips", () => {
     expect(migrated.activeRepositorySnapshotId).toBeNull();
     expect(migrated.candidates.every((candidate) => candidate.role === "experiment")).toBe(true);
     expect(migrated.candidates.every((candidate) => candidate.canvasObjects.length === 0)).toBe(true);
+  });
+
+  it("migrates v3 issue and verification receipts onto immutable snapshot identity", () => {
+    const raw = JSON.parse(JSON.stringify(pizzaStudy())) as Record<string, unknown>;
+    raw.version = 3;
+    const baselineRevision = "freehand:legacy";
+    const oldFingerprint = contentHash({
+      source: "user",
+      category: "other",
+      baselineRevision,
+      title: "legacy issue",
+      targets: [],
+    });
+    raw.issueRegistry = [{
+      id: "issue-legacy",
+      fingerprint: oldFingerprint,
+      revision: 0,
+      title: "Legacy issue",
+      description: "Saved before snapshot-aware issue identity.",
+      source: "user",
+      severity: "warning",
+      category: "other",
+      candidateId: null,
+      targets: [],
+      baselineSnapshotId: null,
+      baselineRevision,
+      evidence: [{ kind: "user-observation", observationId: "legacy-observation" }],
+      verification: { kind: "manual", summary: "Review it.", requiredSignals: [] },
+      receipts: [{
+        id: "receipt-legacy",
+        outcome: "dismissed",
+        authority: "human",
+        issueRevision: 0,
+        baselineRevision,
+        candidateId: null,
+        evaluationHash: "",
+        evidenceRefs: [],
+        reason: "Not applicable.",
+        recordedAt: 2,
+      }],
+      createdAt: 1,
+      updatedAt: 2,
+    }];
+    const candidates = raw.candidates as Array<Record<string, unknown>>;
+    candidates[0]!.issuePlans = [{
+      issueId: "issue-legacy",
+      required: true,
+      hypothesis: "The concern is understood.",
+      tradeoffs: [],
+      verificationPlan: "Review it.",
+      expectedArchitectureImpact: { summary: "No mapped impact.", targets: [] },
+      verification: {
+        status: "manual",
+        authority: "human",
+        candidateRevision: 0,
+        issueRevision: 0,
+        baselineRevision,
+        evaluationHash: "",
+        notes: "Reviewed.",
+        recordedAt: 2,
+      },
+    }];
+
+    const migrated = migrateAndParseStudy(raw);
+    const issue = migrated.issueRegistry[0]!;
+    const verification = migrated.candidates[0]!.issuePlans[0]!.verification!;
+
+    expect(migrated.version).toBe(STUDY_SCHEMA_VERSION);
+    expect(issue.fingerprint).toBe(issueFingerprint(issue));
+    expect(issue.fingerprint).not.toBe(oldFingerprint);
+    expect(issue.receipts[0]!.baselineSnapshotId).toBeNull();
+    expect(verification.baselineSnapshotId).toBeNull();
   });
 
   it("refuses evidence that points outside its architecture", () => {

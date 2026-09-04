@@ -1,19 +1,20 @@
 # The agent surface (WebMCP)
 
-The twenty-one tools, what an agent cannot do, and the repository-to-code acceptance loop.
+The tool surface, what an agent cannot do, and the repository-to-code acceptance loop.
 
 [< back to the README](../README.md)
 
 ## The tools
 
-Twenty-one imperative tools are registered on the top-level page through
+The imperative tools are registered on the top-level page through
 `document.modelContext.registerTool()`. Every input schema is generated from the same
 Zod schema that validates at runtime and is snapshot-tested, so a widened validator
 cannot drift from its documentation.
 
 The tool names retain `study` and `candidate` as API terms. A person sees the same things
 as a **project** (`study`, `studyId`), its **versions** (`candidate`, `candidateId`) and
-**CURRENT** (the `baseline` role: the sealed as-is design). Tool descriptions and `next`
+**CURRENT** (the `baseline` role grounded to the active repository snapshot; older immutable
+baselines are **PRIOR**). Tool descriptions and `next`
 hints use the person's words and name the parameter once, so an agent can speak to the
 person in theirs.
 

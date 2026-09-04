@@ -1,5 +1,10 @@
 import { useCallback, useState } from "react"
-import { activeRepositorySnapshot, groundingReportForCandidate, performanceCalibration } from "@sds/schema"
+import {
+  activeRepositorySnapshot,
+  currentBaselineCandidate,
+  groundingReportForCandidate,
+  performanceCalibration,
+} from "@sds/schema"
 import { useRaceModel } from "../raceModel"
 import { useRacePlayback } from "../racePlayback"
 import { useStudio } from "../store"
@@ -208,20 +213,19 @@ const RepositoryStatus = () => {
   const repository = activeRepositorySnapshot(study)
   if (!repository) return null
 
-  const activeCandidate =
-    study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ?? study.candidates[0]
-  const evidenceCoverage = activeCandidate
+  const baselineCandidate = currentBaselineCandidate(study)
+  const evidenceCoverage = baselineCandidate
     ? new Set(
-        activeCandidate.evidence
+        baselineCandidate.evidence
           .filter((evidence) => evidence.aspect !== "performance")
           .map((evidence) => `${evidence.targetKind}:${evidence.targetId}`)
       ).size
     : 0
-  const architectureElements = activeCandidate
-    ? activeCandidate.design.nodes.length + activeCandidate.design.edges.length
+  const architectureElements = baselineCandidate
+    ? baselineCandidate.design.nodes.length + baselineCandidate.design.edges.length
     : 0
   const sourceRevision = repository.revision ? repository.revision.slice(0, 9) : "unversioned"
-  const grounding = activeCandidate ? groundingReportForCandidate(study, activeCandidate) : null
+  const grounding = baselineCandidate ? groundingReportForCandidate(study, baselineCandidate) : null
 
   return (
     <details className="repository-status" onClick={(event) => event.stopPropagation()}>

@@ -185,6 +185,10 @@ summary:focus-visible {
   border-color: color-mix(in srgb, var(--sky) 45%, var(--line));
   background: color-mix(in srgb, var(--sky) 5%, var(--bg));
 }
+.candidate-chip.prior-baseline {
+  border-color: var(--line);
+  background: var(--bg);
+}
 .candidate-chip.eligible .chip-label { color: var(--ok); }
 .candidate-chip.frontier { box-shadow: inset 0 -2px 0 var(--ok); }
 .chip-mark {
@@ -208,6 +212,10 @@ summary:focus-visible {
 .chip-role-baseline {
   border-color: color-mix(in srgb, var(--sky) 50%, var(--line));
   color: var(--sky);
+}
+.chip-role-prior {
+  border-color: var(--line-2);
+  color: var(--fg-3);
 }
 .chip-role-experiment { color: var(--accent); }
 .chip-promoted { background: var(--ok); }
@@ -1204,6 +1212,10 @@ summary:focus-visible {
 .state-verified { color: var(--ok, #3b936b); }
 .state-accepted-risk { color: var(--warn, #c77b22); }
 .state-dismissed { color: var(--muted); }
+.state-historical {
+  color: var(--fg-3);
+  border-style: dashed;
+}
 
 .registry-title {
   overflow-wrap: anywhere;

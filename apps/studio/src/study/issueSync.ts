@@ -1,7 +1,9 @@
 import {
+  activeIssueBaseline,
   contentHash,
   groundingReport,
   issueEvidenceRefKey,
+  issueMatchesBaseline,
   issueStatus,
   walkOperations,
   type CandidateEvaluation,
@@ -10,7 +12,7 @@ import {
   type IssueEvidenceRef,
   type Study,
 } from "@sds/schema";
-import { activeIssueBaseline, recordIssueDecision, upsertIssue } from "./mutations";
+import { recordIssueDecision, upsertIssue } from "./mutations";
 
 const finishResolved = (
   study: Study,
@@ -19,7 +21,7 @@ const finishResolved = (
   evaluationHash: string,
   now: number
 ): Study => {
-  if (issueStatus(issue, activeIssueBaseline(study).revision) !== "open") return study;
+  if (issueStatus(issue, activeIssueBaseline(study)) !== "open") return study;
   const updated = upsertIssue(study, {
     title: issue.title,
     description: issue.description,
@@ -82,7 +84,7 @@ export function syncGroundingIssues(study: Study, candidateId: string, now = Dat
   const resolved = next.issueRegistry.filter((issue) =>
     issue.source === "grounding-gap" &&
     issue.candidateId === candidateId &&
-    issue.baselineRevision === activeIssueBaseline(next).revision &&
+    issueMatchesBaseline(issue, activeIssueBaseline(next)) &&
     issue.evidence.some((reference) => reference.kind === "grounding-report" && !currentGapCodes.has(reference.gapCode))
   );
   for (const issue of resolved) {
@@ -133,7 +135,7 @@ export function syncEvaluationIssues(study: Study, evaluation: CandidateEvaluati
       verification: {
         kind: "correctness",
         summary: `Re-run the bounded check and exhaust it without violating ${correctness.counterexample.invariantLabel}.`,
-        requiredSignals: ["NO_VIOLATION_WITHIN_BOUNDS", "matching candidate and baseline revision"],
+        requiredSignals: ["NO_VIOLATION_WITHIN_BOUNDS", "matching candidate and source snapshot"],
       },
       by: "check",
     }, now).study;
@@ -141,7 +143,7 @@ export function syncEvaluationIssues(study: Study, evaluation: CandidateEvaluati
     const open = next.issueRegistry.filter((issue) =>
       issue.source === "correctness-check" &&
       issue.candidateId === evaluation.candidateId &&
-      issue.baselineRevision === activeIssueBaseline(next).revision
+      issueMatchesBaseline(issue, activeIssueBaseline(next))
     );
     for (const issue of open) next = finishResolved(next, issue, reference, evaluationHash, now);
   } else if (correctness && correctness.status !== "NO_VIOLATION_WITHIN_BOUNDS") {

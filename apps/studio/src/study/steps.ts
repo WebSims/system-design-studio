@@ -1,4 +1,4 @@
-import { isPlaceholderWorkload, type Candidate, type Study } from "@sds/schema"
+import { currentBaselineCandidate, isPlaceholderWorkload, type Candidate, type Study } from "@sds/schema"
 import type { ActivityEntry } from "../webmcp/tools"
 
 /**
@@ -127,7 +127,7 @@ export const AGENT_STEPS: readonly AgentStep[] = [
     id: "seal",
     label: "seal the as-is baseline",
     unblocks: "the drawing is the immutable baseline, linked to a repository revision",
-    done: ({ study }) => study.activeRepositorySnapshotId !== null && study.candidates.some((candidate) => candidate.role === "baseline"),
+    done: ({ study }) => study.activeRepositorySnapshotId !== null && currentBaselineCandidate(study) !== null,
     hint: ({ drawing }) =>
       drawing
         ? `studio_import_architecture { fromCandidateId: "${drawing.id}", expectedRevision: ${drawing.revision}, repository, evidence } ` +
@@ -164,7 +164,7 @@ export interface AgentProgress {
 
 export function drawingCandidate(study: Study): Candidate | null {
   return (
-    study.candidates.find((candidate) => candidate.role === "baseline") ??
+    currentBaselineCandidate(study) ??
     study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ??
     study.candidates[0] ??
     null
