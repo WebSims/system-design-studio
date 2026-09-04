@@ -180,6 +180,7 @@ const QuickInsert = () => {
     <div className="toolbar-quick" role="group" aria-label="Quick insert">
       {ORDERED_PRESETS.map((preset) => (
         <button
+          type="button"
           key={preset.id}
           className="tool-btn icon-only"
           aria-label={`Add ${preset.label}`}

@@ -1,6 +1,7 @@
 import { citationText } from "@sds/models";
 import {
   MAX_CONCURRENCY,
+  MAX_QUEUE_CAPACITY,
   MAX_REPLICAS,
   isPlaceholderWorkload,
   isTimeVarying,
@@ -8,13 +9,22 @@ import {
   type Citation,
   type CanvasObject,
   type Distribution,
+  type ResourceProfile,
   type RetryableReason,
 } from "@sds/schema";
 import { useStudio } from "../store";
 import { useStudyStore } from "../study/store";
 import { CursorIcon, KindIcon, LinkIcon, TrashIcon } from "../ui/icons";
 import { BehaviourEditor, LockEditor, StateEditor } from "./BehaviourEditor";
-import { Field, FieldRow, IconButton, NumberInput, Select, Toggle } from "./controls";
+import {
+  Field,
+  FieldRow,
+  IconButton,
+  NullableNumberInput,
+  NumberInput,
+  Select,
+  Toggle,
+} from "./controls";
 import { DensitySection } from "./DensitySection";
 import { describeArrival } from "./WorkloadEditor";
 
@@ -30,9 +40,17 @@ const NODE_CONTROL_SUMMARY: Record<string, string> = {
   external: "dependency concurrency, latency and failure",
   cache: "hit ratio, capacity, eviction and miss behavior",
   database: "pool, parallelism, isolation and replica semantics",
-  queue: "consumer capacity, publish latency and backlog bound",
-  lock: "lease service time and waiter bounds",
+  queue: "delivery guarantee, acknowledgements, consumer capacity and backlog bound",
+  lock: "lease timing, failure rate and waiter bounds",
 };
+
+const emptyResourceProfile = (): ResourceProfile => ({
+  cpuUnits: null,
+  memoryMb: null,
+  storageMb: null,
+  connectionSlots: null,
+  networkBytesPerRequest: null,
+});
 
 /**
  * Provenance for a preset's numbers.
@@ -607,7 +625,7 @@ export function Inspector() {
               }
             />
           </Field>
-          <Field label="transport" hint="v7 engine">
+          <Field label="transport" hint="executable now">
             <Select
               value="tcp"
               options={[{ value: "tcp", label: "TCP" }]}
@@ -786,8 +804,10 @@ export function Inspector() {
                   const on = edge.classes.includes(c.id);
                   return (
                     <button
+                      type="button"
                       key={c.id}
                       className={`chip ${on ? "on" : ""}`}
+                      aria-pressed={on}
                       onClick={() =>
                         patch((e) => {
                           e.classes = on
@@ -958,21 +978,36 @@ export function Inspector() {
           />
           {node.loadbalancer.healthCheck.enabled && (
             <>
-              <Field label="failure threshold" hint="%">
-                <NumberInput
-                  value={Math.round(node.loadbalancer.healthCheck.failureThreshold * 1000) / 10}
-                  min={1}
-                  max={100}
-                  step={5}
-                  onChange={(v) =>
-                    patch((n) => {
-                      if (n.loadbalancer) {
-                        n.loadbalancer.healthCheck.failureThreshold = Math.min(1, Math.max(0.01, v / 100));
-                      }
-                    })
-                  }
-                />
-              </Field>
+              <FieldRow>
+                <Field label="failure threshold" hint="%">
+                  <NumberInput
+                    value={Math.round(node.loadbalancer.healthCheck.failureThreshold * 1000) / 10}
+                    min={1}
+                    max={100}
+                    step={5}
+                    onChange={(v) =>
+                      patch((n) => {
+                        if (n.loadbalancer) {
+                          n.loadbalancer.healthCheck.failureThreshold = Math.min(1, Math.max(0.01, v / 100));
+                        }
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="minimum samples" hint="before ejecting">
+                  <NumberInput
+                    value={node.loadbalancer.healthCheck.minimumRequests}
+                    min={1}
+                    onChange={(v) =>
+                      patch((n) => {
+                        if (n.loadbalancer) {
+                          n.loadbalancer.healthCheck.minimumRequests = Math.max(1, Math.round(v));
+                        }
+                      })
+                    }
+                  />
+                </Field>
+              </FieldRow>
               <Field label="ejection time" hint="ms">
                 <NumberInput
                   value={node.loadbalancer.healthCheck.ejectionMs}
@@ -1115,11 +1150,11 @@ export function Inspector() {
                 onChange={(v) => patch((n) => { if (n.server) n.server.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
               />
             </Field>
-            <Field label="at saturation" hint="%, 0 = constant">
-              <NumberInput
+            <Field label="at saturation" hint="%, blank = constant">
+              <NullableNumberInput
                 value={
                   node.server.failureAtSaturation === null
-                    ? 0
+                    ? null
                     : Math.round(node.server.failureAtSaturation * 1000) / 10
                 }
                 min={0}
@@ -1128,7 +1163,7 @@ export function Inspector() {
                 onChange={(v) =>
                   patch((n) => {
                     if (n.server) {
-                      n.server.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
+                      n.server.failureAtSaturation = v === null ? null : Math.min(1, v / 100);
                     }
                   })
                 }
@@ -1151,7 +1186,7 @@ export function Inspector() {
               </>
             ) : (
               <>
-                Failure rises from{" "}
+                Failure changes from{" "}
                 <b className="tnum">{(node.server.failureProbability * 100).toFixed(1)}%</b> when
                 idle to{" "}
                 <b className="tnum">
@@ -1170,6 +1205,20 @@ export function Inspector() {
             onCapacity={(v) => patch((n) => { if (n.server) n.server.queueCapacity = v; })}
             onPolicy={(v) => patch((n) => { if (n.server) n.server.admissionPolicy = v; })}
           />
+          <Field label="waiting order">
+            <Select
+              value={node.server.queueDiscipline}
+              options={[
+                { value: "fifo" as const, label: "FIFO · oldest first" },
+                { value: "lifo" as const, label: "LIFO · newest first" },
+              ]}
+              onChange={(queueDiscipline) =>
+                patch((n) => {
+                  if (n.server) n.server.queueDiscipline = queueDiscipline;
+                })
+              }
+            />
+          </Field>
           <CitationNote citation={node.server.citation} />
         </>
       )}
@@ -1182,10 +1231,11 @@ export function Inspector() {
               <NumberInput
                 value={node.gateway.connectionCapacity}
                 min={1}
+                max={50_000_000}
                 step={1000}
                 onChange={(v) =>
                   patch((n) => {
-                    if (n.gateway) n.gateway.connectionCapacity = Math.max(1, Math.round(v));
+                    if (n.gateway) n.gateway.connectionCapacity = clampInt(v, 1, 50_000_000);
                   })
                 }
               />
@@ -1289,8 +1339,9 @@ export function Inspector() {
             <NumberInput
               value={node.cache.capacity}
               min={1}
+              max={MAX_QUEUE_CAPACITY}
               step={1000}
-              onChange={(v) => patch((n) => { if (n.cache) n.cache.capacity = Math.max(1, Math.round(v)); })}
+              onChange={(v) => patch((n) => { if (n.cache) n.cache.capacity = clampInt(v, 1, MAX_QUEUE_CAPACITY); })}
             />
           </Field>
           <Field label="key population">
@@ -1393,7 +1444,8 @@ export function Inspector() {
             <NumberInput
               value={node.cache.concurrency}
               min={1}
-              onChange={(v) => patch((n) => { if (n.cache) n.cache.concurrency = Math.max(1, Math.round(v)); })}
+              max={MAX_CONCURRENCY}
+              onChange={(v) => patch((n) => { if (n.cache) n.cache.concurrency = clampInt(v, 1, MAX_CONCURRENCY); })}
             />
           </Field>
           <p className="note">
@@ -1545,14 +1597,16 @@ export function Inspector() {
               <NumberInput
                 value={node.database.poolSize}
                 min={1}
-                onChange={(v) => patch((n) => { if (n.database) n.database.poolSize = Math.max(1, Math.round(v)); })}
+                max={MAX_CONCURRENCY}
+                onChange={(v) => patch((n) => { if (n.database) n.database.poolSize = clampInt(v, 1, MAX_CONCURRENCY); })}
               />
             </Field>
             <Field label="parallelism" hint="queries">
               <NumberInput
                 value={node.database.parallelism}
                 min={1}
-                onChange={(v) => patch((n) => { if (n.database) n.database.parallelism = Math.max(1, Math.round(v)); })}
+                max={MAX_CONCURRENCY}
+                onChange={(v) => patch((n) => { if (n.database) n.database.parallelism = clampInt(v, 1, MAX_CONCURRENCY); })}
               />
             </Field>
           </FieldRow>
@@ -1588,11 +1642,11 @@ export function Inspector() {
                 onChange={(v) => patch((n) => { if (n.database) n.database.failureProbability = Math.min(1, Math.max(0, v / 100)); })}
               />
             </Field>
-            <Field label="at saturation" hint="%, 0 = constant">
-              <NumberInput
+            <Field label="at saturation" hint="%, blank = constant">
+              <NullableNumberInput
                 value={
                   node.database.failureAtSaturation === null
-                    ? 0
+                    ? null
                     : Math.round(node.database.failureAtSaturation * 1000) / 10
                 }
                 min={0}
@@ -1601,7 +1655,7 @@ export function Inspector() {
                 onChange={(v) =>
                   patch((n) => {
                     if (n.database) {
-                      n.database.failureAtSaturation = v <= 0 ? null : Math.min(1, v / 100);
+                      n.database.failureAtSaturation = v === null ? null : Math.min(1, v / 100);
                     }
                   })
                 }
@@ -1610,8 +1664,9 @@ export function Inspector() {
           </FieldRow>
           <p className="note">
             A rate that rises with load closes the feedback loop that turns a slowdown into a
-            cascade. Measured from execution occupancy excluding the query itself, so a nearly
-            idle database is not charged for being busy with one request.
+            cascade; a lower saturation rate can represent graceful degradation. Measured from
+            execution occupancy excluding the query itself, so a nearly idle database is not
+            charged for being busy with one request.
           </p>
 
           <div className="section">pool queue</div>
@@ -1627,12 +1682,88 @@ export function Inspector() {
 
       {node.kind === "queue" && node.queue && (
         <>
+          <div className="section">delivery semantics</div>
+          <Field label="guarantee">
+            <Select
+              value={node.queue.delivery}
+              options={[
+                { value: "at-least-once" as const, label: "at least once · may redeliver" },
+                { value: "at-most-once" as const, label: "at most once · may lose" },
+              ]}
+              onChange={(delivery) =>
+                patch((n) => {
+                  if (n.queue) n.queue.delivery = delivery;
+                })
+              }
+            />
+          </Field>
+          {node.queue.delivery === "at-least-once" ? (
+            <>
+              <Toggle
+                label={node.queue.requireAck ? "consumer acknowledgement required" : "no acknowledgement"}
+                hint={
+                  node.queue.requireAck
+                    ? "unacknowledged work becomes eligible for redelivery"
+                    : "the broker will not redeliver failed work"
+                }
+                on={node.queue.requireAck}
+                onChange={(requireAck) =>
+                  patch((n) => {
+                    if (n.queue) n.queue.requireAck = requireAck;
+                  })
+                }
+              />
+              {node.queue.requireAck && (
+                <FieldRow>
+                  <Field label="visibility timeout" hint="ms">
+                    <NumberInput
+                      value={node.queue.visibilityTimeoutMs}
+                      min={1}
+                      max={3_600_000}
+                      step={1000}
+                      onChange={(visibilityTimeoutMs) =>
+                        patch((n) => {
+                          if (n.queue) {
+                            n.queue.visibilityTimeoutMs = Math.min(3_600_000, Math.max(1, visibilityTimeoutMs));
+                          }
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="redeliveries" hint="before abandon">
+                    <NumberInput
+                      value={node.queue.maxRedeliveries}
+                      min={0}
+                      max={100}
+                      onChange={(maxRedeliveries) =>
+                        patch((n) => {
+                          if (n.queue) n.queue.maxRedeliveries = clampInt(maxRedeliveries, 0, 100);
+                        })
+                      }
+                    />
+                  </Field>
+                </FieldRow>
+              )}
+              <p className="note">
+                If visibility expires before consumer work completes, another consumer can run the
+                same message concurrently. Exactly-once effects require an idempotent or atomic
+                operation in the workflow; they are not a queue checkbox.
+              </p>
+            </>
+          ) : (
+            <p className="note warn">
+              Each message gets one delivery attempt. Consumer failure loses the work instead of
+              retrying it.
+            </p>
+          )}
+
           <div className="section">consumers</div>
           <Field label="consumers" hint="drain concurrency">
             <NumberInput
               value={node.queue.consumers}
               min={1}
-              onChange={(v) => patch((n) => { if (n.queue) n.queue.consumers = Math.max(1, Math.round(v)); })}
+              max={MAX_CONCURRENCY}
+              onChange={(v) => patch((n) => { if (n.queue) n.queue.consumers = clampInt(v, 1, MAX_CONCURRENCY); })}
             />
           </Field>
           <div className="section">consumer work</div>
@@ -1686,6 +1817,20 @@ export function Inspector() {
             value={node.lock.serviceTime}
             onChange={(serviceTime) => patch((n) => { if (n.lock) n.lock.serviceTime = serviceTime; })}
           />
+          <div className="section">failure injection</div>
+          <Field label="failure rate" hint="% of lease operations">
+            <NumberInput
+              value={Math.round(node.lock.failureProbability * 1000) / 10}
+              min={0}
+              max={100}
+              step={1}
+              onChange={(failureRate) =>
+                patch((n) => {
+                  if (n.lock) n.lock.failureProbability = Math.min(1, Math.max(0, failureRate / 100));
+                })
+              }
+            />
+          </Field>
           <div className="section">waiters</div>
           <QueueLimitEditor
             queueCapacity={node.lock.queueCapacity}
@@ -1696,6 +1841,8 @@ export function Inspector() {
           <CitationNote citation={node.lock.citation} />
         </>
       )}
+
+      <ResourceProfileEditor nodeId={node.id} />
 
         {lens === "load" && behaviour}
 
@@ -1710,6 +1857,83 @@ export function Inspector() {
 
       <FreehandNote />
     </aside>
+  );
+}
+
+type ResourceField =
+  | "cpuUnits"
+  | "memoryMb"
+  | "storageMb"
+  | "connectionSlots"
+  | "networkBytesPerRequest";
+
+/** Physical resource estimates used by candidate comparison. Blank remains unknown. */
+function ResourceProfileEditor({ nodeId }: { nodeId: string }) {
+  const node = useStudio((state) => state.design.nodes.find((candidate) => candidate.id === nodeId));
+  const edit = useStudio((state) => state.edit);
+  if (!node) return null;
+  const resources = node.resources ?? emptyResourceProfile();
+  const set = (field: ResourceField, value: number | null) =>
+    edit((design) => {
+      const candidate = design.nodes.find((item) => item.id === nodeId);
+      if (!candidate) return;
+      candidate.resources ??= emptyResourceProfile();
+      candidate.resources[field] = value;
+    });
+
+  return (
+    <>
+      <div className="section">resource estimates</div>
+      <FieldRow>
+        <Field label="compute" hint="vCPU-equivalent / instance">
+          <NullableNumberInput
+            value={resources.cpuUnits}
+            min={0}
+            step={0.25}
+            placeholder="unknown"
+            onChange={(value) => set("cpuUnits", value)}
+          />
+        </Field>
+        <Field label="memory" hint="MB / instance">
+          <NullableNumberInput
+            value={resources.memoryMb}
+            min={0}
+            placeholder="unknown"
+            onChange={(value) => set("memoryMb", value)}
+          />
+        </Field>
+      </FieldRow>
+      <FieldRow>
+        <Field label="persistent storage" hint="MB / instance">
+          <NullableNumberInput
+            value={resources.storageMb}
+            min={0}
+            placeholder="unknown"
+            onChange={(value) => set("storageMb", value)}
+          />
+        </Field>
+        <Field label="connection slots" hint="per instance">
+          <NullableNumberInput
+            value={resources.connectionSlots}
+            min={0}
+            placeholder="unknown"
+            onChange={(value) => set("connectionSlots", value)}
+          />
+        </Field>
+      </FieldRow>
+      <Field label="network transfer" hint="bytes / request">
+        <NullableNumberInput
+          value={resources.networkBytesPerRequest}
+          min={0}
+          placeholder="unknown"
+          onChange={(value) => set("networkBytesPerRequest", value)}
+        />
+      </Field>
+      <p className="note">
+        Blank means unmeasured and stays unknown in comparison. Zero is a measured zero; it is not
+        silently treated as free when the value is absent.
+      </p>
+    </>
   );
 }
 
@@ -1825,14 +2049,15 @@ function PolicyEditor({ edgeId }: { edgeId: string }) {
             />
           </Field>
 
-          <Field label="retry budget" hint="%, 0 = unlimited">
-            <NumberInput
-              value={p.retry.budgetRatio === null ? 0 : Math.round(p.retry.budgetRatio * 1000) / 10}
+          <Field label="retry budget" hint="% extra calls · blank = unlimited">
+            <NullableNumberInput
+              value={p.retry.budgetRatio === null ? null : Math.round(p.retry.budgetRatio * 1000) / 10}
               min={0}
               step={5}
+              placeholder="unlimited"
               onChange={(v) =>
                 patch((e) => {
-                  if (e.policy.retry) e.policy.retry.budgetRatio = v <= 0 ? null : v / 100;
+                  if (e.policy.retry) e.policy.retry.budgetRatio = v === null ? null : v / 100;
                 })
               }
             />
@@ -1863,8 +2088,10 @@ function PolicyEditor({ edgeId }: { edgeId: string }) {
                 const on = p.retry!.retryOn.includes(r.id);
                 return (
                   <button
+                    type="button"
                     key={r.id}
                     className={`chip ${on ? "on" : ""}`}
+                    aria-pressed={on}
                     title={r.note}
                     onClick={() =>
                       patch((e) => {
@@ -1909,6 +2136,20 @@ function PolicyEditor({ edgeId }: { edgeId: string }) {
                   onChange={(v) => patch((e) => { if (e.policy.retry) e.policy.retry.backoff.baseMs = Math.max(0, v); })}
                 />
               </Field>
+              {p.retry.backoff.kind === "exponential" && (
+                <Field label="max delay" hint="ms · exponential cap">
+                  <NumberInput
+                    value={p.retry.backoff.maxMs}
+                    min={0}
+                    step={100}
+                    onChange={(v) =>
+                      patch((e) => {
+                        if (e.policy.retry) e.policy.retry.backoff.maxMs = Math.max(0, v);
+                      })
+                    }
+                  />
+                </Field>
+              )}
               <Toggle
                 label={p.retry.backoff.jitter ? "jittered" : "no jitter"}
                 hint={p.retry.backoff.jitter ? "randomised over [0, delay]" : "every client retries in lockstep"}
@@ -1936,21 +2177,55 @@ function PolicyEditor({ edgeId }: { edgeId: string }) {
       />
       {p.circuitBreaker.enabled && (
         <>
-          <Field label="failure threshold" hint="%">
+          <FieldRow>
+            <Field label="failure threshold" hint="%">
+              <NumberInput
+                value={Math.round(p.circuitBreaker.failureThreshold * 1000) / 10}
+                min={1}
+                max={100}
+                step={5}
+                onChange={(v) => patch((e) => { e.policy.circuitBreaker.failureThreshold = Math.min(1, Math.max(0.01, v / 100)); })}
+              />
+            </Field>
+            <Field label="minimum samples" hint="before opening">
+              <NumberInput
+                value={p.circuitBreaker.minimumRequests}
+                min={1}
+                onChange={(v) =>
+                  patch((e) => {
+                    e.policy.circuitBreaker.minimumRequests = Math.max(1, Math.round(v));
+                  })
+                }
+              />
+            </Field>
+          </FieldRow>
+          <FieldRow>
+            <Field label="rolling window" hint="ms">
+              <NumberInput
+                value={p.circuitBreaker.windowMs}
+                min={1}
+                step={500}
+                onChange={(v) => patch((e) => { e.policy.circuitBreaker.windowMs = Math.max(1, v); })}
+              />
+            </Field>
+            <Field label="stay open" hint="ms">
+              <NumberInput
+                value={p.circuitBreaker.openMs}
+                min={1}
+                step={500}
+                onChange={(v) => patch((e) => { e.policy.circuitBreaker.openMs = Math.max(1, v); })}
+              />
+            </Field>
+          </FieldRow>
+          <Field label="half-open probes" hint="concurrent trial calls">
             <NumberInput
-              value={Math.round(p.circuitBreaker.failureThreshold * 1000) / 10}
+              value={p.circuitBreaker.halfOpenProbes}
               min={1}
-              max={100}
-              step={5}
-              onChange={(v) => patch((e) => { e.policy.circuitBreaker.failureThreshold = Math.min(1, Math.max(0.01, v / 100)); })}
-            />
-          </Field>
-          <Field label="stay open" hint="ms">
-            <NumberInput
-              value={p.circuitBreaker.openMs}
-              min={100}
-              step={500}
-              onChange={(v) => patch((e) => { e.policy.circuitBreaker.openMs = Math.max(100, v); })}
+              onChange={(v) =>
+                patch((e) => {
+                  e.policy.circuitBreaker.halfOpenProbes = Math.max(1, Math.round(v));
+                })
+              }
             />
           </Field>
           <p className="note">
@@ -1976,14 +2251,16 @@ function PolicyEditor({ edgeId }: { edgeId: string }) {
             <NumberInput
               value={p.bulkhead.maxConcurrent}
               min={1}
-              onChange={(v) => patch((e) => { e.policy.bulkhead.maxConcurrent = Math.max(1, Math.round(v)); })}
+              max={MAX_CONCURRENCY}
+              onChange={(v) => patch((e) => { e.policy.bulkhead.maxConcurrent = clampInt(v, 1, MAX_CONCURRENCY); })}
             />
           </Field>
           <Field label="queue" hint="0 = reject at once">
             <NumberInput
               value={p.bulkhead.queueCapacity}
               min={0}
-              onChange={(v) => patch((e) => { e.policy.bulkhead.queueCapacity = Math.max(0, Math.round(v)); })}
+              max={MAX_QUEUE_CAPACITY}
+              onChange={(v) => patch((e) => { e.policy.bulkhead.queueCapacity = clampInt(v, 0, MAX_QUEUE_CAPACITY); })}
             />
           </Field>
           <p className="note">
@@ -2265,12 +2542,14 @@ function QueueLimitEditor({
   return (
     <>
       <FieldRow>
-        <Field label="capacity" hint="0 = unbounded">
-          <NumberInput
-            value={queueCapacity ?? 0}
+        <Field label="waiting capacity" hint="blank = unbounded">
+          <NullableNumberInput
+            value={queueCapacity}
             min={0}
+            max={MAX_QUEUE_CAPACITY}
             step={10}
-            onChange={(v) => onCapacity(v <= 0 ? null : Math.round(v))}
+            placeholder="unbounded"
+            onChange={(v) => onCapacity(v === null ? null : clampInt(v, 0, MAX_QUEUE_CAPACITY))}
           />
         </Field>
         <Field label="when full">
@@ -2286,9 +2565,9 @@ function QueueLimitEditor({
         </Field>
       </FieldRow>
       <p className="note">
-        Shedding trades errors for bounded latency: an overloaded station with a bounded queue
-        still has a steady state. Blocking in an open-loop system makes the bound advisory,
-        since there is no upstream buffer to push back against.
+        Zero waiting capacity with shedding rejects immediately when every worker is busy.
+        Shedding trades errors for bounded latency; blocking in an open-loop system makes the
+        bound advisory because there is no upstream buffer to push back against.
       </p>
     </>
   );

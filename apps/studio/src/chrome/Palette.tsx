@@ -76,6 +76,7 @@ export const Palette = ({ onClose }: { onClose: () => void }) => {
           <div className="palette-grid">
             {group.presets.map((preset) => (
               <button
+                type="button"
                 key={preset.id}
                 className="palette-card"
                 title={`${preset.blurb} Click to place automatically, or drag to an exact canvas position.`}

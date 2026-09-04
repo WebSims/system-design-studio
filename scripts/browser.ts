@@ -23,7 +23,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { pizzaStudy } from "@sds/models";
+import { PRESETS, pizzaStudy } from "@sds/models";
 
 
 /**
@@ -143,6 +143,10 @@ async function importDevelopmentScenario(): Promise<void> {
     name: "browser acceptance fixture",
   };
   const json = JSON.stringify(JSON.stringify(fixture));
+  if ((await count('input[type="file"]')) === 0) {
+    await click(".crumb-current");
+    await waitFor(`document.querySelector('input[type="file"]')`, "the project import input");
+  }
   await evaluate(`(() => {
     const input = document.querySelector('input[type="file"]');
     if (!input) throw new Error("no project import input");
@@ -169,30 +173,49 @@ const checks: Check[] = [
   },
 
   {
-    // The product's actual first screen. It used to boot into the pizza example, which taught that
-    // the problem ships with the tool and only the architecture is yours -- backwards, since the
-    // problem is the input.
-    name: "it offers codebase reconstruction and a working manual canvas",
+    name: "the current start screen exposes all three entry paths and a working blank canvas",
     async run() {
       const chips = await count(".candidate-chip:not(.candidate-add)");
       if (chips !== 0) return `expected an empty project, found ${chips} candidate chips`;
       await waitFor(`document.querySelector(".empty-study")`, "the empty state");
-      const body = await text(".empty-card");
-      if (!/create system design from codebase/i.test(body)) return "the codebase prompt is missing";
+      const body = await text(".start-shell");
+      if (!/coding agent draw the current system/i.test(body)) return "the codebase entry path is missing";
       if (!/coding agent/i.test(body)) return "the empty state never says that a coding agent does the work";
       if (!/webmcp/i.test(body)) return "the empty state never names the shared WebMCP path";
-      if ((await count(".starter-prompt")) !== 1) return "expected exactly one MVP agent prompt";
+      if (!/new project/i.test(body)) return "the blank-canvas entry path is missing";
+      if (!/worked scenario/i.test(body)) return "the worked-scenario entry path is missing";
+      await click(`.start-option.import .btn:not(.primary)`);
+      await waitFor(`document.querySelector(".starter-prompt")`, "the agent prompt disclosure");
+      if ((await count(".starter-prompt")) !== 1) return "expected exactly one agent prompt";
       const topbar = await text(".topbar");
       if (/projects|agent prompts/i.test(topbar)) return "empty project controls remain in the top bar";
-      if (/pizza|worked example/i.test(body)) return "the empty state still offers a bundled example";
 
-      await click(".manual-design-action");
+      await click(".start-option.blank .btn.primary");
       await waitFor(
         `document.querySelectorAll(".candidate-chip:not(.candidate-add)").length === 1`,
         "the manual design candidate"
       );
       if ((await count(".react-flow__node")) !== 0) return "the manual canvas invented components";
-      if ((await count("button")) === 0 || !/add component/i.test(await text(".topbar"))) {
+      const quickInsertCount = await count(`.toolbar-quick button[aria-label^="Add "]`);
+      if (quickInsertCount !== PRESETS.length) {
+        return `expected ${PRESETS.length} component presets, found ${quickInsertCount}`;
+      }
+      for (const preset of PRESETS) {
+        await click(`button[aria-label=${JSON.stringify(`Add ${preset.label}`)}]`);
+      }
+      await waitFor(
+        `document.querySelectorAll(".react-flow__node").length === ${PRESETS.length}`,
+        "every component preset to be inserted"
+      );
+      const styled = await count(".react-flow__node .node");
+      if (styled !== PRESETS.length) return `${PRESETS.length - styled} inserted presets used a fallback node`;
+      if (!/server/i.test(await text(".rail.right"))) return "the final inserted component did not open its Inspector";
+      await click(`button[aria-label="Delete node"]`);
+      await waitFor(
+        `document.querySelectorAll(".react-flow__node").length === ${PRESETS.length - 1}`,
+        "the selected inserted component to be removed"
+      );
+      if ((await count("button")) === 0 || !/component/i.test(await text(".topbar"))) {
         return "the manual canvas has no way to add its first component";
       }
       return null;
@@ -200,10 +223,8 @@ const checks: Check[] = [
   },
 
   {
-    name: "the README development scenario imports without appearing in the app",
+    name: "the development fixture imports through the same JSON path as a user project",
     async run() {
-      const appText = await text(".shell");
-      if (/pizza|worked examples/i.test(appText)) return "the app exposes the development scenario";
       await importDevelopmentScenario();
       const agentChips = await count(".candidate-chip.agent");
       if (agentChips !== 0) return `${agentChips} candidates are marked agent-authored before any agent ran`;
@@ -218,8 +239,155 @@ const checks: Check[] = [
       // React Flow's default node, which has no label and breaks selection.
       const nodes = await count(".react-flow__node");
       if (nodes < 4) return `expected the default candidate's nodes, found ${nodes}`;
-      const styled = await count(".react-flow__node .sds-node, .react-flow__node [class*='node']");
-      if (styled < nodes) return `${nodes - styled} nodes fell back to React Flow's default renderer`;
+      const styled = await count(".react-flow__node .node");
+      if (styled !== nodes) return `${nodes - styled} nodes fell back to React Flow's default renderer`;
+      return null;
+    },
+  },
+
+  {
+    name: "Guided folds advanced controls while Expert expands the same model",
+    async run() {
+      await evaluate(`document.querySelector('[aria-label="Interface detail"] button:first-child').click()`);
+      await evaluate(`document.querySelector('.react-flow__node[data-id="crowd"]').click()`);
+      await waitFor(`document.querySelector('.rail.right .density-section')`, "component controls in the Inspector");
+      const guidedOpen = await evaluate<number>(
+        `[...document.querySelectorAll('.rail.right .density-section')].filter((section) => section.open).length`
+      );
+      if (guidedOpen !== 0) return `Guided unexpectedly opened ${guidedOpen} advanced sections`;
+
+      await evaluate(`document.querySelector('[aria-label="Interface detail"] button:nth-child(2)').click()`);
+      await waitFor(
+        `[...document.querySelectorAll('.rail.right .density-section')].every((section) => section.open)`,
+        "Expert controls to expand"
+      );
+      const caption = await text(".density-caption");
+      if (caption !== "All controls") return `Expert caption stayed at "${caption}"`;
+      if ((await count(".react-flow__node")) < 1) return "changing interface density changed the design";
+
+      await evaluate(`document.querySelector('[aria-label="Interface detail"] button:first-child').click()`);
+      await waitFor(
+        `![...document.querySelectorAll('.rail.right .density-section')].some((section) => section.open)`,
+        "Guided controls to fold again"
+      );
+      return null;
+    },
+  },
+
+  {
+    name: "a rendered connection can be selected, edited, and undone",
+    async run() {
+      const selected = await evaluate<boolean>(`(() => {
+        const path = document.querySelector('.react-flow__edge .react-flow__edge-interaction');
+        if (!path) return false;
+        path.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        return true;
+      })()`);
+      if (!selected) return "no rendered connection interaction path was available";
+      await waitFor(`document.querySelector('button[aria-label="Delete connection"]')`, "the connection Inspector");
+      await evaluate(`document.querySelector('[aria-label="Interface detail"] button:nth-child(2)').click()`);
+      await waitFor(
+        `[...document.querySelectorAll('.rail.right .density-section')].every((section) => section.open)`,
+        "connection controls to expand"
+      );
+
+      const before = await evaluate<string>(`(() => {
+        const field = [...document.querySelectorAll('.rail.right label.field')]
+          .find((label) => label.querySelector('.field-label')?.childNodes[0]?.textContent?.trim() === 'probability');
+        return field?.querySelector('input')?.value ?? '';
+      })()`);
+      if (!before) return "the connection routing probability control is missing";
+      const next = before === "100" ? "99" : "100";
+      await evaluate(`(() => {
+        const field = [...document.querySelectorAll('.rail.right label.field')]
+          .find((label) => label.querySelector('.field-label')?.childNodes[0]?.textContent?.trim() === 'probability');
+        const input = field?.querySelector('input');
+        if (!input) throw new Error('probability input missing');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(input, ${JSON.stringify(next)});
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await waitFor(
+        `(() => {
+          const field = [...document.querySelectorAll('.rail.right label.field')]
+            .find((label) => label.querySelector('.field-label')?.childNodes[0]?.textContent?.trim() === 'probability');
+          return field?.querySelector('input')?.value === ${JSON.stringify(next)};
+        })()`,
+        "the edited connection value"
+      );
+
+      await click(`button[aria-label^="Undo"]`);
+      await waitFor(
+        `(() => {
+          const field = [...document.querySelectorAll('.rail.right label.field')]
+            .find((label) => label.querySelector('.field-label')?.childNodes[0]?.textContent?.trim() === 'probability');
+          return field?.querySelector('input')?.value === ${JSON.stringify(before)};
+        })()`,
+        "the connection edit to undo"
+      );
+      return null;
+    },
+  },
+
+  {
+    name: "manual injection and full streaming both drive deterministic live sessions",
+    async run() {
+      await click(`.lens-tabs button:nth-child(2)`);
+      await waitFor(`document.querySelector(".simulation-session")`, "the live simulation controls");
+
+      await click(`.session-mode button:first-child`);
+      await click(`.simulation-session .session-actions .btn.primary`);
+      await waitFor(`document.querySelector('.session-state')?.textContent.includes('ready')`, "the armed manual session");
+      const manualTimeBefore = await text(".session-progress-row .tnum");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const manualTimeAfter = await text(".session-progress-row .tnum");
+      if (manualTimeAfter !== manualTimeBefore) return "a paused manual session advanced on wall-clock time";
+
+      await evaluate(`document.querySelector('.react-flow__node[data-id="crowd"]').click()`);
+      await waitFor(
+        `document.querySelector('.session-readout')?.textContent.includes('1 injected')`,
+        "one manual request to be injected"
+      );
+      const manualReadout = await text(".session-readout");
+      if (!manualReadout.includes("1 injected")) return `manual click produced the wrong count: ${manualReadout}`;
+      await evaluate(`([...document.querySelectorAll('.simulation-session button')]
+        .find((button) => button.textContent.trim() === 'Finish')).click()`);
+      await waitFor(`document.querySelector('.session-state')?.textContent.includes('completed')`, "manual completion", 90_000);
+      if ((await count(".simulation-session button")) === 0 || !(await text(".simulation-session")).includes("Replay trace")) {
+        return "the completed manual session was not retained for replay";
+      }
+
+      await click(`.session-mode button:nth-child(2)`);
+      await click(`.simulation-session .session-actions .btn.primary`);
+      await waitFor(
+        `(() => {
+          const value = document.querySelector('.session-readout span')?.textContent ?? '';
+          return /[1-9][0-9,]* generated/.test(value);
+        })()`,
+        "the full workload stream"
+      );
+      await click(`button[aria-label="Pause session"]`);
+      await waitFor(`document.querySelector('button[aria-label="Resume session"]')`, "the full session to pause");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const pausedAt = await text(".session-progress-row .tnum");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      if ((await text(".session-progress-row .tnum")) !== pausedAt) return "the paused full session kept advancing";
+
+      await evaluate(`(() => {
+        const select = document.querySelector('.session-speed select');
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+        setter.call(select, '4');
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`);
+      await click(`button[aria-label="Resume session"]`);
+      await waitFor(
+        `document.querySelector('.session-progress-row .tnum')?.textContent !== ${JSON.stringify(pausedAt)}`,
+        "the resumed full session to advance"
+      );
+      await evaluate(`([...document.querySelectorAll('.simulation-session button')]
+        .find((button) => button.textContent.trim() === 'Finish')).click()`);
+      await waitFor(`document.querySelector('.session-state')?.textContent.includes('completed')`, "full completion", 90_000);
+      await click(`.lens-tabs button:first-child`);
       return null;
     },
   },
@@ -299,13 +467,15 @@ const checks: Check[] = [
   {
     name: "the correctness view runs a search and renders a counterexample as swimlanes",
     async run() {
-      await click(`.tabs button:nth-of-type(2)`);
-      await waitFor(`document.querySelector(".view-correctness")`, "the correctness view");
-      await click(`.view-correctness .btn.primary`);
+      await click(`.lens-tabs button:first-child`);
+      await waitFor(`document.querySelector(".doc-rail")`, "the Behaviour lens");
+      await click(`.hero-play`);
       await waitFor(`document.querySelector(".verdict")`, "a verdict", 90_000);
 
       const status = await text(".verdict-status");
-      if (!status.includes("violated")) return `expected the first candidate to be violated, got "${status}"`;
+      if (!/breaks a rule|violated/i.test(status)) {
+        return `expected the first candidate to break a rule, got "${status}"`;
+      }
 
       // The rendered consequence, not the internal value: a layout that computed correct columns and
       // drew nothing would pass every node test and fail here.
@@ -322,20 +492,20 @@ const checks: Check[] = [
   {
     name: "the scrubber steps through the trace",
     async run() {
-      const before = await text(".timeline .stat-grid");
+      const before = await text(".dock-state");
       // Through the native value setter, because React tracks the last value it wrote on the DOM
       // node and ignores an event whose value it believes it already has. Assigning `.value`
       // directly updates the node and React's tracker in one step, so the change looks like a
       // no-op. This is a property of the framework, not of the app, and getting it wrong here would
       // have reported a working scrubber as broken.
       await evaluate(`(() => {
-        const slider = document.querySelector(".scrubber input");
+        const slider = document.querySelector(".dock-scrub");
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
         setter.call(slider, "0");
         slider.dispatchEvent(new Event("input", { bubbles: true }));
       })()`);
       await new Promise((r) => setTimeout(r, 200));
-      const after = await text(".timeline .stat-grid");
+      const after = await text(".dock-state");
       if (before === after) return "moving the scrubber to the first step changed nothing on screen";
       const future = await count(".lane-row-future");
       if (future < 1) return "later steps were not dimmed, so the trace does not read as ordered";
@@ -349,8 +519,16 @@ const checks: Check[] = [
       // The earlier search locks the contract. Reimport the development fixture so this check
       // starts with a fresh project rather than testing the lock twice.
       await importDevelopmentScenario();
-      await click(`.tabs button:nth-of-type(2)`);
-      await waitFor(`document.querySelector(".view-correctness")`, "the correctness view");
+      await click(`.lens-tabs button:first-child`);
+      await waitFor(`document.querySelector(".doc-rail")`, "the Behaviour lens");
+      await click(`[aria-label="Interface detail"] button:first-child`);
+      await evaluate(`(() => {
+        const button = [...document.querySelectorAll('.doc-rail button')]
+          .find((candidate) => candidate.textContent.trim() === '+ add a rule');
+        if (!button || button.disabled) throw new Error('the add-rule control is unavailable');
+        button.click();
+      })()`);
+      await waitFor(`document.querySelector(".builder")`, "the Guided invariant builder");
 
       const before = await count(".invariant-list li");
       await evaluate(`(() => {
@@ -384,7 +562,7 @@ const checks: Check[] = [
   {
     name: "expert mode shows the same invariant as declarative JSON",
     async run() {
-      await click(`.tabs-small button:nth-of-type(2)`);
+      await click(`[aria-label="Interface detail"] button:nth-child(2)`);
       await new Promise((r) => setTimeout(r, 200));
       const previews = await count(".invariant-list .expr-preview");
       if (previews < 1) return "expert mode rendered no expression";
@@ -395,9 +573,9 @@ const checks: Check[] = [
   },
 
   {
-    name: "the compare view gates the broken candidates out and offers promotion only for eligible ones",
+    name: "the compare view gates broken candidates out and offers approval only for eligible changes",
     async run() {
-      await click(`.tabs button:nth-of-type(4)`);
+      await click(`.topbar button[title^="Compare versions"]`);
       await waitFor(`document.querySelector(".view-compare")`, "the compare view");
 
       const deltaPickers = await count(".architecture-delta select");
@@ -426,26 +604,27 @@ const checks: Check[] = [
         return `the frontier claim dropped its qualifier: "${claim.slice(0, 120)}"`;
       }
 
-      const enabledPromote = await evaluate<number>(`
+      const enabledApproval = await evaluate<number>(`
         [...document.querySelectorAll(".gate-card footer .btn")]
-          .filter((b) => b.textContent.trim() === "Choose" && !b.disabled).length
+          .filter((b) => b.textContent.trim().startsWith("Approve") && !b.disabled).length
       `);
-      if (enabledPromote < 1) return "no eligible candidate offered an enabled promote button";
+      if (enabledApproval < 1) return "no eligible experiment offered an enabled approval button";
       const enabledOnIneligible = await evaluate<number>(`
         [...document.querySelectorAll(".gate-card.gate-ineligible footer .btn")]
-          .filter((b) => b.textContent.trim() === "Choose" && !b.disabled).length
+          .filter((b) => b.textContent.trim().startsWith("Approve") && !b.disabled).length
       `);
-      if (enabledOnIneligible > 0) return "an ineligible candidate offered promotion";
+      if (enabledOnIneligible > 0) return "an ineligible candidate offered approval";
       return null;
     },
   },
 
   {
-    name: "promotion is a human click and it sticks",
+    name: "approval is a human click and it sticks",
     async run() {
       await evaluate(`(() => {
         const btn = [...document.querySelectorAll(".gate-card.gate-eligible footer .btn")]
-          .find((b) => b.textContent.trim() === "Choose" && !b.disabled);
+          .find((b) => b.textContent.trim().startsWith("Approve") && !b.disabled);
+        if (!btn) throw new Error("no eligible approval button");
         btn.click();
       })()`);
       await waitFor(`document.querySelector(".chip-promoted")`, "a promoted badge");
@@ -484,13 +663,16 @@ const checks: Check[] = [
   {
     name: "the agent surface reports its own availability rather than failing silently",
     async run() {
-      const label = await evaluate<string>(`
-        [...document.querySelectorAll(".btn")].map((b) => b.textContent.trim()).find((t) => t.startsWith("WebMCP ")) ?? ""
-      `);
-      if (!label) return "no agent status is shown anywhere";
-      // Either a tool count, or a stated reason. Both are acceptable; silence is not.
-      if (!/WebMCP (ready|unsupported|failed|idle|unknown)/.test(label)) {
-        return `WebMCP status is uninformative: "${label}"`;
+      const title = await evaluate<string>(`document.querySelector(".status-btn")?.getAttribute("title") ?? ""`);
+      if (!title) return "the Agent button has no availability explanation";
+      await click(".status-btn");
+      await waitFor(`document.querySelector(".agent-panel")`, "the Agent panel");
+      const panel = await text(".agent-panel");
+      if (!/WebMCP/.test(panel) || !/(connected through|no WebMCP client attached)/i.test(panel)) {
+        return `the Agent panel status is uninformative: "${panel.slice(0, 160)}"`;
+      }
+      if (!/recommended/.test(panel) || !/external coding agent/i.test(panel)) {
+        return "the Agent panel does not identify the primary external provider";
       }
       return null;
     },
@@ -499,7 +681,8 @@ const checks: Check[] = [
   {
     name: "adding a candidate copies rather than aliases",
     async run() {
-      await click(`.tabs button:nth-of-type(1)`);
+      if (await count(`button[aria-label="close review"]`)) await click(`button[aria-label="close review"]`);
+      await click(`.lens-tabs button:first-child`);
       const before = await count(".candidate-chip:not(.candidate-add)");
       await click(".candidate-add");
       await new Promise((r) => setTimeout(r, 400));

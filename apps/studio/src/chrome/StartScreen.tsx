@@ -42,9 +42,12 @@ const FINDS = [
   "the bottleneck",
   "retry storms",
   "growing backlog",
+  "quorum gaps",
+  "replica partitions",
+  "divergence and clock skew",
 ]
 
-const NOT_YET = ["isolation levels", "partitions", "quorum", "clock skew", "liveness"]
+const NOT_YET = ["general liveness proofs", "packet-level networking", "deployment orchestration"]
 
 type CopyState = "idle" | "copying" | "copied" | "failed"
 

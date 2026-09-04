@@ -94,6 +94,56 @@ export function NumberInput({
   )
 }
 
+/**
+ * Parse an optional numeric field without collapsing a real zero into "unset".
+ *
+ * Empty text means the value is unknown/unbounded. Invalid transitional text is
+ * ignored so typing cannot put NaN into the model.
+ */
+export function parseNullableNumber(
+  raw: string,
+  min = -Infinity,
+  max = Infinity
+): number | null | undefined {
+  if (raw.trim() === "") return null
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return undefined
+  return Math.min(max, Math.max(min, value))
+}
+
+/** A number input where blank and zero are intentionally different values. */
+export function NullableNumberInput({
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  placeholder,
+}: {
+  value: number | null
+  onChange: (v: number | null) => void
+  min?: number
+  max?: number
+  step?: number
+  placeholder?: string
+}) {
+  return (
+    <input
+      type="number"
+      className="input tnum"
+      value={value ?? ""}
+      min={min}
+      max={max}
+      step={step ?? 1}
+      placeholder={placeholder}
+      onChange={(event) => {
+        const next = parseNullableNumber(event.currentTarget.value, min, max)
+        if (next !== undefined) onChange(next)
+      }}
+    />
+  )
+}
+
 export function Toggle({
   label,
   hint,
@@ -106,7 +156,12 @@ export function Toggle({
   onChange: (v: boolean) => void
 }) {
   return (
-    <button className={`toggle-row ${on ? "on" : ""}`} onClick={() => onChange(!on)}>
+    <button
+      type="button"
+      className={`toggle-row ${on ? "on" : ""}`}
+      aria-pressed={on}
+      onClick={() => onChange(!on)}
+    >
       <span className="toggle-switch">
         <span className="toggle-knob" />
       </span>

@@ -968,7 +968,13 @@ export function LockEditor({ nodeId }: { nodeId: string }) {
         onChange={(v) => patch((l) => { l.fencingTokens = v })}
       />
       <Field label="default ttl" hint="ms">
-        <NumberInput value={lock.defaultTtlMs} min={1} step={500} onChange={(v) => patch((l) => { l.defaultTtlMs = Math.max(1, v) })} />
+        <NumberInput
+          value={lock.defaultTtlMs}
+          min={1}
+          max={3_600_000}
+          step={500}
+          onChange={(v) => patch((l) => { l.defaultTtlMs = Math.min(3_600_000, Math.max(1, v)) })}
+        />
       </Field>
       <p className="note">
         Too short and a healthy holder loses its lease mid-work, so two workers proceed believing they

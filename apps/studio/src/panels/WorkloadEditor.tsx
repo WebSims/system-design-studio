@@ -3,7 +3,7 @@ import { isPlaceholderWorkload, isTimeVarying, type ArrivalProcess, type Study }
 import { useStudio } from "../store"
 import { useStudyStore } from "../study/store"
 import { PlusIcon, TrashIcon } from "../ui/icons"
-import { Field, FieldRow, IconButton, NumberInput, Select } from "./controls"
+import { Field, FieldRow, IconButton, NullableNumberInput, NumberInput, Select } from "./controls"
 import { DensitySection } from "./DensitySection"
 
 /**
@@ -518,6 +518,14 @@ export const AdvancedSettings = ({ study, children }: { study: Study; children?:
           />
         </Field>
       </FieldRow>
+      <Field label="trace events retained" hint="0 = metrics only">
+        <NumberInput
+          value={w.traceLimit}
+          min={0}
+          step={1000}
+          onChange={(v) => setWorkload({ traceLimit: Math.max(0, Math.round(v)) })}
+        />
+      </Field>
       <p className="note">
         Warm-up removes startup bias. Longer runs improve accuracy near saturation. One seed is an anecdote; every
         version runs the same seeds, so a difference between two is not a difference between two workloads.
@@ -525,16 +533,23 @@ export const AdvancedSettings = ({ study, children }: { study: Study; children?:
 
       <p className="muted advanced-sub">slo</p>
       <FieldRow>
-        <Field label="p99 target" hint="ms, 0 = none">
-          <NumberInput value={slo.p99LatencyMs ?? 0} min={0} step={10} onChange={(v) => setSlo({ p99LatencyMs: v <= 0 ? null : v })} />
+        <Field label="p99 target" hint="ms · blank = none">
+          <NullableNumberInput
+            value={slo.p99LatencyMs}
+            min={0.01}
+            step={10}
+            placeholder="none"
+            onChange={(v) => setSlo({ p99LatencyMs: v })}
+          />
         </Field>
-        <Field label="max errors" hint="%, 0 = none">
-          <NumberInput
-            value={slo.maxErrorRatePct ?? 0}
+        <Field label="max errors" hint="% · blank = none">
+          <NullableNumberInput
+            value={slo.maxErrorRatePct}
             min={0}
             max={100}
             step={0.1}
-            onChange={(v) => setSlo({ maxErrorRatePct: v <= 0 ? null : v })}
+            placeholder="none"
+            onChange={(v) => setSlo({ maxErrorRatePct: v })}
           />
         </Field>
       </FieldRow>

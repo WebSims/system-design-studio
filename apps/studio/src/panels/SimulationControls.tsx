@@ -1,73 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SimulationMode } from "@sds/core";
-import type { FailureEvent } from "@sds/schema";
 import { useStudio } from "../store";
 import { DensitySection } from "./DensitySection";
+import {
+  FAILURE_KINDS,
+  failureStrengthLabel,
+  failureSummary,
+  failureTargetId,
+  failureTargetsFor,
+  makeFailureEvent,
+  type FailureKind,
+} from "./failureEditor";
 
 const SPEEDS = [0.5, 1, 2, 4] as const;
-type FailureKind = FailureEvent["kind"];
 
-const FAILURE_KINDS: Array<{ value: FailureKind; label: string }> = [
-  { value: "node-outage", label: "Node outage" },
-  { value: "capacity-reduction", label: "Capacity reduction" },
-  { value: "service-degradation", label: "Service degradation" },
-  { value: "edge-latency", label: "Edge latency" },
-  { value: "request-loss", label: "Request loss" },
-  { value: "gateway-disconnection", label: "Gateway disconnection" },
-  { value: "replica-partition", label: "Replica partition" },
-  { value: "replica-divergence", label: "Replica divergence" },
-  { value: "clock-skew", label: "Replica clock skew" },
-];
-
-function failureTargetId(event: FailureEvent): string {
-  if ("targetNodeId" in event) return event.targetNodeId;
-  if ("targetEdgeId" in event) return event.targetEdgeId;
-  return event.replicaGroupId;
-}
-
-function failureSummary(event: FailureEvent): string {
-  switch (event.kind) {
-    case "node-outage":
-      return "offline";
-    case "capacity-reduction":
-      return `${Math.round(event.factor * 100)}% capacity`;
-    case "service-degradation":
-    case "edge-latency":
-      return `${event.factor.toFixed(1)}×`;
-    case "request-loss":
-      return `${Math.round(event.lossProbability * 100)}% loss`;
-    case "gateway-disconnection":
-      return `${Math.round(event.fraction * 100)}% disconnected`;
-    case "replica-partition":
-      return `${event.availableReplicas} reachable`;
-    case "replica-divergence":
-      return `${event.staleReplicas} stale · ${event.versionLag} version lag`;
-    case "clock-skew":
-      return `${event.maxSkewMs.toFixed(0)}ms max skew`;
-  }
-}
-
-function failureStrengthLabel(kind: FailureKind, strength: number): string {
-  switch (kind) {
-    case "capacity-reduction":
-      return `remaining capacity · ${strength}%`;
-    case "service-degradation":
-    case "edge-latency":
-      return `multiplier · ${(Math.max(1, strength / 10)).toFixed(1)}×`;
-    case "request-loss":
-      return `added loss · ${strength}%`;
-    case "gateway-disconnection":
-      return `connections dropped · ${strength}%`;
-    case "node-outage":
-      return "outage";
-    case "replica-partition":
-      return `reachable replicas · ${strength}% of group`;
-    case "replica-divergence":
-      return `stale replicas · ${strength}% of group`;
-    case "clock-skew":
-      return `maximum skew · ${strength * 10}ms`;
-  }
-}
+// A live session survives lens changes while this panel unmounts. Keep IDs outside the
+// component so returning to Load cannot reuse an earlier interactive failure ID.
+let failureSequence = 1;
 
 /**
  * Presentation controls for a worker-owned simulation session.
@@ -99,7 +48,6 @@ export function SimulationControls() {
   const [startSec, setStartSec] = useState(5);
   const [durationSec, setDurationSec] = useState(10);
   const [strength, setStrength] = useState(50);
-  const failureSequence = useRef(1);
 
   const sources = design.nodes.filter((node) => node.kind === "client" && node.client);
   const active =
@@ -121,93 +69,26 @@ export function SimulationControls() {
   const occupied = session
     ? Object.values(session.occupancy).reduce((sum, value) => sum + value.total, 0)
     : 0;
-  const failureTargets = useMemo(() => {
-    if (failureKind === "edge-latency" || failureKind === "request-loss") {
-      return design.edges.map((edge) => ({
-        id: edge.id,
-        label: `${design.nodes.find((node) => node.id === edge.from)?.label ?? edge.from} → ${design.nodes.find((node) => node.id === edge.to)?.label ?? edge.to}`,
-      }));
-    }
-    if (failureKind === "gateway-disconnection") {
-      return design.nodes.filter((node) => node.kind === "gateway").map((node) => ({ id: node.id, label: node.label }));
-    }
-    if (
-      failureKind === "replica-partition" ||
-      failureKind === "replica-divergence" ||
-      failureKind === "clock-skew"
-    ) {
-      return design.nodes.flatMap((node) => {
-        const group = node.database?.replicaGroup;
-        return group ? [{ id: group.id, label: `${group.id} · ${node.label}` }] : [];
-      });
-    }
-    const nodes =
-      failureKind === "node-outage"
-        ? design.nodes
-        : design.nodes.filter((node) => node.kind !== "client");
-    return nodes.map((node) => ({ id: node.id, label: node.label }));
-  }, [design.edges, design.nodes, failureKind]);
+  const failureTargets = useMemo(() => failureTargetsFor(design, failureKind), [design, failureKind]);
   const resolvedTarget = failureTargets.some((target) => target.id === targetId)
     ? targetId
     : (failureTargets[0]?.id ?? "");
 
-  const makeFailure = (id: string, atSec: number): FailureEvent => {
-    const base = {
+  const makeFailure = (id: string, atSec: number) =>
+    makeFailureEvent({
+      design,
+      kind: failureKind,
+      targetId: resolvedTarget,
       id,
       startSec: atSec,
-      durationSec: Math.max(0.1, durationSec),
-    };
-    const selectedReplicaCount =
-      design.nodes.find((node) => node.database?.replicaGroup?.id === resolvedTarget)?.database
-        ?.replicaGroup?.replicas ?? 1;
-    switch (failureKind) {
-      case "node-outage":
-        return { ...base, kind: failureKind, targetNodeId: resolvedTarget };
-      case "capacity-reduction":
-        return { ...base, kind: failureKind, targetNodeId: resolvedTarget, factor: strength / 100 };
-      case "service-degradation":
-        return { ...base, kind: failureKind, targetNodeId: resolvedTarget, factor: Math.max(1, strength / 10) };
-      case "edge-latency":
-        return { ...base, kind: failureKind, targetEdgeId: resolvedTarget, factor: Math.max(1, strength / 10) };
-      case "request-loss":
-        return { ...base, kind: failureKind, targetEdgeId: resolvedTarget, lossProbability: strength / 100 };
-      case "gateway-disconnection":
-        return {
-          ...base,
-          kind: failureKind,
-          targetNodeId: resolvedTarget,
-          fraction: strength / 100,
-          reconnectOverSec: Math.min(durationSec, 5),
-        };
-      case "replica-partition":
-        return {
-          ...base,
-          kind: failureKind,
-          replicaGroupId: resolvedTarget,
-          availableReplicas: Math.round((selectedReplicaCount * strength) / 100),
-        };
-      case "replica-divergence":
-        return {
-          ...base,
-          kind: failureKind,
-          replicaGroupId: resolvedTarget,
-          staleReplicas: Math.max(1, Math.round((selectedReplicaCount * strength) / 100)),
-          versionLag: 1,
-        };
-      case "clock-skew":
-        return {
-          ...base,
-          kind: failureKind,
-          replicaGroupId: resolvedTarget,
-          maxSkewMs: Math.max(1, strength * 10),
-        };
-    }
-  };
+      durationSec,
+      strength,
+    });
 
   const nextFailureId = (prefix: string): string => {
     let id: string;
     do {
-      id = `${prefix}-${failureKind}-${failureSequence.current++}`;
+      id = `${prefix}-${failureKind}-${failureSequence++}`;
     } while (design.scenario.failures.some((event) => event.id === id));
     return id;
   };
