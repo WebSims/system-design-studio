@@ -273,7 +273,18 @@ export function buildCatalog(): Catalog {
       componentTiming:
         "Set every component timing field explicitly. Zero is an unknown-value sentinel, not free work. When no measurement exists, use a clearly assumed benchmark only as a visible estimate; it cannot unlock load evaluation.",
       edgeLatency:
-        "Every link needs an explicit positive one-way latency and fanoutFactor (1 for one-to-one). Zero is an unknown-value sentinel used by old/test documents, never a physical latency default. Pick a benchmark only when its locality matches the available evidence, attach aspect=performance with confidence=assumed, and do not run load evaluation until measured.",
+        "Every link needs a network profile with explicit positive one-way propagationLatency and fanoutFactor (1 for one-to-one). Zero is an unknown-value sentinel used by old/test documents, never a physical latency default. Pick a benchmark only when its locality matches the available evidence, attach aspect=performance with confidence=assumed, and do not run load evaluation until measured.",
+      networkPhysics: {
+        executable: "HTTP/1.1 or HTTP/2 over TCP",
+        profile:
+          "network = { application, transport, requestBytes, responseBytes, bandwidthMbps, requestSerialization, responseSerialization, propagationLatency, lossProbability }",
+        tcp:
+          "transport = { kind: 'tcp', connectionSetup, tls: { enabled, cost }, reuseProbability }",
+        future:
+          "gRPC, GraphQL, WebSocket, UDP and custom variants are typed but validation blocks execution until their semantics ship.",
+        boundary:
+          "Request-level only. Do not claim packet MTU, congestion control or packet reordering fidelity.",
+      },
       placeholders: NETWORK_LATENCIES.map((benchmark) => ({
         id: benchmark.id,
         label: benchmark.label,

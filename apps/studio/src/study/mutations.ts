@@ -372,16 +372,21 @@ const assertAgentEdgeFields = (raw: Record<string, unknown>): void => {
       "edge-fanout-required"
     );
   }
-  if (!("latency" in raw)) {
+  if (!("network" in raw) && !("latency" in raw)) {
     throw new MutationRefused(
-      `link "${String(raw.id ?? "unknown")}" must include an explicit one-way latency. ` +
+      `link "${String(raw.id ?? "unknown")}" must include an explicit network profile with one-way propagation latency. ` +
         "Use a non-zero catalog benchmark as an assumed placeholder when no measurement exists; never inherit 0ms.",
       "edge-latency-required"
     );
   }
-  if (!distributionHasPositiveMean(raw.latency)) {
+  const network = raw.network;
+  const propagation =
+    typeof network === "object" && network !== null
+      ? (network as Record<string, unknown>).propagationLatency
+      : raw.latency;
+  if (!distributionHasPositiveMean(propagation)) {
     throw new MutationRefused(
-      `link "${String(raw.id ?? "unknown")}" has zero or invalid mean latency. ` +
+      `link "${String(raw.id ?? "unknown")}" has zero or invalid mean propagation latency. ` +
         "Every modeled handoff has a positive cost; use a non-zero catalog benchmark and mark it assumed if unmeasured.",
       "edge-latency-zero"
     );

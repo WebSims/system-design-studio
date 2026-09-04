@@ -5,7 +5,7 @@ import {
   type SimulationSessionSnapshot,
   type SimulationSessionUpdate,
 } from "@sds/core";
-import type { Design } from "@sds/schema";
+import type { Design, FailureEvent } from "@sds/schema";
 
 export interface CreatedWorkerSession {
   sessionId: string;
@@ -38,6 +38,10 @@ export class SimulationSessionRegistry {
 
   injectRequest(sessionId: string, sourceNodeId: string): SimulationSessionUpdate {
     return this.require(sessionId).injectRequest(sourceNodeId);
+  }
+
+  injectFailure(sessionId: string, event: FailureEvent): SimulationSessionUpdate {
+    return this.require(sessionId).injectFailure(event);
   }
 
   advanceBy(sessionId: string, deltaMs: number): SimulationSessionUpdate {

@@ -7,6 +7,7 @@ import {
   rateAt,
   validateDesign,
   type Design,
+  type FailureEvent,
   type RequestClass,
   type SdsEdge,
   type SdsNode,
@@ -24,6 +25,8 @@ import { assessConfidence } from "./confidence";
 import { WorkflowRuntime, type OutcomeMeaning } from "./workflow";
 import { LatencyHistogram } from "./histogram";
 import { sample } from "./distribution";
+import { FailureController } from "./failures";
+import { sampleNetworkLeg } from "./network";
 import { RngBundle } from "./rng";
 import { stepEnvFor } from "@sds/kernel";
 import { Sim, delay, suspend, type Process } from "./sim";
@@ -282,6 +285,9 @@ export interface SimulationRuntime {
   advanceEvents(count: number): number;
   /** Add exactly one root request at the current virtual time in manual mode. */
   injectRequest(sourceNodeId: string): void;
+  /** Inject the same event shape used by configured scenario timelines. */
+  injectFailure(event: FailureEvent): void;
+  activeFailures(): FailureEvent[];
   /** Trace accumulated so far. Arrays are copied so callers cannot mutate engine state. */
   trace(): Trace;
   /** Instantaneous per-node queue/service occupancy. */
@@ -317,6 +323,7 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
   const collectTrace = opts.collectTrace ?? true;
 
   const sim = new Sim();
+  const failures = new FailureController(sim);
   const rng = new RngBundle(seed);
   const arrivalRng = rng.stream("arrival");
   const classRng = rng.stream("routing");
@@ -332,9 +339,17 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
   const traceCapacity = collectTrace ? design.scenario.traceLimit : 0;
   const trace: TraceSink = {
     canTrace: () => hops.length + visits.length < traceCapacity,
-    hop: (requestId, edgeId, tStart, tEnd, delivered, forward) => {
+    hop: (requestId, edgeId, tStart, tEnd, delivered, forward, network) => {
       if (hops.length + visits.length < traceCapacity) {
-        hops.push({ requestId, edgeId, tStart, tEnd, delivered, forward });
+        hops.push({
+          requestId,
+          edgeId,
+          tStart,
+          tEnd,
+          delivered,
+          forward,
+          ...(network ? { network } : {}),
+        });
       }
     },
     visit: (requestId, nodeId, tEnqueue, tServiceStart, tExit, outcome) => {
@@ -380,6 +395,7 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
     callSites,
     edgeTraversals,
     trace,
+    failures,
     measuring: measuringFn,
   };
 
@@ -402,6 +418,14 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
     const component = buildComponent(node, env);
     if (component) components.set(node.id, component);
   }
+
+  failures.onTransition((event, active) => {
+    for (const component of components.values()) {
+      component.failureStateChanged?.(event, active);
+    }
+    workflow?.failureStateChanged();
+  });
+  for (const event of design.scenario.failures) failures.add(event);
 
   const allClients = design.nodes.filter((n) => n.kind === "client" && n.client);
   const enabledSourceIds = new Set(opts.enabledSourceIds ?? allClients.map((node) => node.id));
@@ -520,7 +544,9 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
      * everyone present, lambda over everyone departing, W over the same
      * departures. All three are then consistent by construction.
      */
-    const outcome = yield* callDependencies(env, client.id, ctx, "sequential");
+    const outcome = failures.isNodeOut(client.id)
+      ? { ok: false as const, reason: "error" as const }
+      : yield* callDependencies(env, client.id, ctx, "sequential");
 
     inSystem.add(-1);
     if (measuring) {
@@ -647,8 +673,8 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
     for (;;) {
       if (sim.now > durationMs) return;
 
-      const netMs = sample(edge.latency, rng.stream("network"));
-      yield* delay(netMs);
+      const network = sampleNetworkLeg(edge, "request", rng.stream("network"), failures);
+      yield* delay(network.totalMs);
 
       const target = components.get(edge.to);
       if (!target?.connect) return;
@@ -688,8 +714,8 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
       }
       // Revoked: the gateway already returned the descriptor, so loop straight back
       // into accept. Optional jitter spreads the herd if the design asks for it.
-      else if (pop.disruption && pop.disruption.reconnectOverSec > 0) {
-        yield* delay(rng.stream("failure").next() * pop.disruption.reconnectOverSec * 1000);
+      else if (token.reconnectOverSec > 0) {
+        yield* delay(rng.stream("failure").next() * token.reconnectOverSec * 1000);
       }
     }
   }
@@ -706,23 +732,19 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
       sim.spawn(connectionProcess(client, i, at));
     }
 
-    /**
-     * A mass disconnection: the reconnect storm.
-     *
-     * Implemented by asking the gateway to drop connections, which forces the affected
-     * clients back through accept. That is the failure that takes realtime systems
-     * down -- the surviving gateways receive a handshake burst far above their
-     * steady-state accept load while still serving everyone they already had.
-     */
     if (pop.disruption) {
       const d = pop.disruption;
+      // Keep the pre-v7 client disruption exactly as it behaved: an instantaneous
+      // forced close, not a sustained outage. New configured and interactive failures
+      // use `FailureEvent.gateway-disconnection`; this compatibility path preserves old
+      // saved results while those designs are migrated deliberately by their owners.
       sim.at(d.atSec * 1000, () => {
         const toDrop = Math.floor(pop.count * d.fraction);
         let dropped = 0;
         for (const edge of connectionTargets.get(client.id) ?? []) {
           const target = components.get(edge.to);
           if (!target?.dropConnections) continue;
-          dropped += target.dropConnections(toDrop - dropped);
+          dropped += target.dropConnections(toDrop - dropped, d.reconnectOverSec);
           if (dropped >= toDrop) break;
         }
       });
@@ -921,6 +943,7 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
 
     return {
       design,
+      failureTimeline: failures.timeline().map((event) => ({ ...event })),
       observedSec,
       steadyState,
       aggregateCaveat: steadyState
@@ -1002,6 +1025,28 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
     injectRequest(sourceNodeId) {
       if (sim.now >= durationMs) throw new Error("the simulation session has completed");
       scheduleManualRequest(sourceNodeId, sim.now);
+    },
+    injectFailure(event) {
+      if (sim.now >= durationMs) throw new Error("the simulation session has completed");
+      if ("targetNodeId" in event) {
+        const target = design.nodes.find((node) => node.id === event.targetNodeId);
+        if (!target) throw new Error(`failure event targets unknown node "${event.targetNodeId}"`);
+        if (event.kind === "gateway-disconnection" && target.kind !== "gateway") {
+          throw new Error("gateway disconnection must target a gateway");
+        }
+        if (
+          (event.kind === "capacity-reduction" || event.kind === "service-degradation") &&
+          target.kind === "client"
+        ) {
+          throw new Error(`${event.kind} must target a capacity-limited component`);
+        }
+      } else if (!design.edges.some((edge) => edge.id === event.targetEdgeId)) {
+        throw new Error(`failure event targets unknown edge "${event.targetEdgeId}"`);
+      }
+      failures.add(event);
+    },
+    activeFailures() {
+      return failures.snapshot().map((event) => ({ ...event }));
     },
     trace() {
       return {

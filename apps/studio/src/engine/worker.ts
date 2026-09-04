@@ -25,6 +25,7 @@ import type {
   CandidateEvaluation,
   CorrectnessResult,
   Design,
+  FailureEvent,
   PortfolioResult,
   Study,
 } from "@sds/schema";
@@ -106,6 +107,10 @@ const api = {
 
   sessionInject(sessionId: string, sourceNodeId: string) {
     return simulationSessions.injectRequest(sessionId, sourceNodeId);
+  },
+
+  sessionInjectFailure(sessionId: string, event: FailureEvent) {
+    return simulationSessions.injectFailure(sessionId, event);
   },
 
   sessionAdvanceBy(sessionId: string, deltaMs: number) {

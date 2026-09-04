@@ -649,6 +649,13 @@ export interface Catalog {
     requirement: string;
     componentTiming: string;
     edgeLatency: string;
+    networkPhysics: {
+      executable: string;
+      profile: string;
+      tcp: string;
+      future: string;
+      boundary: string;
+    };
     placeholders: Array<{
       id: string;
       label: string;
@@ -984,7 +991,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "supported by the cited source; mark deductions inferred and unknown production behaviour assumed. " +
           "Code/config citations carry a SHA-256 hash of the normalized cited slice. Documentation may orient the scan but never " +
           "qualifies as grounding evidence. Mark numeric measurements aspect=performance; code proving that a call " +
-          "exists is architecture evidence, not timing calibration. Every component timing and link latency must be positive; " +
+          "exists is architecture evidence, not timing calibration. Every component timing and link network.propagationLatency must be positive; " +
           "every link must set fanoutFactor (1 for one-to-one). Missing inventory, evidence, workflow or source-state details seal " +
           "the baseline as PROVISIONAL: it can be evaluated, but cannot be approved or handed off until the grounding report is clear. " +
           "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
@@ -1082,7 +1089,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_get_catalog",
         description:
           "Read the modelling vocabulary: component kinds, workflow operations and which are indivisible, the shipped " +
-          "patterns, injectable faults, invariant templates and the Invariant shape, layout rules, and non-zero latency " +
+          "patterns, injectable faults, invariant templates and the Invariant shape, layout rules, and network-profile " +
           "placeholders. Read this before drawing. The operations are a closed set, and the indivisible ones are what " +
           "make a design safe.",
         input: EmptyInput,
@@ -1144,8 +1151,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "shared dependencies centered): either choose x/y per node from studio_get_catalog.layoutGuide, or include an " +
           "auto-layout operation and the studio computes that layout from the links. Overlapping nodes and missing " +
           "coordinates are otherwise refused, never silently repositioned. Agent-authored servers must set fanout explicitly; " +
-          "agent-authored service components must set positive timing fields explicitly, and links must include positive one-way " +
-          "latency plus fanoutFactor (1 for one-to-one; use a catalog benchmark marked assumed when timing is unmeasured). Requires the revision read from " +
+          "agent-authored service components must set positive timing fields explicitly, and links must include a network profile with positive one-way " +
+          "propagationLatency plus fanoutFactor (1 for one-to-one; use a catalog benchmark marked assumed when timing is unmeasured). Requires the revision read from " +
           "studio_get_architecture or returned by the previous call, and refuses baselines, promoted versions, stale " +
           "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,

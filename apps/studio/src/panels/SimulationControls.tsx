@@ -1,8 +1,55 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SimulationMode } from "@sds/core";
+import type { FailureEvent } from "@sds/schema";
 import { useStudio } from "../store";
 
 const SPEEDS = [0.5, 1, 2, 4] as const;
+type FailureKind = FailureEvent["kind"];
+
+const FAILURE_KINDS: Array<{ value: FailureKind; label: string }> = [
+  { value: "node-outage", label: "Node outage" },
+  { value: "capacity-reduction", label: "Capacity reduction" },
+  { value: "service-degradation", label: "Service degradation" },
+  { value: "edge-latency", label: "Edge latency" },
+  { value: "request-loss", label: "Request loss" },
+  { value: "gateway-disconnection", label: "Gateway disconnection" },
+];
+
+function failureTargetId(event: FailureEvent): string {
+  return "targetNodeId" in event ? event.targetNodeId : event.targetEdgeId;
+}
+
+function failureSummary(event: FailureEvent): string {
+  switch (event.kind) {
+    case "node-outage":
+      return "offline";
+    case "capacity-reduction":
+      return `${Math.round(event.factor * 100)}% capacity`;
+    case "service-degradation":
+    case "edge-latency":
+      return `${event.factor.toFixed(1)}×`;
+    case "request-loss":
+      return `${Math.round(event.lossProbability * 100)}% loss`;
+    case "gateway-disconnection":
+      return `${Math.round(event.fraction * 100)}% disconnected`;
+  }
+}
+
+function failureStrengthLabel(kind: FailureKind, strength: number): string {
+  switch (kind) {
+    case "capacity-reduction":
+      return `remaining capacity · ${strength}%`;
+    case "service-degradation":
+    case "edge-latency":
+      return `multiplier · ${(Math.max(1, strength / 10)).toFixed(1)}×`;
+    case "request-loss":
+      return `added loss · ${strength}%`;
+    case "gateway-disconnection":
+      return `connections dropped · ${strength}%`;
+    case "node-outage":
+      return "outage";
+  }
+}
 
 /**
  * Presentation controls for a worker-owned simulation session.
@@ -27,6 +74,14 @@ export function SimulationControls() {
   const setSpeed = useStudio((state) => state.setSessionSpeed);
   const finish = useStudio((state) => state.finishSession);
   const replay = useStudio((state) => state.replaySession);
+  const injectFailure = useStudio((state) => state.injectFailure);
+  const edit = useStudio((state) => state.edit);
+  const [failureKind, setFailureKind] = useState<FailureKind>("node-outage");
+  const [targetId, setTargetId] = useState("");
+  const [startSec, setStartSec] = useState(5);
+  const [durationSec, setDurationSec] = useState(10);
+  const [strength, setStrength] = useState(50);
+  const failureSequence = useRef(1);
 
   const sources = design.nodes.filter((node) => node.kind === "client" && node.client);
   const active =
@@ -48,6 +103,61 @@ export function SimulationControls() {
   const occupied = session
     ? Object.values(session.occupancy).reduce((sum, value) => sum + value.total, 0)
     : 0;
+  const failureTargets = useMemo(() => {
+    if (failureKind === "edge-latency" || failureKind === "request-loss") {
+      return design.edges.map((edge) => ({
+        id: edge.id,
+        label: `${design.nodes.find((node) => node.id === edge.from)?.label ?? edge.from} → ${design.nodes.find((node) => node.id === edge.to)?.label ?? edge.to}`,
+      }));
+    }
+    if (failureKind === "gateway-disconnection") {
+      return design.nodes.filter((node) => node.kind === "gateway").map((node) => ({ id: node.id, label: node.label }));
+    }
+    const nodes =
+      failureKind === "node-outage"
+        ? design.nodes
+        : design.nodes.filter((node) => node.kind !== "client");
+    return nodes.map((node) => ({ id: node.id, label: node.label }));
+  }, [design.edges, design.nodes, failureKind]);
+  const resolvedTarget = failureTargets.some((target) => target.id === targetId)
+    ? targetId
+    : (failureTargets[0]?.id ?? "");
+
+  const makeFailure = (id: string, atSec: number): FailureEvent => {
+    const base = {
+      id,
+      startSec: atSec,
+      durationSec: Math.max(0.1, durationSec),
+    };
+    switch (failureKind) {
+      case "node-outage":
+        return { ...base, kind: failureKind, targetNodeId: resolvedTarget };
+      case "capacity-reduction":
+        return { ...base, kind: failureKind, targetNodeId: resolvedTarget, factor: strength / 100 };
+      case "service-degradation":
+        return { ...base, kind: failureKind, targetNodeId: resolvedTarget, factor: Math.max(1, strength / 10) };
+      case "edge-latency":
+        return { ...base, kind: failureKind, targetEdgeId: resolvedTarget, factor: Math.max(1, strength / 10) };
+      case "request-loss":
+        return { ...base, kind: failureKind, targetEdgeId: resolvedTarget, lossProbability: strength / 100 };
+      case "gateway-disconnection":
+        return {
+          ...base,
+          kind: failureKind,
+          targetNodeId: resolvedTarget,
+          fraction: strength / 100,
+          reconnectOverSec: Math.min(durationSec, 5),
+        };
+    }
+  };
+
+  const nextFailureId = (prefix: string): string => {
+    let id: string;
+    do {
+      id = `${prefix}-${failureKind}-${failureSequence.current++}`;
+    } while (design.scenario.failures.some((event) => event.id === id));
+    return id;
+  };
 
   return (
     <section className="simulation-session" aria-labelledby="simulation-session-title">
@@ -183,6 +293,110 @@ export function SimulationControls() {
           Session stopped: {session.invalidationReason}. Start again to simulate the current design.
         </p>
       )}
+
+      <div className="section failure-section-title">failure timeline</div>
+      <p className="session-help">
+        Saved events replay with the scenario. Live injection uses the same event shape at the
+        session's current virtual time.
+      </p>
+
+      <div className="failure-editor">
+        <label>
+          <span>failure</span>
+          <select value={failureKind} onChange={(event) => setFailureKind(event.currentTarget.value as FailureKind)}>
+            {FAILURE_KINDS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>target</span>
+          <select value={resolvedTarget} onChange={(event) => setTargetId(event.currentTarget.value)}>
+            {failureTargets.map((target) => (
+              <option key={target.id} value={target.id}>{target.label}</option>
+            ))}
+          </select>
+        </label>
+        <div className="failure-number-row">
+          <label>
+            <span>start · sec</span>
+            <input type="number" min={0} step={1} value={startSec} onChange={(event) => setStartSec(Math.max(0, Number(event.currentTarget.value)))} />
+          </label>
+          <label>
+            <span>duration · sec</span>
+            <input type="number" min={0.1} step={1} value={durationSec} onChange={(event) => setDurationSec(Math.max(0.1, Number(event.currentTarget.value)))} />
+          </label>
+        </div>
+        {failureKind !== "node-outage" && (
+          <label>
+            <span>{failureStrengthLabel(failureKind, strength)}</span>
+            <input type="range" min={failureKind === "service-degradation" || failureKind === "edge-latency" ? 10 : 0} max={100} value={strength} onChange={(event) => setStrength(Number(event.currentTarget.value))} />
+          </label>
+        )}
+        <div className="session-actions wrap">
+          <button
+            type="button"
+            className="btn small"
+            disabled={!resolvedTarget || busy}
+            onClick={() => {
+              const event = makeFailure(nextFailureId("scenario"), startSec);
+              edit((draft) => { draft.scenario.failures.push(event); });
+            }}
+          >
+            Add to scenario
+          </button>
+          <button
+            type="button"
+            className="btn small"
+            disabled={!active || !resolvedTarget || busy || !session}
+            onClick={() => {
+              if (!session) return;
+              void injectFailure(
+                makeFailure(nextFailureId(`interactive-${Math.round(session.virtualTimeMs)}`), session.virtualTimeMs / 1000)
+              );
+            }}
+          >
+            Inject now
+          </button>
+        </div>
+      </div>
+
+      {design.scenario.failures.length > 0 && (
+        <ul className="failure-list" aria-label="Configured failure events">
+          {design.scenario.failures.map((event) => (
+            <li key={event.id}>
+              <span className="failure-marker" aria-hidden="true">!</span>
+              <span>
+                <b>{FAILURE_KINDS.find((item) => item.value === event.kind)?.label}</b>
+                <small>{failureTargetId(event)} · {event.startSec}s for {event.durationSec}s · {failureSummary(event)}</small>
+              </span>
+              <button
+                type="button"
+                className="icon-btn icon-btn-sm"
+                aria-label={`Remove ${event.id}`}
+                title="Remove failure"
+                onClick={() => edit((draft) => { draft.scenario.failures = draft.scenario.failures.filter((item) => item.id !== event.id); })}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {session && session.activeFailures.length > 0 && (
+        <div className="active-failures" role="status" aria-live="polite">
+          <b>{session.activeFailures.length} active failure{session.activeFailures.length === 1 ? "" : "s"}</b>
+          {session.activeFailures.map((event) => (
+            <span key={event.id}>{event.kind} · {failureTargetId(event)}</span>
+          ))}
+        </div>
+      )}
+
+      <p className="note network-boundary">
+        Request-level model only: packet MTU, congestion control and packet reordering are out of
+        scope.
+      </p>
     </section>
   );
 }

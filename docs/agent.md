@@ -166,7 +166,9 @@ return user text carries `untrustedContentHint`.
   timer, cron job, or consumer gets its own client/work source rather than being made downstream
   of HTTP traffic.
 - Every agent-authored server states sequential or parallel fanout explicitly. Every link states
-  a positive one-way latency; omitted and zero values are refused.
+  a `network` profile with positive one-way `propagationLatency`; omitted and zero values are
+  refused. HTTP over TCP is the executable v7 contract; future protocol variants are typed but
+  cannot be simulated until their semantics ship.
 - A catalog latency may be used only as an assumed placeholder with performance-scoped evidence.
   It keeps the document valid but does not unlock load results. Code proving that a dependency
   exists is architecture evidence, not a timing measurement.

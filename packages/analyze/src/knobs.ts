@@ -342,7 +342,7 @@ export function enumerateKnobs(design: Design): Knob[] {
   }
 
   for (const e of design.edges) {
-    const mean = distMean(e.latency);
+    const mean = distMean(e.network.propagationLatency);
     // A zero-latency edge has nothing to vary, and perturbing it by a factor would
     // stay at zero forever.
     if (mean <= 0) continue;
@@ -360,7 +360,18 @@ export function enumerateKnobs(design: Design): Knob[] {
         return DesignSchema.parse({
           ...d,
           edges: d.edges.map((x) =>
-            x.id === e.id ? { ...x, latency: scaleDistribution(x.latency, factor) as never } : x
+            x.id === e.id
+              ? {
+                  ...x,
+                  network: {
+                    ...x.network,
+                    propagationLatency: scaleDistribution(
+                      x.network.propagationLatency,
+                      factor
+                    ) as never,
+                  },
+                }
+              : x
           ),
         });
       },

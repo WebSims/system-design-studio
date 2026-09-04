@@ -64,7 +64,7 @@ export const AGENT_STEPS: readonly AgentStep[] = [
     unblocks: "studio_get_catalog was read, or something valid is already drawn",
     done: ({ succeeded, drawing }) => (drawing?.design.nodes.length ?? 0) > 0 || succeeded.has("studio_get_catalog"),
     hint: () =>
-      "studio_get_catalog: component kinds, the closed set of workflow operations, layout rules, latency placeholders " +
+      "studio_get_catalog: component kinds, the closed set of workflow operations, layout rules, network-profile placeholders " +
       "and invariantTemplates. Read it once before drawing.",
   },
   {
@@ -75,7 +75,7 @@ export const AGENT_STEPS: readonly AgentStep[] = [
     hint: ({ drawing }) =>
       `${patchCall(drawing)}: one add-node per component with x/y from studio_get_catalog.layoutGuide (or include an ` +
       "auto-layout operation and omit them); set fanout and positive timing fields explicitly; then add-edge once both " +
-      "ends exist, with a positive one-way latency and fanoutFactor (1 for one-to-one). Each accepted patch is drawn at once.",
+      "ends exist, with network.propagationLatency set to a positive one-way value and fanoutFactor (1 for one-to-one). Each accepted patch is drawn at once.",
   },
   {
     id: "workflow",

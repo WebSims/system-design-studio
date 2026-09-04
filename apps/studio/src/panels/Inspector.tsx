@@ -327,6 +327,31 @@ function DistributionEditor({
   );
 }
 
+/** A distribution group whose caption does not wrap the editor's nested labels. */
+function DistributionField({
+  label,
+  hint,
+  value,
+  onChange,
+  allowZero = true,
+}: {
+  label: string;
+  hint?: string;
+  value: Distribution;
+  onChange: (d: Distribution) => void;
+  allowZero?: boolean;
+}) {
+  return (
+    <div className="field distribution-field" role="group" aria-label={label}>
+      <span className="field-label">
+        {label}
+        {hint && <span className="field-hint">{hint}</span>}
+      </span>
+      <DistributionEditor value={value} onChange={onChange} allowZero={allowZero} />
+    </div>
+  );
+}
+
 export function Inspector() {
   const selection = useStudio((s) => s.selection);
   const design = useStudio((s) => s.design);
@@ -384,16 +409,149 @@ export function Inspector() {
         <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
         <PerformanceCalibrationNote targetKind="edge" targetId={edge.id} />
 
-        <div className="section">network latency</div>
-        <DistributionEditor
-          value={edge.latency}
+        <div className="section">protocol &amp; transport</div>
+        <FieldRow>
+          <Field label="application" hint="executable now">
+            <Select
+              value={edge.network.application.kind === "http" ? edge.network.application.version : "1.1"}
+              options={[
+                { value: "1.1", label: "HTTP/1.1" },
+                { value: "2", label: "HTTP/2" },
+              ]}
+              onChange={(version) =>
+                patch((e) => {
+                  e.network.application = { kind: "http", version };
+                })
+              }
+            />
+          </Field>
+          <Field label="transport" hint="v7 engine">
+            <Select
+              value="tcp"
+              options={[{ value: "tcp", label: "TCP" }]}
+              disabled
+              onChange={() => undefined}
+            />
+          </Field>
+        </FieldRow>
+        <p className="note">
+          HTTP over TCP is executable. gRPC, GraphQL, WebSocket, UDP and custom contracts are
+          typed for future versions, but validation blocks them until their semantics exist.
+        </p>
+
+        <div className="section">network physics</div>
+        <DistributionField
+          label="propagation latency"
+          hint="one way · ms"
+          value={edge.network.propagationLatency}
           allowZero={false}
-          onChange={(latency) => patch((e) => { e.latency = latency; })}
+          onChange={(latency) =>
+            patch((e) => {
+              e.network.propagationLatency = latency;
+            })
+          }
         />
         <p className="note">
-          <b>One way.</b> A request and its response each cross the wire, so this is applied
-          twice per call. Entering a round-trip figure would double-count it.
+          <b>Propagation is one way.</b> Request and response each pay it; serialization,
+          bandwidth and connection setup are added separately.
         </p>
+
+        <FieldRow>
+          <Field label="request" hint="bytes">
+            <NumberInput
+              value={edge.network.requestBytes}
+              min={0}
+              onChange={(value) => patch((e) => { e.network.requestBytes = Math.round(value); })}
+            />
+          </Field>
+          <Field label="response" hint="bytes">
+            <NumberInput
+              value={edge.network.responseBytes}
+              min={0}
+              onChange={(value) => patch((e) => { e.network.responseBytes = Math.round(value); })}
+            />
+          </Field>
+        </FieldRow>
+        <Field label="bandwidth" hint="Mbps · 0 = unconstrained">
+          <NumberInput
+            value={edge.network.bandwidthMbps ?? 0}
+            min={0}
+            step={0.1}
+            onChange={(value) => patch((e) => { e.network.bandwidthMbps = value > 0 ? value : null; })}
+          />
+        </Field>
+
+        <DistributionField
+          label="request serialization"
+          hint="ms"
+          value={edge.network.requestSerialization}
+          allowZero
+          onChange={(value) => patch((e) => { e.network.requestSerialization = value; })}
+        />
+        <DistributionField
+          label="response serialization"
+          hint="ms"
+          value={edge.network.responseSerialization}
+          allowZero
+          onChange={(value) => patch((e) => { e.network.responseSerialization = value; })}
+        />
+
+        {edge.network.transport.kind === "tcp" && (
+          <>
+            <div className="section">connection</div>
+            <DistributionField
+              label="TCP setup"
+              hint="ms when not reused"
+              value={edge.network.transport.connectionSetup}
+              allowZero
+              onChange={(value) =>
+                patch((e) => {
+                  if (e.network.transport.kind === "tcp") {
+                    e.network.transport.connectionSetup = value;
+                  }
+                })
+              }
+            />
+            <Field label="reuse probability" hint="% requests">
+              <NumberInput
+                value={Math.round(edge.network.transport.reuseProbability * 1000) / 10}
+                min={0}
+                max={100}
+                step={0.1}
+                onChange={(value) =>
+                  patch((e) => {
+                    if (e.network.transport.kind === "tcp") {
+                      e.network.transport.reuseProbability = value / 100;
+                    }
+                  })
+                }
+              />
+            </Field>
+            <Toggle
+              label="TLS"
+              hint="Charge TLS setup only on a new connection"
+              on={edge.network.transport.tls.enabled}
+              onChange={(enabled) =>
+                patch((e) => {
+                  if (e.network.transport.kind === "tcp") e.network.transport.tls.enabled = enabled;
+                })
+              }
+            />
+            {edge.network.transport.tls.enabled && (
+              <DistributionField
+                label="TLS setup"
+                hint="ms when not reused"
+                value={edge.network.transport.tls.cost}
+                allowZero
+                onChange={(value) =>
+                  patch((e) => {
+                    if (e.network.transport.kind === "tcp") e.network.transport.tls.cost = value;
+                  })
+                }
+              />
+            )}
+          </>
+        )}
 
         <div className="section">routing</div>
         <FieldRow>
@@ -467,17 +625,21 @@ export function Inspector() {
         <div className="section">loss</div>
         <Field label="drop probability" hint="% per traversal">
           <NumberInput
-            value={Math.round(edge.lossProbability * 1000) / 10}
+            value={Math.round(edge.network.lossProbability * 1000) / 10}
             min={0}
             max={100}
             step={0.1}
-            onChange={(v) => patch((e) => { e.lossProbability = Math.min(1, Math.max(0, v / 100)); })}
+            onChange={(v) =>
+              patch((e) => {
+                e.network.lossProbability = Math.min(1, Math.max(0, v / 100));
+              })
+            }
           />
         </Field>
         <p className="note">
-          Applied per traversal, so a call loses 1&minus;(1&minus;p)&sup2; of requests. Without
-          transport-level retry, which arrives in Phase 3, a drop is reported as a failure
-          rather than stalling until a timeout.
+          Applied once to each request-level message, so a call loses
+          1&minus;(1&minus;p)&sup2; across request and response. This intentionally does not
+          simulate packets, MTU, congestion control or reordering.
         </p>
 
         <PolicyEditor edgeId={selection.id} />

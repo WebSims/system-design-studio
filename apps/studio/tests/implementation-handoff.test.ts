@@ -445,7 +445,7 @@ describe("implementation handoff", () => {
     // The agent built almost what was approved, but the measured shape of one link differs.
     const asBuiltDesign = structuredClone(approvedCandidate.design);
     const changedEdge = asBuiltDesign.edges.at(-1)!;
-    changedEdge.latency = { kind: "deterministic", value: 0.75 };
+    changedEdge.network.propagationLatency = { kind: "deterministic", value: 0.75 };
     const reimported = importRepositoryArchitecture(released, {
       repository: { ...activeRepositorySnapshot(released)!, id: "repo-def456", revision: "def456", capturedAt: 900 },
       label: "as built @def456",

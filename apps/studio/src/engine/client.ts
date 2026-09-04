@@ -10,6 +10,7 @@ import type {
   CandidateEvaluation,
   CorrectnessResult,
   Design,
+  FailureEvent,
   PortfolioResult,
   Study,
 } from "@sds/schema";
@@ -69,6 +70,13 @@ export async function injectSimulationRequestInWorker(
   sourceNodeId: string
 ): Promise<SimulationSessionUpdate> {
   return ensure().sessionInject(sessionId, sourceNodeId);
+}
+
+export async function injectSimulationFailureInWorker(
+  sessionId: string,
+  event: FailureEvent
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionInjectFailure(sessionId, event);
 }
 
 export async function advanceSimulationTimeInWorker(

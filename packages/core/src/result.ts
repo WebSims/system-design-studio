@@ -1,4 +1,4 @@
-import type { Design, NodeKind } from "@sds/schema";
+import type { Design, FailureEvent, NodeKind } from "@sds/schema";
 import type { ConfidenceReport } from "./confidence";
 
 export interface Percentiles {
@@ -320,6 +320,18 @@ export interface StabilityReport {
   retryStormWarning: string | null;
 }
 
+/** Cost breakdown for one directional request-level network transfer. */
+export interface TraceNetworkLeg {
+  totalMs: number;
+  propagationMs: number;
+  serializationMs: number;
+  transferMs: number;
+  connectionMs: number;
+  bytes: number;
+  application: string;
+  transport: string;
+}
+
 /** One traversal of an edge by one request. Drives the packet animation. */
 export interface TraceHop {
   requestId: number;
@@ -330,6 +342,8 @@ export interface TraceHop {
   delivered: boolean;
   /** False for the response leg. */
   forward: boolean;
+  /** Present for v7 traces; absent on imported historical run records. */
+  network?: TraceNetworkLeg;
 }
 
 /** One visit to a station by one request. Drives the node occupancy display. */
@@ -487,6 +501,8 @@ export interface FinalState {
 
 export interface RunResult {
   design: Design;
+  /** Configured and live-injected failures that shaped this exact run. */
+  failureTimeline: FailureEvent[];
   /** Measurement window, simulated seconds (excludes warm-up). */
   observedSec: number;
   /**

@@ -19,7 +19,7 @@ import { runSimulation } from "@sds/core";
  *
  * WHAT THIS FILE PROTECTS
  *
- * Saved work. The schema has changed six times and every change is a chance to corrupt
+ * Saved work. The schema has changed seven times and every change is a chance to corrupt
  * somebody's design silently -- not by throwing, which would be obvious, but by parsing into
  * something that means something slightly different. The v5-to-v6 step is the largest widening
  * the format has taken, and it is the one most likely to do that, because it adds semantics
@@ -117,11 +117,39 @@ function v5Document(): Record<string, unknown> {
   };
 }
 
-describe("design v5 migrates to v6", () => {
+/** The last pre-network-physics shape, kept independent of the current parser. */
+function v6Document(): Record<string, unknown> {
+  return {
+    ...v5Document(),
+    version: 6,
+    workflow: null,
+    edges: [
+      {
+        id: "e1",
+        from: "client",
+        to: "lb",
+        latency: { kind: "lognormal", mean: 20, p99: 140 },
+        lossProbability: 0.03,
+      },
+      { id: "e2", from: "lb", to: "api", latency: { kind: "deterministic", value: 0.4 } },
+      { id: "e3", from: "api", to: "cache", latency: { kind: "deterministic", value: 0.3 } },
+      { id: "e4", from: "cache", to: "db", latency: { kind: "deterministic", value: 0.3 } },
+      {
+        id: "e5",
+        from: "api",
+        to: "jobs",
+        latency: { kind: "deterministic", value: 0.2 },
+        probability: 0.3,
+      },
+    ],
+  };
+}
+
+describe("design v5 migrates through v6 to v7", () => {
   it("parses, and lands on the current version", () => {
     const migrated = migrateAndParse(v5Document());
     expect(migrated.version).toBe(DESIGN_SCHEMA_VERSION);
-    expect(DESIGN_SCHEMA_VERSION).toBe(6);
+    expect(DESIGN_SCHEMA_VERSION).toBe(7);
   });
 
   it("leaves the workflow null, so the design remains a pure load model", () => {
@@ -171,14 +199,14 @@ describe("design v5 migrates to v6", () => {
     expect(a.business).toBeNull();
   });
 
-  it("a v6 document round-trips through JSON unchanged", () => {
+  it("a v7 document round-trips through JSON unchanged", () => {
     const original = pizzaStudy().candidates[6]!.design;
     const round = migrateAndParse(JSON.parse(JSON.stringify(original)));
     expect(JSON.stringify(round)).toBe(JSON.stringify(DesignSchema.parse(original)));
   });
 
-  it("still migrates the unversioned legacy shape all the way to v6", () => {
-    // The oldest path, which now runs through six steps. Worth keeping because it is the one
+  it("still migrates the unversioned legacy shape all the way to v7", () => {
+    // The oldest path, which now runs through seven steps. Worth keeping because it is the one
     // that does real work rather than adding defaults, so it is the one a new version can break.
     const legacy = {
       nodes: [
@@ -212,6 +240,61 @@ describe("design v5 migrates to v6", () => {
         DESIGN_SCHEMA_VERSION
       );
     }
+  });
+});
+
+describe("design v6 network migration", () => {
+  it("maps latency and loss into a neutral HTTP/TCP profile", () => {
+    const migrated = migrateAndParse(v6Document());
+    const edge = migrated.edges[0]!;
+
+    expect(edge.network).toEqual({
+      application: { kind: "http", version: "1.1" },
+      transport: {
+        kind: "tcp",
+        connectionSetup: { kind: "deterministic", value: 0 },
+        tls: { enabled: false, cost: { kind: "deterministic", value: 0 } },
+        reuseProbability: 1,
+      },
+      requestBytes: 0,
+      responseBytes: 0,
+      bandwidthMbps: null,
+      requestSerialization: { kind: "deterministic", value: 0 },
+      responseSerialization: { kind: "deterministic", value: 0 },
+      propagationLatency: { kind: "lognormal", mean: 20, p99: 140 },
+      lossProbability: 0.03,
+    });
+    expect(migrated.scenario.failures).toEqual([]);
+    expect("latency" in edge).toBe(false);
+    expect("lossProbability" in edge).toBe(false);
+  });
+
+  it("is deterministic after migration and adds no hidden network cost", () => {
+    const migrated = migrateAndParse(v6Document());
+    const a = runSimulation(migrated, { collectTrace: false });
+    const b = runSimulation(migrateAndParse(JSON.parse(JSON.stringify(v6Document()))), {
+      collectTrace: false,
+    });
+    expect(JSON.stringify({ ...a, wallMs: 0 })).toBe(JSON.stringify({ ...b, wallMs: 0 }));
+  });
+
+  it("preserves a forward-compatible failure timeline instead of erasing it", () => {
+    const old = v6Document();
+    old.scenario = {
+      ...(old.scenario as Record<string, unknown>),
+      failures: [
+        {
+          id: "api-outage",
+          kind: "node-outage",
+          targetNodeId: "api",
+          startSec: 10,
+          durationSec: 5,
+        },
+      ],
+    };
+    expect(migrateAndParse(old).scenario.failures).toEqual([
+      expect.objectContaining({ id: "api-outage", targetNodeId: "api" }),
+    ]);
   });
 });
 

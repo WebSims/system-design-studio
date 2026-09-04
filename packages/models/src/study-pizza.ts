@@ -566,7 +566,7 @@ function designFor(spec: CandidateSpec): Design {
     nodes: spec.nodes as never,
     edges: spec.edges as never,
     classes: [],
-    scenario: { durationSec: 900, warmupSec: 120, seed: 1, traceLimit: 4000 },
+    scenario: { durationSec: 900, warmupSec: 120, seed: 1, traceLimit: 4000, failures: [] },
     slo: { p99LatencyMs: 500, maxErrorRatePct: 1 },
     workflow: {
       collections: collections(spec.claimKeyMeaning) as never,

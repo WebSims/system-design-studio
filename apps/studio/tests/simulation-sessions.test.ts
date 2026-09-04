@@ -38,6 +38,20 @@ describe("worker simulation sessions", () => {
     expect(() => registry.advanceBy(created.sessionId, 10)).toThrow(/invalidated/);
   });
 
+  it("uses one FailureEvent contract for worker-owned live injection", () => {
+    const registry = new SimulationSessionRegistry();
+    const created = registry.create(shortDesign(), { mode: "manual" });
+    const event = {
+      id: "interactive-api-down",
+      kind: "node-outage" as const,
+      targetNodeId: "api",
+      startSec: 0,
+      durationSec: 0.5,
+    };
+    const update = registry.injectFailure(created.sessionId, event);
+    expect(update.snapshot.activeFailures).toEqual([event]);
+  });
+
   it("invalidates model edits but not canvas-only movement", () => {
     const before = shortDesign();
     const moved = structuredClone(before);
@@ -70,5 +84,10 @@ describe("manual canvas contract", () => {
     expect(controls).toContain("advanceBy(1000 * session.presentationSpeed)");
     expect(controls).toContain("session.paused");
     expect(controls).toContain('aria-label="Simulation progress"');
+    expect(controls).toContain("Add to scenario");
+    expect(controls).toContain("Inject now");
+    expect(controls).toContain("draft.scenario.failures.push(event)");
+    expect(controls).toContain("session.activeFailures");
+    expect(controls).toContain("packet MTU, congestion control and packet reordering");
   });
 });

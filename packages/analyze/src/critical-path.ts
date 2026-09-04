@@ -1,5 +1,5 @@
 import type { RunResult } from "@sds/core";
-import { mean as distMean } from "@sds/core";
+import { meanNetworkRoundTripMs } from "@sds/core";
 
 /**
  * WHERE DOES THE LATENCY GO?
@@ -108,7 +108,7 @@ export function criticalPath(result: RunResult): CriticalPath {
   // retrying caller really does pay the network cost again.
   const rootRequests = result.endToEnd.count + result.errors.total;
   for (const e of result.design.edges) {
-    const meanMs = distMean(e.latency);
+    const meanMs = meanNetworkRoundTripMs(e.network);
     if (meanMs <= 0) continue;
     const traversals = result.edges.find((x) => x.edgeId === e.id)?.traversals ?? 0;
     if (traversals <= 0) continue;
@@ -121,9 +121,8 @@ export function criticalPath(result: RunResult): CriticalPath {
       id: e.id,
       label: `${from} \u2192 ${to}`,
       visitsPerRequest: perRequest,
-      // Two legs per traversal: the request and its response.
-      perVisitMs: meanMs * 2,
-      totalMs: meanMs * 2 * perRequest,
+      perVisitMs: meanMs,
+      totalMs: meanMs * perRequest,
       share: 0,
       queueShare: 0,
       ownP99Ms: 0,

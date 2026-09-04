@@ -1840,7 +1840,9 @@ export function groundingReport(study: Study, candidate: Candidate): GroundingRe
   const invalidTiming = candidate.design.nodes.find((node) =>
     nodeTimingInputs(node).some((input) => !distributionHasPositiveMean(input.distribution))
   );
-  const invalidEdge = candidate.design.edges.find((edge) => !distributionHasPositiveMean(edge.latency));
+  const invalidEdge = candidate.design.edges.find(
+    (edge) => !distributionHasPositiveMean(edge.network.propagationLatency)
+  );
   if (sourceIds.size === 0) addGap("model-invalid", "The topology has no client or work-source node.");
   if (unreachable.length > 0) {
     addGap("model-invalid", `${unreachable.length} component${unreachable.length === 1 ? " is" : "s are"} unreachable from every work source.`);
@@ -1930,7 +1932,7 @@ export function performanceCalibration(
       targetKind: "edge" as const,
       targetId: edge.id,
       label: `${labels.get(edge.from) ?? edge.from} → ${labels.get(edge.to) ?? edge.to}`,
-      usable: distributionHasPositiveMean(edge.latency),
+      usable: distributionHasPositiveMean(edge.network.propagationLatency),
     })),
   ];
 

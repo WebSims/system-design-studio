@@ -1668,6 +1668,103 @@ summary:focus-visible {
   border-radius: 5px;
   background: var(--bg-2);
 }
+.failure-section-title {
+  margin-top: 16px !important;
+}
+.failure-editor {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-2);
+}
+.failure-editor > label,
+.failure-number-row > label {
+  display: grid;
+  gap: 4px;
+  color: var(--fg-3);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.failure-editor select,
+.failure-editor input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 6px;
+  color: var(--fg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--bg-3);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.failure-editor input[type="range"] {
+  width: 100%;
+  accent-color: var(--bad);
+}
+.failure-number-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+.failure-list {
+  display: grid;
+  gap: 5px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.failure-list li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--fg-2);
+  font-size: 10px;
+}
+.failure-list li > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+}
+.failure-list small {
+  overflow: hidden;
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.failure-marker {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid var(--bad);
+  border-radius: 50%;
+  color: var(--bad);
+  font-weight: 800;
+}
+.active-failures {
+  display: grid;
+  gap: 3px;
+  margin-top: 9px;
+  padding: 7px 8px;
+  border-left: 3px solid var(--bad);
+  color: var(--fg-2);
+  background: color-mix(in srgb, var(--bad) 9%, transparent);
+  font-size: 10px;
+}
+.active-failures span { color: var(--fg-3); }
+.network-boundary { margin-top: 10px !important; }
+.edge-network-total {
+  color: var(--fg-3);
+  font-size: 9px;
+}
 
 .empty {
   padding: 22px 12px;
@@ -2136,6 +2233,9 @@ summary:focus-visible {
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 9px 10px 3px;
+}
+.distribution-field > .field-label {
+  margin-bottom: 4px;
 }
 
 .btn {

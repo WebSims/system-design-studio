@@ -13,3 +13,5 @@ export * from "./components";
 export * from "./workflow";
 export * from "./run";
 export * from "./session";
+export * from "./network";
+export * from "./failures";

@@ -1519,7 +1519,7 @@ describe("validating a draft", () => {
     const design = structuredClone(host.study.candidates[6]!.design) as {
       edges: Array<Record<string, unknown>>;
     };
-    delete design.edges[0]!.latency;
+    delete design.edges[0]!.network;
     const { content } = await call("studio_validate_draft", { design });
     expect(content.valid).toBe(false);
     expect(content.errors).toContainEqual(

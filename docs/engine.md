@@ -40,6 +40,32 @@ streams plain-data updates to the UI, and retains completed runs for trace repla
 Changing any executable design field invalidates an active session; moving a node does
 not, because geometry is not model input.
 
+## Network physics and failure timelines
+
+Edges now carry a `NetworkProfile` instead of one overloaded latency number. The
+executable protocol is HTTP/1.1 or HTTP/2 over TCP. Each request and response pays its
+own payload serialization and bandwidth transfer time plus one-way propagation; a
+request that does not reuse a connection also pays TCP setup and optional TLS cost.
+Request and response loss are sampled independently at the message level.
+
+The v6 migration is neutral by construction: zero-byte messages, unconstrained
+bandwidth, zero serialization/setup/TLS cost, and full connection reuse leave the old
+one-way latency and loss as the only costs. That keeps existing run outcomes unchanged.
+The schema reserves typed gRPC, GraphQL, WebSocket, UDP, and custom variants, but
+validation refuses to execute them until their actual semantics are implemented.
+
+`scenario.failures` is a deterministic virtual-time timeline. The same `FailureEvent`
+shape can be injected into a live `SimulationSession`. It supports node outage,
+capacity reduction, service degradation, edge-latency inflation, request loss, and
+gateway disconnection. Overlapping capacity/service/latency factors multiply;
+independent losses multiply their survival probabilities; outage wins over every
+capacity factor. Start and end are kernel events, so recovery is automatic and is
+independent of presentation pause or speed. Active events and the complete timeline
+travel with session snapshots and final results.
+
+This is deliberately request-level physics. Packet MTU, congestion control, packet
+reordering, and packet-by-packet retransmission are outside the model.
+
 
 ## Realtime: connections and fan-out
 

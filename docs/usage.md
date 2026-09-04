@@ -72,8 +72,9 @@ with new `x`/`y` re-places the drawing.
 Each patch is validated before it is committed: a link to a node that does not exist yet is
 refused with a named error, while a missing client is only a warning. Agent-authored servers
 must state `fanout: "sequential"` or `fanout: "parallel"`; they may not inherit a call-order
-default. Agent-authored links must state a positive one-way latency. Omitting latency or using
-zero is refused.
+default. Agent-authored links must state a `network` profile with positive one-way
+`propagationLatency`. Omitting it or using zero is refused. The v7 runtime additionally models
+directional bytes, bandwidth, serialization, TCP setup, TLS, reuse, and request-level loss.
 `studio_import_architecture` with `fromCandidateId` then turns the drawing into the as-is
 baseline in place, keeping its id and everything on the canvas; passing a complete `design`
 instead still imports in one call, and fills the empty version the project opened with
@@ -119,6 +120,11 @@ catalog benchmark and labels it `aspect: performance`, `confidence: assumed`; it
 production scenarios, and performance comparison remain unavailable until every modeled node
 and link has `aspect: performance`, `confidence: observed` evidence from runtime measurements or
 the user. Architecture citations do not satisfy that gate.
+
+The simulation panel can save virtual-time failure events into the scenario or inject the same
+event shape into a running Manual or Full session. Timeline events recover at their declared end;
+overlapping degradations compose. This remains a request-level model and does not claim packet
+MTU, congestion-control, or reordering fidelity.
 
 Every component and connection must carry architecture or behavior evidence before an
 agent-created baseline can be sealed. Observed elements cite a source path and symbol (with line

@@ -1,4 +1,9 @@
-import { mean as distMean, scv as distScv, zipfTopMass } from "@sds/core";
+import {
+  mean as distMean,
+  meanNetworkRoundTripMs,
+  scv as distScv,
+  zipfTopMass,
+} from "@sds/core";
 import {
   classesOf,
   isTimeVarying,
@@ -309,7 +314,7 @@ function attemptFailureProbability(
   successProb: Map<string, number>,
   classId: string
 ): number {
-  const delivered = 1 - edge.lossProbability;
+  const delivered = 1 - edge.network.lossProbability;
   const downstreamSuccess = successProb.get(key(edge.to, classId)) ?? 1;
 
   let completesInTime = 1;
@@ -319,7 +324,7 @@ function attemptFailureProbability(
     const survival = target?.survivalAt;
     if (survival) {
       // Budget excludes the two network legs, which the attempt also has to fit in.
-      const netMs = 2 * distMean(edge.latency);
+      const netMs = meanNetworkRoundTripMs(edge.network);
       completesInTime = 1 - survival(Math.max(0, timeout - netMs));
     }
   }
@@ -372,6 +377,11 @@ export function previewDesign(design: Design): DesignPreview {
   const classes = classesOf(design);
   const totalWeight = classes.reduce((s, c) => s + c.weight, 0);
   const notes: string[] = [];
+  if (design.scenario.failures.length > 0) {
+    notes.push(
+      "the closed-form preview represents the healthy baseline and does not average failure-timeline windows; run the deterministic simulation to measure them"
+    );
+  }
 
   /**
    * FIXED-POINT ITERATION.
@@ -443,7 +453,7 @@ export function previewDesign(design: Design): DesignPreview {
           bump(
             edge.to,
             cls.id,
-            outbound * share * multiplier * edge.fanoutFactor * (1 - edge.lossProbability)
+            outbound * share * multiplier * edge.fanoutFactor * (1 - edge.network.lossProbability)
           );
         }
       }
@@ -476,7 +486,7 @@ export function previewDesign(design: Design): DesignPreview {
         }
         const legs = routes.map(({ edge, share }) => {
           // Both directions cross the wire.
-          const net = 2 * distMean(edge.latency);
+          const net = meanNetworkRoundTripMs(edge.network);
           const downstream = responseMs.get(key(edge.to, cls.id)) ?? 0;
           // A retrying caller holds its slot across every attempt plus the backoff
           // between them. That inflation is why retries hurt the CALLER as well as
@@ -562,20 +572,26 @@ export function previewDesign(design: Design): DesignPreview {
           downstreamSurvival = 1;
         } else if (node.kind === "loadbalancer") {
           downstreamSurvival = routes.reduce((s, r) => {
-            const raw = (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1);
+            const raw =
+              (1 - r.edge.network.lossProbability) *
+              (successProb.get(key(r.edge.to, cls.id)) ?? 1);
             return s + r.share * (retrySuccess.get(r.edge.id) ?? raw);
           }, 0);
         } else if (node.kind === "cache") {
           const h = analyticHitRatio(node);
           const originSurvival = routes.reduce((s, r) => {
-            const raw = (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1);
+            const raw =
+              (1 - r.edge.network.lossProbability) *
+              (successProb.get(key(r.edge.to, cls.id)) ?? 1);
             return s * (retrySuccess.get(r.edge.id) ?? raw);
           }, 1);
           downstreamSurvival = h + (1 - h) * originSurvival;
         } else {
           // Every branch that is taken must succeed; a branch not taken cannot fail.
           downstreamSurvival = routes.reduce((s, r) => {
-            const raw = (1 - r.edge.lossProbability) * (successProb.get(key(r.edge.to, cls.id)) ?? 1);
+            const raw =
+              (1 - r.edge.network.lossProbability) *
+              (successProb.get(key(r.edge.to, cls.id)) ?? 1);
             // Retries recover some failures, so the caller sees a better success rate
             // than one attempt would give.
             const ifTaken = retrySuccess.get(r.edge.id) ?? raw;
@@ -680,7 +696,7 @@ export function previewDesign(design: Design): DesignPreview {
       for (const { edge } of routeShares(design, client, cls.id)) {
         const target = previews.get(edge.to);
         survival *=
-          (1 - edge.lossProbability) * (successProb.get(key(edge.to, cls.id)) ?? 1);
+          (1 - edge.network.lossProbability) * (successProb.get(key(edge.to, cls.id)) ?? 1);
         if (!target || latency === null) {
           latency = null;
           continue;
@@ -689,7 +705,7 @@ export function previewDesign(design: Design): DesignPreview {
           latency = null;
           continue;
         }
-        latency += 2 * distMean(edge.latency) + target.wMs;
+        latency += meanNetworkRoundTripMs(edge.network) + target.wMs;
         stationCount++;
         if (target.model !== "M/M/c" || (design.edges.filter((e) => e.from === edge.to).length > 0)) {
           singleStationExact = false;
@@ -862,7 +878,7 @@ function clientP99(
     for (const { edge } of routeShares(design, client, cls.id)) {
       const target = previews.get(edge.to);
       if (!target || target.p99Ms === null) return null;
-      return target.p99Ms + 2 * distMean(edge.latency);
+      return target.p99Ms + meanNetworkRoundTripMs(edge.network);
     }
   }
   return null;

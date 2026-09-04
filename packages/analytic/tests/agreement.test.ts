@@ -168,6 +168,22 @@ describe("preview agrees with simulation: multi-station chain", () => {
   });
 });
 
+describe("preview boundaries", () => {
+  it("states that timeline failures require simulation", () => {
+    const design = chain([{ serviceMeanMs: 20, c: 2 }], 10);
+    design.scenario.failures.push({
+      id: "slow-service",
+      kind: "service-degradation",
+      targetNodeId: "s0",
+      startSec: 10,
+      durationSec: 5,
+      factor: 2,
+    });
+
+    expect(previewDesign(design).notes.join(" ")).toMatch(/healthy baseline.*failure-timeline/);
+  });
+});
+
 describe("preview refuses to report on an unstable design", () => {
   it("reports instability rather than a latency estimate", () => {
     const lambda = 60;

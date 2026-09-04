@@ -1,5 +1,5 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from "@xyflow/react";
-import { mean as distMean } from "@sds/core";
+import { mean as distMean, meanNetworkRoundTripMs } from "@sds/core";
 import { useStudio } from "../store";
 import { latencyLabel, performanceInputState } from "./provenance";
 
@@ -34,8 +34,9 @@ export function PipeEdge({
     targetPosition,
   });
   const edge = useStudio((s) => s.design.edges.find((e) => e.id === id));
-  const latencyMs = edge ? distMean(edge.latency) : 0;
-  const loss = edge?.lossProbability ?? 0;
+  const latencyMs = edge ? distMean(edge.network.propagationLatency) : 0;
+  const roundTripMs = edge ? meanNetworkRoundTripMs(edge.network) : 0;
+  const loss = edge?.network.lossProbability ?? 0;
   const topology = (data as { topology?: "none" | "match" | "muted" } | undefined)?.topology;
   const evidence = data as
     | {
@@ -74,6 +75,11 @@ export function PipeEdge({
           >
             {latencyLabel(latencyMs, inputState)}
           </span>
+          {edge && roundTripMs > latencyMs * 2 && (
+            <span className="edge-network-total tnum" title="Mean request + response network cost">
+              {roundTripMs.toFixed(1)}ms RTT
+            </span>
+          )}
           {evidence?.repositoryLinked && (
             <span
               className={`edge-evidence evidence-${evidence.evidenceTone ?? "uncovered"}`}

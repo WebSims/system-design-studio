@@ -9,6 +9,8 @@ export interface ResourceOptions {
   queueCapacity: number | null;
   discipline: QueueDiscipline;
   admissionPolicy: AdmissionPolicy;
+  /** Optional virtual-time capacity, used by failure timelines. */
+  capacityAt?: () => number;
 }
 
 interface Waiter extends WaiterHandle {
@@ -74,6 +76,7 @@ export class Resource implements WaitStation {
   readonly queueCapacity: number | null;
   readonly discipline: QueueDiscipline;
   readonly admissionPolicy: AdmissionPolicy;
+  private readonly capacityAt: () => number;
 
   private inService = 0;
 
@@ -120,6 +123,7 @@ export class Resource implements WaitStation {
     this.queueCapacity = opts.queueCapacity;
     this.discipline = opts.discipline;
     this.admissionPolicy = opts.admissionPolicy;
+    this.capacityAt = opts.capacityAt ?? (() => this.capacity);
     this.lastTouch = sim.now;
     this.statsStart = sim.now;
   }
@@ -130,6 +134,10 @@ export class Resource implements WaitStation {
 
   get inServiceCount(): number {
     return this.inService;
+  }
+
+  get effectiveCapacity(): number {
+    return Math.max(0, Math.min(this.capacity, Math.floor(this.capacityAt())));
   }
 
   /**
@@ -177,7 +185,7 @@ export class Resource implements WaitStation {
     this.touch();
     this.arrivals++;
 
-    if (this.inService < this.capacity) {
+    if (this.inService < this.effectiveCapacity) {
       this.inService++;
       this.admitted++;
       const handle: WaiterHandle = { enqueuedAt: this.sim.now, settled: true };
@@ -235,13 +243,25 @@ export class Resource implements WaitStation {
     }
     this.inService--;
     this.completedCount++;
-    this.admitNext();
+    this.admitAvailable();
   }
 
-  private admitNext(): void {
+  /** Re-evaluate queued work at a failure start/recovery boundary. */
+  refreshCapacity(): void {
+    this.touch();
+    this.admitAvailable();
+  }
+
+  private admitAvailable(): void {
+    while (this.inService < this.effectiveCapacity && this.admitNext()) {
+      // Admit every slot exposed by a recovery or capacity increase.
+    }
+  }
+
+  private admitNext(): boolean {
     for (;;) {
       const waiter = this.dequeue();
-      if (!waiter) return;
+      if (!waiter) return false;
       if (waiter.settled) continue; // abandoned while queued
       this.inService++;
       this.admitted++;
@@ -249,7 +269,7 @@ export class Resource implements WaitStation {
       this.totalWaitMs += waited;
       waiter.settled = true;
       waiter.resume({ granted: true, waitedMs: waited });
-      return;
+      return true;
     }
   }
 

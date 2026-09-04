@@ -1,4 +1,4 @@
-import type { Design, NodeKind, SdsEdge, SdsNode } from "@sds/schema";
+import type { Design, FailureEvent, NodeKind, SdsEdge, SdsNode } from "@sds/schema";
 import { CallSite } from "./callsite";
 import { mean as distMean, sample, scv } from "./distribution";
 import { LatencyHistogram } from "./histogram";
@@ -7,6 +7,8 @@ import type { RngBundle } from "./rng";
 import { Sim, acquire, delay, suspend, type Process } from "./sim";
 import { TimeSeries } from "./timeseries";
 import { ZipfSampler } from "./zipf";
+import type { FailureController } from "./failures";
+import { effectiveLossProbability, sampleNetworkLeg } from "./network";
 import type {
   CacheMetrics,
   ConnectionMetrics,
@@ -19,6 +21,7 @@ import type {
   NodeResult,
   QueueMetrics,
   SeriesData,
+  TraceNetworkLeg,
 } from "./result";
 
 export interface Outcome {
@@ -56,7 +59,8 @@ export interface TraceSink {
     tStart: number,
     tEnd: number,
     delivered: boolean,
-    forward: boolean
+    forward: boolean,
+    network?: TraceNetworkLeg
   ): void;
   visit(
     requestId: number,
@@ -88,6 +92,7 @@ export interface ComponentEnv {
    */
   edgeTraversals: Map<string, number>;
   trace: TraceSink;
+  failures: FailureController;
   /** True once warm-up is over. Components record nothing before that. */
   measuring: () => boolean;
   /**
@@ -120,6 +125,8 @@ export interface WorkflowHost {
  */
 export interface ConnectionToken {
   revoked: boolean;
+  /** Jitter window chosen by the failure that revoked this connection. */
+  reconnectOverSec: number;
   /** Invoked by the gateway when the connection is dropped by a fault. */
   onRevoke: (() => void) | null;
 }
@@ -153,7 +160,9 @@ export interface Component {
    * Models an instance failing or being restarted. The clients holding those
    * connections then come back through accept, which is the reconnect storm.
    */
-  dropConnections?(count: number): number;
+  dropConnections?(count: number, reconnectOverSec?: number): number;
+  /** Re-evaluate resources and connection state at a failure boundary. */
+  failureStateChanged?(event: FailureEvent, active: boolean): void;
   /** Requests currently queued or in service. Used by load-balancer algorithms. */
   load(): number;
   /** Instantaneous state for session snapshots; unlike metrics, this is not averaged. */
@@ -248,6 +257,7 @@ abstract class StationComponent implements Component {
       queueCapacity: opts.queueCapacity,
       discipline: opts.discipline,
       admissionPolicy: opts.admissionPolicy,
+      capacityAt: () => env.failures.effectiveCapacity(node.id, opts.capacity),
     });
     this.queueSeries = new TimeSeries(`${node.id}.queueLength`);
     this.utilSeries = new TimeSeries(`${node.id}.utilization`);
@@ -256,6 +266,10 @@ abstract class StationComponent implements Component {
   abstract handle(ctx: RequestCtx): Process<Outcome>;
   protected abstract serviceMeanMs(): number;
   protected abstract serviceScv(): number;
+
+  failureStateChanged(): void {
+    this.resource.refreshCapacity();
+  }
 
   load(): number {
     return this.resource.inServiceCount + this.resource.queueLength;
@@ -402,9 +416,8 @@ function eligibleEdges(env: ComponentEnv, nodeId: string, ctx: RequestCtx): SdsE
  *
  * BOTH DIRECTIONS COST NETWORK TIME.
  *
- * A request/response pair crosses the wire twice, so edge latency is applied
- * twice. This is why edge latency is documented as one-way: entering a round-trip
- * figure would double-count it.
+ * A request/response pair crosses the wire twice. Each leg includes propagation,
+ * serialization and bandwidth transfer; only the outbound leg may establish TCP/TLS.
  */
 function* attemptCall(
   env: ComponentEnv,
@@ -420,32 +433,41 @@ function* attemptCall(
 
   // ---- request leg ----
   const outStart = env.sim.now;
-  const outWait = yield* delay(sample(edge.latency, netRng), deadlineAt);
+  const outbound = sampleNetworkLeg(edge, "request", netRng, env.failures);
+  const outWait = yield* delay(outbound.totalMs, deadlineAt);
   if (outWait.timedOut) {
-    if (ctx.traced) env.trace.hop(ctx.requestId, edge.id, outStart, env.sim.now, false, true);
+    if (ctx.traced) {
+      env.trace.hop(ctx.requestId, edge.id, outStart, env.sim.now, false, true, outbound);
+    }
     return { ok: false, reason: "timeout" };
   }
-  const droppedOut = lossRng.chance(edge.lossProbability);
+  const requestLoss = effectiveLossProbability(edge, env.failures);
+  const droppedOut = requestLoss > 0 && lossRng.chance(requestLoss);
   if (ctx.traced) {
-    env.trace.hop(ctx.requestId, edge.id, outStart, env.sim.now, !droppedOut, true);
+    env.trace.hop(ctx.requestId, edge.id, outStart, env.sim.now, !droppedOut, true, outbound);
   }
   if (droppedOut) return { ok: false, reason: "network" };
 
   const target = env.components.get(edge.to);
   if (!target) return OK; // validated away upstream; nothing to call
+  if (env.failures.isNodeOut(edge.to)) return { ok: false, reason: "error" };
   const outcome = yield* target.handle({ ...ctx, deadlineAt });
   if (!outcome.ok) return outcome;
 
   // ---- response leg ----
   const backStart = env.sim.now;
-  const backWait = yield* delay(sample(edge.latency, netRng), deadlineAt);
+  const response = sampleNetworkLeg(edge, "response", netRng, env.failures);
+  const backWait = yield* delay(response.totalMs, deadlineAt);
   if (backWait.timedOut) {
-    if (ctx.traced) env.trace.hop(ctx.requestId, edge.id, backStart, env.sim.now, false, false);
+    if (ctx.traced) {
+      env.trace.hop(ctx.requestId, edge.id, backStart, env.sim.now, false, false, response);
+    }
     return { ok: false, reason: "timeout" };
   }
-  const droppedBack = lossRng.chance(edge.lossProbability);
+  const responseLoss = effectiveLossProbability(edge, env.failures);
+  const droppedBack = responseLoss > 0 && lossRng.chance(responseLoss);
   if (ctx.traced) {
-    env.trace.hop(ctx.requestId, edge.id, backStart, env.sim.now, !droppedBack, false);
+    env.trace.hop(ctx.requestId, edge.id, backStart, env.sim.now, !droppedBack, false, response);
   }
   if (droppedBack) return { ok: false, reason: "network" };
 
@@ -683,7 +705,9 @@ export class ServerComponent extends StationComponent {
     try {
       const own = Math.max(
         MIN_SERVICE_MS,
-        sample(cfg.serviceTime, env.rng.stream("service")) * ctx.serviceMultiplier
+        sample(cfg.serviceTime, env.rng.stream("service")) *
+          ctx.serviceMultiplier *
+          env.failures.serviceFactor(this.node.id)
       );
       const served = yield* delay(own, ctx.deadlineAt);
       this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);
@@ -979,7 +1003,8 @@ export class LoadBalancerComponent extends StationComponent {
     try {
       const own = Math.max(
         MIN_SERVICE_MS,
-        sample(cfg.serviceTime, env.rng.stream("service"))
+        sample(cfg.serviceTime, env.rng.stream("service")) *
+          env.failures.serviceFactor(this.node.id)
       );
       const served = yield* delay(own, ctx.deadlineAt);
       this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);
@@ -1175,7 +1200,8 @@ export class CacheComponent extends StationComponent {
     try {
       const lookupMs = Math.max(
         MIN_SERVICE_MS,
-        sample(cfg.serviceTime, env.rng.stream("service"))
+        sample(cfg.serviceTime, env.rng.stream("service")) *
+          env.failures.serviceFactor(this.node.id)
       );
       const served = yield* delay(lookupMs, ctx.deadlineAt);
       this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);
@@ -1279,6 +1305,7 @@ export class DatabaseComponent extends StationComponent {
       queueCapacity: null,
       discipline: "fifo",
       admissionPolicy: "block",
+      capacityAt: () => env.failures.effectiveCapacity(node.id, cfg.parallelism),
     });
     this.execSeries = new TimeSeries(`${node.id}.executionUtilization`);
   }
@@ -1308,6 +1335,11 @@ export class DatabaseComponent extends StationComponent {
     this.execWaitCount = 0;
     this.lastExecBusy = 0;
     this.lastExecSampleT = this.env.sim.now;
+  }
+
+  override failureStateChanged(): void {
+    super.failureStateChanged();
+    this.execution.refreshCapacity();
   }
 
   override sample(tSec: number): void {
@@ -1353,7 +1385,9 @@ export class DatabaseComponent extends StationComponent {
       try {
         const queryMs = Math.max(
           MIN_SERVICE_MS,
-          sample(cfg.serviceTime, env.rng.stream("service")) * ctx.serviceMultiplier
+          sample(cfg.serviceTime, env.rng.stream("service")) *
+            ctx.serviceMultiplier *
+            env.failures.serviceFactor(this.node.id)
         );
         const served = yield* delay(queryMs, ctx.deadlineAt);
         this.recordSelfTime(conn.waitedMs + exec.waitedMs, env.sim.now - serviceStart);
@@ -1532,7 +1566,8 @@ export class QueueComponent implements Component {
 
     const publishMs = Math.max(
       MIN_SERVICE_MS,
-      sample(cfg.publishTime, env.rng.stream("service"))
+      sample(cfg.publishTime, env.rng.stream("service")) *
+        env.failures.serviceFactor(this.node.id)
     );
     const publishStart = env.sim.now;
     const published = yield* delay(publishMs, ctx.deadlineAt);
@@ -1575,16 +1610,23 @@ export class QueueComponent implements Component {
 
   processes(): Process<void>[] {
     const cfg = this.node.queue!;
-    return Array.from({ length: cfg.consumers }, () => this.consumer());
+    return Array.from({ length: cfg.consumers }, (_, index) => this.consumer(index));
   }
 
-  private consumer(): Process<void> {
+  private consumer(index: number): Process<void> {
     const self = this;
     const cfg = this.node.queue!;
     const env = this.env;
 
     return (function* (): Process<void> {
       for (;;) {
+        if (
+          env.failures.isNodeOut(self.node.id) ||
+          index >= env.failures.effectiveCapacity(self.node.id, cfg.consumers)
+        ) {
+          yield* suspend((resume) => env.failures.onNextChange(resume));
+          continue;
+        }
         if (self.depth === 0) {
           yield* suspend((resume) => {
             self.idle.push(resume);
@@ -1600,7 +1642,9 @@ export class QueueComponent implements Component {
 
         const workMs = Math.max(
           MIN_SERVICE_MS,
-          sample(cfg.consumerServiceTime, env.rng.stream("service")) * msg.serviceMultiplier
+          sample(cfg.consumerServiceTime, env.rng.stream("service")) *
+            msg.serviceMultiplier *
+            env.failures.serviceFactor(self.node.id)
         );
         // Consumer work has no client deadline: nobody is waiting on it. That is
         // exactly why an unbounded backlog is dangerous rather than self-limiting.
@@ -1763,6 +1807,8 @@ export class GatewayComponent implements Component {
       queueCapacity: 0,
       discipline: "fifo",
       admissionPolicy: "shed",
+      capacityAt: () =>
+        env.failures.effectiveCapacity(node.id, cfg.connectionCapacity * cfg.replicas),
     });
     this.work = new Resource(env.sim, {
       id: `${node.id}:work`,
@@ -1770,6 +1816,8 @@ export class GatewayComponent implements Component {
       queueCapacity: null,
       discipline: "fifo",
       admissionPolicy: "block",
+      capacityAt: () =>
+        env.failures.effectiveCapacity(node.id, cfg.pushConcurrency * cfg.replicas),
     });
     this.connectionSeries = new TimeSeries(`${node.id}.connections`);
     this.workUtilSeries = new TimeSeries(`${node.id}.workUtilization`);
@@ -1846,6 +1894,14 @@ export class GatewayComponent implements Component {
     const env = this.env;
     const start = env.sim.now;
 
+    if (
+      env.failures.isNodeOut(this.node.id) ||
+      env.failures.isGatewayDisconnected(this.node.id)
+    ) {
+      if (env.measuring()) this.refused++;
+      return { held: false, reason: "error", acceptMs: 0 };
+    }
+
     this.touch();
     const slot = yield* acquire(this.connections, ctx.deadlineAt);
     if (!slot.granted) {
@@ -1864,7 +1920,8 @@ export class GatewayComponent implements Component {
     try {
       const acceptMs = Math.max(
         MIN_SERVICE_MS,
-        sample(cfg.acceptTime, env.rng.stream("service"))
+        sample(cfg.acceptTime, env.rng.stream("service")) *
+          env.failures.serviceFactor(this.node.id)
       );
       const done = yield* delay(acceptMs, ctx.deadlineAt);
       if (done.timedOut) {
@@ -1882,7 +1939,7 @@ export class GatewayComponent implements Component {
       this.accepted++;
       this.acceptLatency.record(env.sim.now - start);
     }
-    const token: ConnectionToken = { revoked: false, onRevoke: null };
+    const token: ConnectionToken = { revoked: false, reconnectOverSec: 0, onRevoke: null };
     this.tokens.add(token);
     return { held: true, acceptMs: env.sim.now - start, token };
   }
@@ -1906,13 +1963,14 @@ export class GatewayComponent implements Component {
    * would be when a process dies, while the client's reconnect arrives a moment later.
    * That ordering is what produces the burst.
    */
-  dropConnections(count: number): number {
+  dropConnections(count: number, reconnectOverSec = 0): number {
     this.touch();
     let dropped = 0;
     for (const token of [...this.tokens]) {
       if (dropped >= count) break;
       this.tokens.delete(token);
       token.revoked = true;
+      token.reconnectOverSec = reconnectOverSec;
       this.connections.release();
       if (this.env.measuring()) this.disconnects++;
       dropped++;
@@ -1922,6 +1980,17 @@ export class GatewayComponent implements Component {
     }
     this.droppedByFault += dropped;
     return dropped;
+  }
+
+  failureStateChanged(event: FailureEvent, active: boolean): void {
+    this.connections.refreshCapacity();
+    this.work.refreshCapacity();
+    if (!active || !("targetNodeId" in event) || event.targetNodeId !== this.node.id) return;
+    if (event.kind === "gateway-disconnection") {
+      this.dropConnections(Math.floor(this.held * event.fraction), event.reconnectOverSec);
+    } else if (event.kind === "node-outage") {
+      this.dropConnections(this.held);
+    }
   }
 
   /**
@@ -1970,7 +2039,9 @@ export class GatewayComponent implements Component {
     try {
       const pushMs = Math.max(
         MIN_SERVICE_MS,
-        sample(cfg.pushTime, env.rng.stream("service")) * ctx.serviceMultiplier
+        sample(cfg.pushTime, env.rng.stream("service")) *
+          ctx.serviceMultiplier *
+          env.failures.serviceFactor(this.node.id)
       );
       const served = yield* delay(pushMs, ctx.deadlineAt);
       if (env.measuring()) {
@@ -2188,7 +2259,9 @@ export class LockComponent extends StationComponent {
       const serviceStart = env.sim.now;
       const serviceMs = Math.max(
         MIN_SERVICE_MS,
-        sample(cfg.serviceTime, env.rng.stream("service")) * ctx.serviceMultiplier
+        sample(cfg.serviceTime, env.rng.stream("service")) *
+          ctx.serviceMultiplier *
+          env.failures.serviceFactor(this.node.id)
       );
       const served = yield* delay(serviceMs, ctx.deadlineAt);
       this.recordSelfTime(slot.waitedMs, env.sim.now - serviceStart);

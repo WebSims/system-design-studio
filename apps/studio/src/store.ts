@@ -16,6 +16,7 @@ import {
   validateDesign,
   type Design,
   type DesignIssue,
+  type FailureEvent,
   type SdsNode,
 } from "@sds/schema";
 import { useStudyStore } from "./study/store";
@@ -29,6 +30,7 @@ import {
   createSimulationSessionInWorker,
   finalizeSimulationSessionInWorker,
   injectSimulationRequestInWorker,
+  injectSimulationFailureInWorker,
   invalidateSimulationSessionInWorker,
   replicateInWorker,
   replaySimulationSessionInWorker,
@@ -109,6 +111,7 @@ interface StudioState {
   setSessionMode: (mode: SimulationMode) => void;
   setSourceEnabled: (sourceNodeId: string, enabled: boolean) => Promise<void>;
   injectRequest: (sourceNodeId: string) => Promise<void>;
+  injectFailure: (event: FailureEvent) => Promise<void>;
   advanceSessionBy: (deltaMs: number) => Promise<void>;
   advanceSessionEvents: (count: number) => Promise<void>;
   setSessionPaused: (paused: boolean) => Promise<void>;
@@ -405,6 +408,21 @@ export const useStudio = create<StudioState>((set, get) => ({
     set({ sessionBusy: true, error: null });
     try {
       const update = await injectSimulationRequestInWorker(sessionId, sourceNodeId);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ session: update.snapshot, sessionBusy: false, error: null });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
+    }
+  },
+
+  injectFailure: async (event) => {
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session || sessionBusy || session.status === "completed") return;
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true, error: null });
+    try {
+      const update = await injectSimulationFailureInWorker(sessionId, event);
       if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
       set({ session: update.snapshot, sessionBusy: false, error: null });
     } catch (e) {

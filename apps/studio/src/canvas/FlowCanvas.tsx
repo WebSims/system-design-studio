@@ -78,7 +78,9 @@ const addLink = (d: Design, from: string, to: string): void => {
       id: protocolFreeEdgeId(d.edges.map((e) => e.id)),
       from,
       to,
-      latency: { kind: "deterministic", value: 0.25 },
+      network: {
+        propagationLatency: { kind: "deterministic", value: 0.25 },
+      },
     })
   );
 };

@@ -397,7 +397,13 @@ function degrade(design: Design, target: FailureTarget): Design {
     ...design,
     edges: design.edges.map((edge) =>
       edge.id === target.edge.id
-        ? { ...edge, lossProbability: Math.max(0.3, edge.lossProbability) }
+        ? {
+            ...edge,
+            network: {
+              ...edge.network,
+              lossProbability: Math.max(0.3, edge.network.lossProbability),
+            },
+          }
         : edge
     ),
   });

@@ -130,6 +130,7 @@ describe("the manual design", () => {
       warmupSec: 200,
       seed: 1,
       traceLimit: 5000,
+      failures: [],
     });
     expect(validateDesign(design)).toEqual([
       expect.objectContaining({ severity: "warning", code: "no-client" }),

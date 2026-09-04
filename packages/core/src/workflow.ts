@@ -22,8 +22,12 @@ import {
 } from "@sds/kernel";
 import type { Component, ComponentEnv, Outcome, RequestCtx } from "./components";
 import { LockComponent } from "./components";
-import { sample as sampleLatency } from "./distribution";
 import { LatencyHistogram } from "./histogram";
+import {
+  effectiveLossProbability,
+  isLegacyLatencyOnlyNetwork,
+  sampleNetworkLeg,
+} from "./network";
 import { Sim, acquire, delay, suspend, type Process } from "./sim";
 import { Resource } from "./resource";
 import { TimeSeries } from "./timeseries";
@@ -189,6 +193,7 @@ export class WorkflowRuntime {
             queueCapacity: null,
             discipline: "fifo",
             admissionPolicy: "block",
+            capacityAt: () => env.failures.effectiveCapacity(node.id, node.queue!.consumers),
           })
         );
         this.backlogSeries.set(node.id, new TimeSeries(`${node.id}.backlog`));
@@ -229,6 +234,10 @@ export class WorkflowRuntime {
     for (const [queueId, series] of this.backlogSeries) {
       series.push(tSec, this.backlogFor(queueId).depth);
     }
+  }
+
+  failureStateChanged(): void {
+    for (const pool of this.consumerPools.values()) pool.refreshCapacity();
   }
 
   /**
@@ -380,7 +389,9 @@ export class WorkflowRuntime {
     if (edge) {
       outcome = yield* this.callAcross(edge.id, component, ctx);
     } else {
-      outcome = yield* component.handle({ ...ctx, deadlineAt: null });
+      outcome = this.env.failures.isNodeOut(charge.nodeId)
+        ? { ok: false, reason: "error" }
+        : yield* component.handle({ ...ctx, deadlineAt: null });
     }
 
     if (charge.role === "lock" && this.env.measuring()) {
@@ -398,16 +409,55 @@ export class WorkflowRuntime {
     if (!edge) return yield* component.handle({ ...ctx, deadlineAt: null });
 
     const rng = this.env.rng.stream("network");
-    const oneWay = sampleLatency(edge.latency, rng);
-    yield* delay(oneWay, null);
-    if (edge.lossProbability > 0 && rng.chance(edge.lossProbability)) {
+    const request = sampleNetworkLeg(edge, "request", rng, this.env.failures);
+    const requestStart = this.env.sim.now;
+    yield* delay(request.totalMs, null);
+    const requestLoss = effectiveLossProbability(edge, this.env.failures);
+    const requestDropped = requestLoss > 0 && rng.chance(requestLoss);
+    if (ctx.traced) {
+      this.env.trace.hop(
+        ctx.requestId,
+        edge.id,
+        requestStart,
+        this.env.sim.now,
+        !requestDropped,
+        true,
+        request
+      );
+    }
+    if (requestDropped) {
       return { ok: false, reason: "network" };
     }
     const traversals = this.env.edgeTraversals;
     traversals.set(edgeId, (traversals.get(edgeId) ?? 0) + 1);
+    if (this.env.failures.isNodeOut(edge.to)) return { ok: false, reason: "error" };
     const outcome = yield* component.handle({ ...ctx, deadlineAt: null });
-    yield* delay(oneWay, null);
-    if (edge.lossProbability > 0 && rng.chance(edge.lossProbability)) {
+    const response = isLegacyLatencyOnlyNetwork(edge.network)
+      ? {
+          ...request,
+          totalMs: request.propagationMs,
+          serializationMs: 0,
+          transferMs: 0,
+          connectionMs: 0,
+          bytes: 0,
+        }
+      : sampleNetworkLeg(edge, "response", rng, this.env.failures);
+    const responseStart = this.env.sim.now;
+    yield* delay(response.totalMs, null);
+    const responseLoss = effectiveLossProbability(edge, this.env.failures);
+    const responseDropped = responseLoss > 0 && rng.chance(responseLoss);
+    if (ctx.traced) {
+      this.env.trace.hop(
+        ctx.requestId,
+        edge.id,
+        responseStart,
+        this.env.sim.now,
+        !responseDropped,
+        false,
+        response
+      );
+    }
+    if (responseDropped) {
       // Lost on the way back. The operation DID happen; the caller does not know. This
       // is the ambiguous-timeout case in its purest form and it is why the response leg
       // is modelled separately rather than doubled into one delay.

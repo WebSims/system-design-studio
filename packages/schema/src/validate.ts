@@ -5,6 +5,7 @@ import {
   classesOf,
   distributionHasPositiveMean,
   isTimeVarying,
+  legacyNetworkProfile,
   nodeTimingInputs,
   type Design,
   type NodeKind,
@@ -172,9 +173,10 @@ export function validateDesign(design: Design): DesignIssue[] {
     }
     seenEdge.add(key);
 
+    const latency = e.network.propagationLatency;
     const zeroLatency =
-      (e.latency.kind === "deterministic" && e.latency.value === 0) ||
-      (e.latency.kind === "uniform" && e.latency.min === 0 && e.latency.max === 0);
+      (latency.kind === "deterministic" && latency.value === 0) ||
+      (latency.kind === "uniform" && latency.min === 0 && latency.max === 0);
     if (zeroLatency) {
       issues.push({
         severity: "warning",
@@ -182,6 +184,17 @@ export function validateDesign(design: Design): DesignIssue[] {
         message:
           "this connection uses 0ms latency. Treat zero as an uncalibrated schema placeholder, not a physical measurement; " +
           "replace it with a measured value or an explicitly assumed non-zero benchmark before load testing.",
+        edgeId: e.id,
+      });
+    }
+
+    if (e.network.application.kind !== "http" || e.network.transport.kind !== "tcp") {
+      issues.push({
+        severity: "error",
+        code: "network-semantics-not-implemented",
+        message:
+          `${e.network.application.kind} over ${e.network.transport.kind} is typed for forward compatibility, ` +
+          "but this build only simulates HTTP over TCP",
         edgeId: e.id,
       });
     }
@@ -204,6 +217,58 @@ export function validateDesign(design: Design): DesignIssue[] {
           edgeId: e.id,
         });
       }
+    }
+  }
+
+  // ---- failure timeline ----
+  const seenFailureIds = new Set<string>();
+  const edgeIds = new Set(design.edges.map((edge) => edge.id));
+  for (const failure of design.scenario.failures) {
+    if (seenFailureIds.has(failure.id)) {
+      issues.push({
+        severity: "error",
+        code: "duplicate-failure-id",
+        message: `two or more failure events share id "${failure.id}"`,
+      });
+    }
+    seenFailureIds.add(failure.id);
+    if ("targetNodeId" in failure && !byId.has(failure.targetNodeId)) {
+      issues.push({
+        severity: "error",
+        code: "failure-target-missing",
+        message: `failure "${failure.id}" targets a node that does not exist`,
+        nodeId: failure.targetNodeId,
+      });
+    }
+    if ("targetEdgeId" in failure && !edgeIds.has(failure.targetEdgeId)) {
+      issues.push({
+        severity: "error",
+        code: "failure-target-missing",
+        message: `failure "${failure.id}" targets an edge that does not exist`,
+        edgeId: failure.targetEdgeId,
+      });
+    }
+    if (
+      failure.kind === "gateway-disconnection" &&
+      byId.get(failure.targetNodeId)?.kind !== "gateway"
+    ) {
+      issues.push({
+        severity: "error",
+        code: "failure-target-kind",
+        message: `gateway disconnection "${failure.id}" must target a gateway`,
+        nodeId: failure.targetNodeId,
+      });
+    }
+    if (
+      (failure.kind === "capacity-reduction" || failure.kind === "service-degradation") &&
+      byId.get(failure.targetNodeId)?.kind === "client"
+    ) {
+      issues.push({
+        severity: "error",
+        code: "failure-target-kind",
+        message: `${failure.kind} "${failure.id}" must target a capacity-limited component, not a client`,
+        nodeId: failure.targetNodeId,
+      });
     }
   }
 
@@ -1668,6 +1733,34 @@ const MIGRATIONS: Record<number, Migration> = {
   // numbers* most literally while quietly asserting a guarantee the old model never
   // provided. Between preserving arithmetic and preserving meaning, meaning wins.
   5: (doc) => ({ ...doc, version: 6 }),
+
+  // 6 -> 7: request-level network physics and deterministic failure timelines.
+  // Every legacy edge becomes HTTP/1.1 over a fully reused TCP connection with
+  // unconstrained bandwidth and zero serialization/setup/TLS cost. Consequently the
+  // only time and loss remain the old one-way latency and loss probability, byte for
+  // byte. Failures default to an empty timeline.
+  6: (doc) => ({
+    ...doc,
+    version: 7,
+    edges: (Array.isArray(doc.edges) ? doc.edges : []).map((value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+      const edge = value as Record<string, unknown>;
+      const { latency, lossProbability, ...rest } = edge;
+      return {
+        ...rest,
+        network: edge.network ?? legacyNetworkProfile(latency, lossProbability),
+      };
+    }),
+    scenario:
+      typeof doc.scenario === "object" && doc.scenario !== null
+        ? {
+            ...(doc.scenario as Record<string, unknown>),
+            failures: Array.isArray((doc.scenario as Record<string, unknown>).failures)
+              ? (doc.scenario as Record<string, unknown>).failures
+              : [],
+          }
+        : { failures: [] },
+  }),
 };
 
 /**

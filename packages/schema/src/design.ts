@@ -1024,6 +1024,97 @@ export type CallPolicy = z.infer<typeof CallPolicySchema>;
 // ---------------------------------------------------------------------------
 
 /**
+ * The application contract carried by an edge.
+ *
+ * HTTP is the only executable protocol in v7. The other variants are deliberately
+ * typed now so saved designs and provider contracts do not need another structural
+ * rewrite when their semantics arrive; `validateDesign` refuses to execute them until
+ * that happens.
+ */
+export const ApplicationProtocolSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("http"), version: z.enum(["1.1", "2"]).default("1.1") }),
+  z.object({ kind: z.literal("grpc"), streaming: z.boolean().default(false) }),
+  z.object({
+    kind: z.literal("graphql"),
+    operation: z.enum(["query", "mutation", "subscription"]).default("query"),
+  }),
+  z.object({ kind: z.literal("websocket") }),
+  z.object({ kind: z.literal("custom"), name: z.string().min(1) }),
+]);
+export type ApplicationProtocol = z.infer<typeof ApplicationProtocolSchema>;
+
+export const TlsProfileSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Client-visible handshake CPU/crypto cost, ms. */
+  cost: DistributionSchema.default({ kind: "deterministic", value: 0 }),
+});
+export type TlsProfile = z.infer<typeof TlsProfileSchema>;
+
+/** Transport and connection establishment are separate from the application protocol. */
+export const TransportProtocolSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("tcp"),
+    connectionSetup: DistributionSchema.default({ kind: "deterministic", value: 0 }),
+    tls: TlsProfileSchema.default({}),
+    /** Probability that a request reuses an already-established connection. */
+    reuseProbability: z.number().min(0).max(1).default(1),
+  }),
+  z.object({ kind: z.literal("udp") }),
+  z.object({ kind: z.literal("custom"), name: z.string().min(1) }),
+]);
+export type TransportProtocol = z.infer<typeof TransportProtocolSchema>;
+
+/**
+ * Request-level network physics.
+ *
+ * `bandwidthMbps: null` means unconstrained bandwidth. Zero bytes, zero
+ * serialization cost, full connection reuse and no TLS are the migration-neutral
+ * values: an old edge then costs exactly its former one-way latency in each direction.
+ */
+export const NetworkProfileSchema = z.object({
+  application: ApplicationProtocolSchema.default({ kind: "http", version: "1.1" }),
+  transport: TransportProtocolSchema.default({
+    kind: "tcp",
+    connectionSetup: { kind: "deterministic", value: 0 },
+    tls: { enabled: false, cost: { kind: "deterministic", value: 0 } },
+    reuseProbability: 1,
+  }),
+  requestBytes: z.number().int().nonnegative().default(0),
+  responseBytes: z.number().int().nonnegative().default(0),
+  bandwidthMbps: z.number().positive().nullable().default(null),
+  requestSerialization: DistributionSchema.default({ kind: "deterministic", value: 0 }),
+  responseSerialization: DistributionSchema.default({ kind: "deterministic", value: 0 }),
+  propagationLatency: DistributionSchema.default({ kind: "deterministic", value: 0 }),
+  /** Independent request-level loss probability, applied once per direction. */
+  lossProbability: z.number().min(0).max(1).default(0),
+});
+export type NetworkProfile = z.infer<typeof NetworkProfileSchema>;
+
+export function legacyNetworkProfile(
+  latency: unknown,
+  lossProbability: unknown
+): Record<string, unknown> {
+  return {
+    application: { kind: "http", version: "1.1" },
+    transport: {
+      kind: "tcp",
+      connectionSetup: { kind: "deterministic", value: 0 },
+      tls: { enabled: false, cost: { kind: "deterministic", value: 0 } },
+      reuseProbability: 1,
+    },
+    requestBytes: 0,
+    responseBytes: 0,
+    bandwidthMbps: null,
+    requestSerialization: { kind: "deterministic", value: 0 },
+    responseSerialization: { kind: "deterministic", value: 0 },
+    propagationLatency:
+      latency ?? { kind: "deterministic", value: 0 },
+    lossProbability:
+      typeof lossProbability === "number" ? lossProbability : 0,
+  };
+}
+
+/**
  * A connection, carrying the routing decision.
  *
  * Routing lives on edges rather than nodes because that is how it reads on a
@@ -1038,19 +1129,11 @@ export type CallPolicy = z.infer<typeof CallPolicySchema>;
  * Keeping the per-edge data uniform and the dispatch rule per-kind avoids a
  * routing DSL while still expressing every case Phase 2 needs.
  */
-export const EdgeSchema = z.object({
+const CanonicalEdgeSchema = z.object({
   id: z.string().min(1),
   from: z.string().min(1),
   to: z.string().min(1),
-  /**
-   * One-way network latency. The legacy engine used a single 520ms constant for
-   * every edge in the graph, so topology had no effect on latency. Zero remains the
-   * backwards-compatible parse default for old and test documents; validation labels it an
-   * uncalibrated sentinel, and the agent import boundary refuses it for repository baselines.
-   */
-  latency: DistributionSchema.default({ kind: "deterministic", value: 0 }),
-  /** Probability [0,1] a message is dropped in transit. */
-  lossProbability: z.number().min(0).max(1).default(0),
+  network: NetworkProfileSchema.default({}),
   /** Request classes that use this edge. Empty = all classes. */
   classes: z.array(z.string()).default([]),
   /**
@@ -1088,11 +1171,74 @@ export const EdgeSchema = z.object({
    */
   policy: CallPolicySchema.default({}),
 });
+
+/**
+ * Accept the v6 edge spelling at construction boundaries, but always emit the v7
+ * canonical shape. Persisted v6 documents still take the audited migration path in
+ * `migrateAndParse`; this adapter is for callers and fixtures that build current
+ * designs with the former convenience fields.
+ */
+export const EdgeSchema = z.preprocess((input) => {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const raw = input as Record<string, unknown>;
+  if (raw.network !== undefined) return raw;
+  return {
+    ...raw,
+    network: legacyNetworkProfile(raw.latency, raw.lossProbability),
+  };
+}, CanonicalEdgeSchema);
 export type SdsEdge = z.infer<typeof EdgeSchema>;
 
 // ---------------------------------------------------------------------------
 // scenario
 // ---------------------------------------------------------------------------
+
+const FailureWindowSchema = z.object({
+  id: z.string().min(1),
+  startSec: z.number().nonnegative(),
+  durationSec: z.number().positive(),
+});
+
+/**
+ * A reusable, deterministic timeline event. Configured scenarios and interactive
+ * injections use this exact representation.
+ */
+export const FailureEventSchema = z.discriminatedUnion("kind", [
+  FailureWindowSchema.extend({
+    kind: z.literal("node-outage"),
+    targetNodeId: z.string().min(1),
+  }),
+  FailureWindowSchema.extend({
+    kind: z.literal("capacity-reduction"),
+    targetNodeId: z.string().min(1),
+    /** Remaining capacity. Overlapping factors multiply. */
+    factor: z.number().min(0).max(1),
+  }),
+  FailureWindowSchema.extend({
+    kind: z.literal("service-degradation"),
+    targetNodeId: z.string().min(1),
+    /** Service-time multiplier. Overlapping factors multiply. */
+    factor: z.number().min(1),
+  }),
+  FailureWindowSchema.extend({
+    kind: z.literal("edge-latency"),
+    targetEdgeId: z.string().min(1),
+    /** Propagation-latency multiplier. Overlapping factors multiply. */
+    factor: z.number().min(1),
+  }),
+  FailureWindowSchema.extend({
+    kind: z.literal("request-loss"),
+    targetEdgeId: z.string().min(1),
+    lossProbability: z.number().min(0).max(1),
+  }),
+  FailureWindowSchema.extend({
+    kind: z.literal("gateway-disconnection"),
+    targetNodeId: z.string().min(1),
+    fraction: z.number().min(0).max(1),
+    reconnectOverSec: z.number().nonnegative().default(0),
+  }),
+]);
+export type FailureEvent = z.infer<typeof FailureEventSchema>;
 
 export const ScenarioSchema = z.object({
   /**
@@ -1122,6 +1268,8 @@ export const ScenarioSchema = z.object({
   seed: z.number().int().nonnegative().default(1),
   /** Cap on retained trace events, so a long run cannot exhaust memory. */
   traceLimit: z.number().int().nonnegative().default(5000),
+  /** Deterministic failures activated and recovered on virtual-time boundaries. */
+  failures: z.array(FailureEventSchema).default([]),
 });
 export type Scenario = z.infer<typeof ScenarioSchema>;
 
@@ -1132,7 +1280,7 @@ export const SloSchema = z.object({
 });
 export type Slo = z.infer<typeof SloSchema>;
 
-export const DESIGN_SCHEMA_VERSION = 6 as const;
+export const DESIGN_SCHEMA_VERSION = 7 as const;
 
 export const DesignSchema = z.object({
   version: z.literal(DESIGN_SCHEMA_VERSION),

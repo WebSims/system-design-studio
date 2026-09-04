@@ -1,4 +1,4 @@
-import type { Design } from "@sds/schema";
+import { FailureEventSchema, type Design, type FailureEvent } from "@sds/schema";
 import {
   createSimulationRuntime,
   type RunOptions,
@@ -52,6 +52,7 @@ export interface SimulationSessionSnapshot {
   pendingEvents: number;
   trace: Trace;
   occupancy: Record<string, RuntimeOccupancy>;
+  activeFailures: FailureEvent[];
   resultAvailable: boolean;
   replayAvailable: boolean;
   invalidationReason: string | null;
@@ -132,6 +133,14 @@ export class SimulationSession {
     if (this.mode !== "manual") throw new Error("single requests can only be injected in manual mode");
     this.runtime.injectRequest(sourceNodeId);
     this.injectedRequests++;
+    return this.capture(0);
+  }
+
+  /** Inject a virtual-time failure using the persisted scenario event contract. */
+  injectFailure(input: FailureEvent): SimulationSessionUpdate {
+    this.assertUsable();
+    const event = FailureEventSchema.parse(input);
+    this.runtime.injectFailure(event);
     return this.capture(0);
   }
 
@@ -267,6 +276,7 @@ export class SimulationSession {
       pendingEvents: this.runtime.pendingEvents,
       trace,
       occupancy,
+      activeFailures: this.runtime.activeFailures(),
       resultAvailable: complete,
       replayAvailable: complete,
       invalidationReason: this.invalidationReason,
