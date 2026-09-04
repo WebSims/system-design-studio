@@ -4,6 +4,7 @@ import { useStudio } from "../store"
 import { useStudyStore } from "../study/store"
 import { PlusIcon, TrashIcon } from "../ui/icons"
 import { Field, FieldRow, IconButton, NumberInput, Select } from "./controls"
+import { DensitySection } from "./DensitySection"
 
 /**
  * The one place the workload is edited.
@@ -473,11 +474,11 @@ export const AdvancedSettings = ({ study, children }: { study: Study; children?:
   const setSlo = (patch: Partial<typeof slo>) => updateContract({ targets: { ...study.targets, slo: { ...slo, ...patch } } })
 
   return (
-    <details className={`section advanced ${touched ? "agent-touched" : ""}`}>
-      <summary>
-        <h2>advanced</h2>
-        <span className="muted advanced-summary">{advancedSummary(study)}</span>
-      </summary>
+    <DensitySection
+      title="advanced project controls"
+      summary={advancedSummary(study)}
+      className={`section advanced ${touched ? "agent-touched" : ""}`}
+    >
 
       <p className="muted advanced-sub">search limits</p>
       <label>
@@ -539,6 +540,6 @@ export const AdvancedSettings = ({ study, children }: { study: Study; children?:
       </FieldRow>
 
       <ClassFields study={study} />
-    </details>
+    </DensitySection>
   )
 }
