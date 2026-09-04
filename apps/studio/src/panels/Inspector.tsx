@@ -140,7 +140,7 @@ function ArchitectureEvidence({
   const study = useStudyStore((state) => state.study);
   const candidate =
     study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
-  if (!candidate || !study.repository) return null;
+  if (!candidate || study.repositorySnapshots.length === 0) return null;
   const evidence = candidate.evidence.filter(
     (item) => item.targetKind === targetKind && item.targetId === targetId
   );
@@ -198,7 +198,7 @@ function PerformanceCalibrationNote({
   const study = useStudyStore((state) => state.study);
   const candidate =
     study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
-  if (!candidate || !study.repository) return null;
+  if (!candidate || study.repositorySnapshots.length === 0) return null;
   const missing = performanceCalibration(study, candidate).gaps.some(
     (gap) => gap.targetKind === targetKind && gap.targetId === targetId
   );
@@ -214,7 +214,7 @@ function PerformanceCalibrationNote({
 
 /** One quiet line at the foot of a freehand model's panel: where evidence would come from. */
 function FreehandNote() {
-  const linked = useStudyStore((state) => state.study.repository !== null);
+  const linked = useStudyStore((state) => state.study.repositorySnapshots.length > 0);
   if (linked) return null;
   return (
     <p className="freehand-note">

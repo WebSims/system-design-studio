@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { pizzaStudy } from "@sds/models";
 import {
+  activeRepositorySnapshot,
   StudySchema,
   blankStudy,
   evaluationKey,
+  walkOperations,
   type ArchitectureEvidence,
   type Design,
   type Study,
@@ -28,6 +30,7 @@ type RepositoryFixture = {
 };
 
 let cachedFixture: RepositoryFixture | null = null;
+const SOURCE_HASH = "a".repeat(64);
 
 function targetEvidence(
   design: Design,
@@ -39,6 +42,7 @@ function targetEvidence(
       id: `${prefix}-node-${index}`,
       targetKind: "node" as const,
       targetId: node.id,
+      target: { kind: "node" as const, nodeId: node.id },
       aspect,
       confidence: "observed" as const,
       source: aspect === "performance" ? ("runtime" as const) : ("code" as const),
@@ -46,6 +50,7 @@ function targetEvidence(
       lineStart: null,
       lineEnd: null,
       symbol: "",
+      contentHash: aspect === "architecture" ? SOURCE_HASH : "",
       claim:
         aspect === "performance"
           ? `runtime measurement supports ${node.label}'s performance inputs`
@@ -55,6 +60,7 @@ function targetEvidence(
       id: `${prefix}-edge-${index}`,
       targetKind: "edge" as const,
       targetId: edge.id,
+      target: { kind: "edge" as const, edgeId: edge.id },
       aspect,
       confidence: "observed" as const,
       source: aspect === "performance" ? ("runtime" as const) : ("code" as const),
@@ -62,12 +68,68 @@ function targetEvidence(
       lineStart: null,
       lineEnd: null,
       symbol: "",
+      contentHash: aspect === "architecture" ? SOURCE_HASH : "",
       claim:
         aspect === "performance"
           ? `runtime measurement supports ${edge.id}'s latency`
           : `source establishes the ${edge.from} to ${edge.to} dependency`,
     })),
   ];
+}
+
+function behaviorEvidence(design: Design): ArchitectureEvidence[] {
+  const workflow = design.workflow;
+  if (!workflow) return [];
+  const evidence: ArchitectureEvidence[] = [
+    ...workflow.collections.map((collection, index) => ({
+      id: `behaviour-collection-${index}`,
+      target: { kind: "collection" as const, collectionId: collection.id },
+      targetKind: "collection" as const,
+      targetId: collection.id,
+      aspect: "behavior" as const,
+      confidence: "observed" as const,
+      source: "code" as const,
+      path: "src/checkout.ts",
+      lineStart: null,
+      lineEnd: null,
+      symbol: "",
+      contentHash: SOURCE_HASH,
+      claim: `source establishes collection ${collection.id}`,
+    })),
+    ...workflow.handlers.map((handler, index) => ({
+      id: `behaviour-handler-${index}`,
+      target: { kind: "handler" as const, handlerId: handler.id },
+      targetKind: "handler" as const,
+      targetId: handler.id,
+      aspect: "behavior" as const,
+      confidence: "observed" as const,
+      source: "code" as const,
+      path: "src/checkout.ts",
+      lineStart: null,
+      lineEnd: null,
+      symbol: "",
+      contentHash: SOURCE_HASH,
+      claim: `source establishes handler ${handler.id}`,
+    })),
+  ];
+  for (const handler of workflow.handlers) {
+    walkOperations(handler.steps, (operation) => evidence.push({
+      id: `behaviour-operation-${handler.id}-${operation.id}`,
+      target: { kind: "operation", handlerId: handler.id, operationId: operation.id },
+      targetKind: "operation",
+      targetId: operation.id,
+      aspect: "behavior",
+      confidence: "observed",
+      source: "code",
+      path: "src/checkout.ts",
+      lineStart: null,
+      lineEnd: null,
+      symbol: "",
+      contentHash: SOURCE_HASH,
+      claim: `source establishes operation ${operation.id}`,
+    }));
+  }
+  return evidence;
 }
 
 function repositoryStudy(): RepositoryFixture {
@@ -90,12 +152,16 @@ function repositoryStudy(): RepositoryFixture {
   });
   const imported = importRepositoryArchitecture(study, {
     repository: {
+      id: "repo-abc123",
       name: "checkout-service",
       rootHint: "services/checkout",
       branch: "main",
       revision: "abc123",
       dirty: false,
       scope: ["src"],
+      excludedScope: [],
+      changedPaths: [],
+      workingTreeFingerprint: "",
       capturedAt: 100,
     },
     label: "As-is checkout",
@@ -105,6 +171,7 @@ function repositoryStudy(): RepositoryFixture {
         id: "ev-entry",
         targetKind: "node",
         targetId: changedNodeId,
+        target: { kind: "node", nodeId: changedNodeId },
         aspect: "architecture",
         confidence: "observed",
         source: "code",
@@ -112,10 +179,24 @@ function repositoryStudy(): RepositoryFixture {
         lineStart: 20,
         lineEnd: 38,
         symbol: "checkout",
+        contentHash: SOURCE_HASH,
         claim: "The request enters this component.",
       },
+      ...targetEvidence(sourceDesign, "architecture", "architecture"),
+      ...behaviorEvidence(sourceDesign),
       ...targetEvidence(sourceDesign, "performance", "perf"),
     ],
+    sourceInventory: [{
+      id: "checkout-entrypoint",
+      kind: "entrypoint",
+      label: "checkout request",
+      path: "src/checkout.ts",
+      symbol: "checkout",
+      contentHash: SOURCE_HASH,
+      disposition: "modeled",
+      target: { kind: "node", nodeId: changedNodeId },
+      reason: "",
+    }],
     origin: "human",
   });
   const created = createCandidate(imported.study, {
@@ -219,9 +300,24 @@ describe("implementation handoff", () => {
     });
 
     const imported = importRepositoryArchitecture(blankStudy({ id: "unchanged" }), {
-      repository: approved.repository!,
+      repository: { ...activeRepositorySnapshot(approved)!, id: "repo-identical" },
       label: "As-is",
       design: pizzaStudy().candidates[0]!.design,
+      evidence: [
+        ...targetEvidence(pizzaStudy().candidates[0]!.design, "architecture", "identical-architecture"),
+        ...behaviorEvidence(pizzaStudy().candidates[0]!.design),
+      ],
+      sourceInventory: [{
+        id: "entrypoint",
+        kind: "entrypoint",
+        label: "request",
+        path: "src/checkout.ts",
+        symbol: "",
+        contentHash: SOURCE_HASH,
+        disposition: "modeled",
+        target: { kind: "node", nodeId: pizzaStudy().candidates[0]!.design.nodes[0]!.id },
+        reason: "",
+      }],
       origin: "human",
     });
     const copy = createCandidate(imported.study, {
@@ -260,7 +356,7 @@ describe("implementation handoff", () => {
     // Still approved: the agent is refused.
     expect(() =>
       importRepositoryArchitecture(approved, {
-        repository: { ...approved.repository!, revision: "def456", capturedAt: 900 },
+        repository: { ...activeRepositorySnapshot(approved)!, id: "repo-def456-refused", revision: "def456", capturedAt: 900 },
         label: "as built @def456",
         design: approvedCandidate.design,
         origin: "agent",
@@ -279,15 +375,26 @@ describe("implementation handoff", () => {
     const changedEdge = asBuiltDesign.edges.at(-1)!;
     changedEdge.latency = { kind: "deterministic", value: 0.75 };
     const reimported = importRepositoryArchitecture(released, {
-      repository: { ...released.repository!, revision: "def456", capturedAt: 900 },
+      repository: { ...activeRepositorySnapshot(released)!, id: "repo-def456", revision: "def456", capturedAt: 900 },
       label: "as built @def456",
       design: asBuiltDesign,
       evidence: targetEvidence(asBuiltDesign, "architecture", "as-built"),
+      sourceInventory: [{
+        id: "checkout-entrypoint",
+        kind: "entrypoint",
+        label: "checkout request",
+        path: "src/checkout.ts",
+        symbol: "",
+        contentHash: SOURCE_HASH,
+        disposition: "modeled",
+        target: { kind: "node", nodeId: asBuiltDesign.nodes[0]!.id },
+        reason: "",
+      }],
       origin: "agent",
     });
     expect(reimported.candidate.role).toBe("baseline");
     expect(reimported.study.activeCandidateId).toBe(reimported.candidate.id);
-    expect(reimported.study.repository?.revision).toBe("def456");
+    expect(activeRepositorySnapshot(reimported.study)?.revision).toBe("def456");
     // Order is creation order, so the as-built import sits after the approved version.
     const ids = reimported.study.candidates.map((c) => c.id);
     expect(ids.indexOf(reimported.candidate.id)).toBeGreaterThan(ids.indexOf(fixture.experimentId));

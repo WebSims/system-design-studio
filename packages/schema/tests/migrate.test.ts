@@ -277,7 +277,8 @@ describe("a study round-trips", () => {
     }
     const migrated = migrateAndParseStudy(old);
     expect(migrated.version).toBe(STUDY_SCHEMA_VERSION);
-    expect(migrated.repository).toBeNull();
+    expect(migrated.repositorySnapshots).toEqual([]);
+    expect(migrated.activeRepositorySnapshotId).toBeNull();
     expect(migrated.candidates.every((candidate) => candidate.role === "experiment")).toBe(true);
   });
 

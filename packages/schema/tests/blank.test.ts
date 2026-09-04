@@ -55,7 +55,8 @@ describe("the empty study", () => {
   it("is a valid study, so nothing downstream needs an empty-case branch", () => {
     const study = blankStudy({ id: "s1" });
     expect(() => StudySchema.parse(study)).not.toThrow();
-    expect(study.repository).toBeNull();
+    expect(study.repositorySnapshots).toEqual([]);
+    expect(study.activeRepositorySnapshotId).toBeNull();
     expect(study.candidates).toEqual([]);
     expect(validateStudy(study)).toEqual([]);
   });
@@ -63,17 +64,23 @@ describe("the empty study", () => {
   it("stores the repository revision an architecture snapshot came from", () => {
     const study = StudySchema.parse({
       ...blankStudy({ id: "s1", now: 12 }),
-      repository: {
+      repositorySnapshots: [{
+        id: "repo-1",
         name: "checkout-service",
         rootHint: "services/checkout",
         branch: "main",
         revision: "abc123",
         dirty: false,
+        scope: [],
+        excludedScope: [],
+        changedPaths: [],
+        workingTreeFingerprint: "",
         capturedAt: 12,
-      },
+      }],
+      activeRepositorySnapshotId: "repo-1",
     });
-    expect(study.repository?.revision).toBe("abc123");
-    expect(study.repository?.scope).toEqual([]);
+    expect(study.repositorySnapshots[0]?.revision).toBe("abc123");
+    expect(study.repositorySnapshots[0]?.scope).toEqual([]);
   });
 
   it("rejects source line evidence without a path or with a backwards range", () => {
@@ -89,7 +96,7 @@ describe("the empty study", () => {
     expect(() =>
       ArchitectureEvidenceSchema.parse({ ...base, path: "src/api.ts", lineStart: 20, lineEnd: 10 })
     ).toThrow(/lineEnd/);
-    expect(ArchitectureEvidenceSchema.parse(base).aspect).toBe("architecture");
+    expect(ArchitectureEvidenceSchema.parse({ ...base, path: "src/api.ts" }).aspect).toBe("architecture");
   });
 
   it("compares to a claim that says what to do, not that everything failed", () => {

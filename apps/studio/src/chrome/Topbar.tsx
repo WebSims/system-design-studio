@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react"
-import { performanceCalibration } from "@sds/schema"
+import { activeRepositorySnapshot, groundingReportForCandidate, performanceCalibration } from "@sds/schema"
 import { useRaceModel } from "../raceModel"
 import { useRacePlayback } from "../racePlayback"
 import { useStudio } from "../store"
@@ -176,7 +176,7 @@ const QuickInsert = () => {
 
 const RepositoryStatus = () => {
   const study = useStudyStore((s) => s.study)
-  const repository = study.repository
+  const repository = activeRepositorySnapshot(study)
   if (!repository) return null
 
   const activeCandidate =
@@ -192,22 +192,41 @@ const RepositoryStatus = () => {
     ? activeCandidate.design.nodes.length + activeCandidate.design.edges.length
     : 0
   const sourceRevision = repository.revision ? repository.revision.slice(0, 9) : "unversioned"
+  const grounding = activeCandidate ? groundingReportForCandidate(study, activeCandidate) : null
 
   return (
-    <div
-      className="repository-status"
-      title={`${repository.rootHint || repository.name} \u00b7 ${evidenceCoverage}/${architectureElements} architecture elements have evidence`}
-    >
-      <span className="repository-dot" />
-      <strong>{repository.name}</strong>
-      <code>
-        {repository.branch || "workspace"}@{sourceRevision}
-      </code>
-      <span className="repository-coverage">
-        {evidenceCoverage}/{architectureElements} evidenced
-      </span>
-      {repository.dirty && <span className="repository-dirty">dirty</span>}
-    </div>
+    <details className="repository-status" onClick={(event) => event.stopPropagation()}>
+      <summary title={`${repository.rootHint || repository.name} \u00b7 open grounding report`}>
+        <span className={`repository-dot ${grounding?.status ?? ""}`} aria-hidden="true" />
+        <strong>{repository.name}</strong>
+        <code>
+          {repository.branch || "workspace"}@{sourceRevision}
+        </code>
+        {grounding && <span className={`repository-grounding ${grounding.status}`}>{grounding.status}</span>}
+        {repository.dirty && <span className="repository-dirty">dirty</span>}
+      </summary>
+      <section className="grounding-popover" aria-label="Repository grounding" aria-live="polite">
+        <header>
+          <div>
+            <span className="panel-kicker">CURRENT · {grounding?.status ?? "unverified"}</span>
+            <strong>{repository.rootHint || repository.name}</strong>
+          </div>
+          <code>{repository.revision || "revision missing"}</code>
+        </header>
+        <dl className="grounding-metrics">
+          <div><dt>Architecture</dt><dd>{grounding?.architecture.covered ?? evidenceCoverage}/{grounding?.architecture.required ?? architectureElements}</dd></div>
+          <div><dt>Behaviour</dt><dd>{grounding?.behavior.covered ?? 0}/{grounding?.behavior.required ?? 0}</dd></div>
+          <div><dt>Inventory</dt><dd>{grounding?.inventory.total ?? 0}</dd></div>
+        </dl>
+        <p className="muted">Scope: {repository.scope.join(", ") || "whole repository"}</p>
+        {repository.excludedScope.length > 0 && <p className="muted">Excluded: {repository.excludedScope.join(", ")}</p>}
+        {grounding && grounding.gaps.length > 0 ? (
+          <ul className="grounding-gaps">
+            {grounding.gaps.slice(0, 6).map((gap, index) => <li key={`${gap.code}-${index}`}>{gap.message}</li>)}
+          </ul>
+        ) : <p className="grounding-clear">Grounding checks complete.</p>}
+      </section>
+    </details>
   )
 }
 

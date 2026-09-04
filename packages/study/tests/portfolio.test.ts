@@ -124,6 +124,7 @@ describe("the hard gates", () => {
     expect(d.eligible).toBe(true);
     expect(d.gates.map((g) => g.gate)).toEqual([
       "schema-valid",
+      "source-grounded",
       "correctness-exhausted",
       "no-violation",
       "performance-calibrated",
@@ -187,15 +188,20 @@ describe("the hard gates", () => {
     const candidate = structuredClone(study.candidates[0]!);
     const repositoryStudy: Study = {
       ...study,
-      repository: {
+      repositorySnapshots: [{
+        id: "repo-1",
         name: "checkout",
         rootHint: "",
         branch: "main",
         revision: "abc123",
         dirty: false,
         scope: [],
+        excludedScope: [],
+        changedPaths: [],
+        workingTreeFingerprint: "",
         capturedAt: 1,
-      },
+      }],
+      activeRepositorySnapshotId: "repo-1",
       candidates: [candidate],
     };
     const uncalibrated = decideEligibility({

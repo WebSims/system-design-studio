@@ -1381,10 +1381,28 @@ export function validateStudy(study: Study): StudyIssue[] {
         });
       }
       evidenceIds.add(evidence.id);
-      const targetExists =
-        evidence.targetKind === "node"
-          ? nodeIds.has(evidence.targetId)
-          : edgeIds.has(evidence.targetId);
+      const target = evidence.target;
+      const targetExists = (() => {
+        switch (target.kind) {
+          case "node":
+            return nodeIds.has(target.nodeId);
+          case "edge":
+            return edgeIds.has(target.edgeId);
+          case "collection":
+            return c.design.workflow?.collections.some((item) => item.id === target.collectionId) ?? false;
+          case "handler":
+            return c.design.workflow?.handlers.some((item) => item.id === target.handlerId) ?? false;
+          case "operation": {
+            const handler = c.design.workflow?.handlers.find((item) => item.id === target.handlerId);
+            if (!handler) return false;
+            let found = false;
+            walkOperations(handler.steps, (operation) => {
+              if (operation.id === target.operationId) found = true;
+            });
+            return found;
+          }
+        }
+      })();
       if (!targetExists) {
         issues.push({
           severity: "error",
@@ -1820,6 +1838,54 @@ const STUDY_MIGRATIONS: Record<number, StudyMigration> = {
       };
     });
     return { ...doc, version: 2, repository: null, candidates };
+  },
+  2: (doc) => {
+    const legacyRepository =
+      typeof doc.repository === "object" && doc.repository !== null
+        ? (doc.repository as Record<string, unknown>)
+        : null;
+    const snapshotId = legacyRepository ? "repository-snapshot-1" : null;
+    const repositorySnapshots = legacyRepository
+      ? [
+          {
+            id: snapshotId,
+            ...legacyRepository,
+            excludedScope: [],
+            // v2 recorded whether a tree was dirty but not enough information to reproduce it.
+            // Preserve that fact and make the missing v2 detail explicit; the candidate remains
+            // legacy-unverified until it is re-imported under the v3 grounding policy.
+            changedPaths: legacyRepository.dirty === true ? ["legacy-unavailable"] : [],
+            workingTreeFingerprint: legacyRepository.dirty === true ? "legacy-unavailable" : "",
+          },
+        ]
+      : [];
+    const { repository: _legacyRepository, ...rest } = doc;
+    return {
+      ...rest,
+      version: 3,
+      repositorySnapshots,
+      activeRepositorySnapshotId: snapshotId,
+      // Existing baselines deliberately receive no grounding receipt. They remain readable and
+      // their old approval remains visible, but the v3 source-grounded gate treats them as
+      // legacy-unverified until a fresh audited import is performed.
+      candidates: Array.isArray(doc.candidates)
+        ? doc.candidates.map((candidate) => {
+            if (typeof candidate !== "object" || candidate === null) return candidate;
+            const rawCandidate = candidate as Record<string, unknown>;
+            const evidence = Array.isArray(rawCandidate.evidence)
+              ? rawCandidate.evidence.map((item) => {
+                  if (typeof item !== "object" || item === null) return item;
+                  const rawEvidence = item as Record<string, unknown>;
+                  const missingCodePath =
+                    (rawEvidence.source === "code" || rawEvidence.source === "config") &&
+                    (typeof rawEvidence.path !== "string" || rawEvidence.path.length === 0);
+                  return missingCodePath ? { ...rawEvidence, path: "legacy-unavailable" } : rawEvidence;
+                })
+              : rawCandidate.evidence;
+            return { ...rawCandidate, evidence, grounding: null };
+          })
+        : [],
+    };
   },
 };
 

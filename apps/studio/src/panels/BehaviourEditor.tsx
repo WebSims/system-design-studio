@@ -2,9 +2,11 @@ import { useMemo, useState } from "react"
 import {
   HandlerSchema,
   MAX_CONCURRENCY,
+  evidenceTargetKey,
   type Collection,
   type Design,
   type Expr,
+  type EvidenceTarget,
   type Handler,
   type Operation,
 } from "@sds/schema"
@@ -51,6 +53,33 @@ import { Field, NumberInput, Select, Toggle } from "./controls"
  */
 
 const DEFAULT_STOCK = 200
+
+function BehaviourEvidence({ target }: { target: EvidenceTarget }) {
+  const study = useStudyStore((state) => state.study)
+  const candidate = study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0]
+  if (!candidate || study.repositorySnapshots.length === 0) return null
+  const key = evidenceTargetKey(target)
+  const evidence = candidate.evidence.filter((item) => evidenceTargetKey(item.target) === key)
+  const qualifying = evidence.filter(
+    (item) =>
+      item.aspect === "behavior" &&
+      (item.source === "code" || item.source === "config") &&
+      item.confidence !== "assumed" &&
+      item.contentHash.length === 64
+  )
+  const title = evidence.length > 0
+    ? evidence.map((item) => `${item.path || item.source}: ${item.claim}`).join("\n")
+    : "No source evidence is attached to this behavior target."
+  return (
+    <span
+      className={`behaviour-evidence ${qualifying.length > 0 ? "verified" : "missing"}`}
+      title={title}
+      aria-label={`${qualifying.length > 0 ? "Grounded" : "Missing"} source evidence for ${key}`}
+    >
+      {qualifying.length > 0 ? `source ${qualifying.length}` : "source missing"}
+    </span>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // pattern picker
@@ -536,6 +565,7 @@ function StepBlock({ handlerId, steps, path }: { handlerId: string; steps: Opera
               <span className="step-index tnum">{index + 1}</span>
               <span className="step-text" title={op.id}>
                 {describeStep(op)}
+                <BehaviourEvidence target={{ kind: "operation", handlerId, operationId: op.id }} />
                 {isSchedulingPoint(op) && (
                   <span className="step-sched-mark" title="scheduling point: another request may run between this step and the next">
                     ⇄
@@ -643,6 +673,7 @@ function HandlerCard({ handler, removable }: { handler: Handler; removable: bool
     <section className="handler-card">
       <div className="handler-head">
         <input className="input handler-label" value={handler.label} placeholder={handler.id} onChange={(e) => patch((h) => { h.label = e.target.value })} />
+        <BehaviourEvidence target={{ kind: "handler", handlerId: handler.id }} />
         <button className={`btn small ghost ${expert ? "on" : ""}`} onClick={() => setExpert((v) => !v)}>
           {expert ? "steps" : "JSON"}
         </button>
@@ -790,6 +821,7 @@ function CollectionCard({ collection }: { collection: Collection }) {
       <div className="handler-head">
         <span className={`badge ${collection.kind === "counter" ? "badge-info" : "badge-muted"}`}>{collection.kind}</span>
         <code className="collection-id">{collection.id}</code>
+        <BehaviourEvidence target={{ kind: "collection", collectionId: collection.id }} />
         <button className="icon-btn danger" title="remove" onClick={remove}>
           ×
         </button>

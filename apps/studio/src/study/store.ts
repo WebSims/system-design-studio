@@ -56,9 +56,11 @@ import {
   releaseApproval,
   replaceCandidateDraft,
   setActiveCandidate,
+  upsertSourceInventory,
   type ApplyArchitecturePatchInput,
   type AttachArchitectureEvidenceInput,
   type ImportRepositoryArchitectureInput,
+  type UpsertSourceInventoryInput,
 } from "./mutations";
 import type { ActivityEntry, CreateStudyInput } from "../webmcp/tools";
 
@@ -253,6 +255,7 @@ export interface StudioState {
   importArchitecture(input: ImportRepositoryArchitectureInput): Candidate;
   patchArchitecture(input: ApplyArchitecturePatchInput): { candidate: Candidate; changed: string[] };
   attachEvidence(input: AttachArchitectureEvidenceInput): Candidate;
+  upsertInventory(input: UpsertSourceInventoryInput): Candidate;
   removeCandidate(id: string): void;
   promote(id: string): void;
 
@@ -681,6 +684,12 @@ export const useStudyStore = create<StudioState>((set, get) => {
 
     attachEvidence: (input) => {
       const { study, candidate } = attachArchitectureEvidence(get().study, input);
+      commit(study, true);
+      return candidate;
+    },
+
+    upsertInventory: (input) => {
+      const { study, candidate } = upsertSourceInventory(get().study, input);
       commit(study, true);
       return candidate;
     },

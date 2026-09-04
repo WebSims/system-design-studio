@@ -1,5 +1,5 @@
 import { useReactFlow, type Node } from "@xyflow/react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Design } from "@sds/schema";
 import {
@@ -24,6 +24,8 @@ interface TopologyToolsProps {
   onSelectNode(id: string): void;
   /** Called before the `/` hotkey focuses the search, so a collapsed host can open first. */
   onReveal?(): void;
+  /** Extra actions that sit at the end of the first row, after Downstream (the host's Link). */
+  actions?: ReactNode;
 }
 
 function SearchIcon() {
@@ -47,7 +49,7 @@ function RouteIcon() {
 
 /**
  * Find, Route, Upstream, Downstream: the rows of the topology tools, without a surface of their own.
- * The canvas toolbox hosts them beside Link and the zoom controls.
+ * The canvas toolbox hosts them, with its Link action at the end of the first row.
  */
 export function TopologyTools({
   design,
@@ -56,6 +58,7 @@ export function TopologyTools({
   onExplorationChange,
   onSelectNode,
   onReveal,
+  actions,
 }: TopologyToolsProps) {
   const { fitView, getNode } = useReactFlow();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -261,6 +264,13 @@ export function TopologyTools({
           >
             Downstream <span className="topology-count tnum">{downstreamCount}</span>
           </button>
+
+          {actions && (
+            <>
+              <span className="topology-divider" aria-hidden="true" />
+              {actions}
+            </>
+          )}
 
           {(exploration || routeOpen) && (
             <button className="topology-clear nodrag nopan" type="button" onClick={clear}>

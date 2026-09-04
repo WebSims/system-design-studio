@@ -1,13 +1,16 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { pizzaStudy } from "@sds/models";
 import {
+  activeRepositorySnapshot,
   StudySchema,
   applyStudyContract,
   blankStudy,
   evaluationKey,
   isPlaceholderWorkload,
   studyContractLock,
+  walkOperations,
   type CandidateEvaluation,
+  type ArchitectureEvidence,
   type PortfolioResult,
   type Study,
   type StudyContractPatch,
@@ -26,6 +29,7 @@ import {
   importRepositoryArchitecture,
   promoteCandidate,
   replaceCandidateDraft,
+  upsertSourceInventory,
   type ArchitecturePatchOperation,
 } from "../src/study/mutations";
 import { z } from "zod";
@@ -158,6 +162,12 @@ class TestHost implements ToolHost {
 
   async attachArchitectureEvidence(input: Parameters<ToolHost["attachArchitectureEvidence"]>[0]) {
     const result = attachArchitectureEvidence(this.study, { ...input, by: "agent" });
+    this.study = result.study;
+    return result.candidate;
+  }
+
+  async upsertSourceInventory(input: Parameters<ToolHost["upsertSourceInventory"]>[0]) {
+    const result = upsertSourceInventory(this.study, { ...input, by: "agent" });
     this.study = result.study;
     return result.candidate;
   }
@@ -319,18 +329,20 @@ async function call(name: string, input: unknown, ctx?: { signal?: AbortSignal }
 
 /** An arrival somebody observed, so a test project is not stuck behind the placeholder gate. */
 const OBSERVED_WORKLOAD = { arrival: { kind: "poisson" as const, ratePerSec: 120 } };
+const SOURCE_HASH = "a".repeat(64);
 
-function repositoryArchitectureInput(calibrated = false) {
+function repositoryArchitectureInput(calibrated = false, sourceDesign?: Study["candidates"][number]["design"]) {
   const design = structuredClone(
-    pizzaStudy().candidates.find(
+    sourceDesign ?? pizzaStudy().candidates.find(
       (candidate) => candidate.id === "c7-atomic-decrement-unique-claim"
     )!.design
   );
-  const evidence = [
+  const evidence: ArchitectureEvidence[] = [
     ...design.nodes.map((node, index) => ({
       id: `node-${index}`,
       targetKind: "node" as const,
       targetId: node.id,
+      target: { kind: "node" as const, nodeId: node.id },
       aspect: "architecture" as const,
       confidence: "observed" as const,
       source: "code" as const,
@@ -338,12 +350,14 @@ function repositoryArchitectureInput(calibrated = false) {
       lineStart: 12,
       lineEnd: 28,
       symbol: "startServer",
+      contentHash: SOURCE_HASH,
       claim: `source establishes the ${node.label} runtime boundary`,
     })),
     ...design.edges.map((edge, index) => ({
       id: `edge-${index}`,
       targetKind: "edge" as const,
       targetId: edge.id,
+      target: { kind: "edge" as const, edgeId: edge.id },
       aspect: "architecture" as const,
       confidence: "inferred" as const,
       source: "code" as const,
@@ -351,6 +365,7 @@ function repositoryArchitectureInput(calibrated = false) {
       lineStart: 12,
       lineEnd: 28,
       symbol: "startServer",
+      contentHash: SOURCE_HASH,
       claim: `source establishes the ${edge.from} to ${edge.to} dependency`,
     })),
     ...(calibrated
@@ -359,23 +374,87 @@ function repositoryArchitectureInput(calibrated = false) {
             id: `perf-node-${index}`,
             targetKind: "node" as const,
             targetId: node.id,
+            target: { kind: "node" as const, nodeId: node.id },
             aspect: "performance" as const,
             confidence: "observed" as const,
             source: "runtime" as const,
+            path: "",
+            lineStart: null,
+            lineEnd: null,
+            symbol: "",
+            contentHash: "",
             claim: `runtime measurement supports ${node.label}'s performance inputs`,
           })),
           ...design.edges.map((edge, index) => ({
             id: `perf-edge-${index}`,
             targetKind: "edge" as const,
             targetId: edge.id,
+            target: { kind: "edge" as const, edgeId: edge.id },
             aspect: "performance" as const,
             confidence: "observed" as const,
             source: "runtime" as const,
+            path: "",
+            lineStart: null,
+            lineEnd: null,
+            symbol: "",
+            contentHash: "",
             claim: `runtime measurement supports ${edge.id}'s latency`,
           })),
         ]
       : []),
   ];
+  const workflow = design.workflow;
+  if (workflow) {
+    evidence.push(
+      ...workflow.collections.map((collection, index) => ({
+        id: `collection-${index}`,
+        target: { kind: "collection" as const, collectionId: collection.id },
+        targetKind: "collection" as const,
+        targetId: collection.id,
+        aspect: "behavior" as const,
+        confidence: "observed" as const,
+        source: "code" as const,
+        path: "src/server.ts",
+        lineStart: 12,
+        lineEnd: 28,
+        symbol: "startServer",
+        contentHash: SOURCE_HASH,
+        claim: `source establishes collection ${collection.id}`,
+      })),
+      ...workflow.handlers.map((handler, index) => ({
+        id: `handler-${index}`,
+        target: { kind: "handler" as const, handlerId: handler.id },
+        targetKind: "handler" as const,
+        targetId: handler.id,
+        aspect: "behavior" as const,
+        confidence: "observed" as const,
+        source: "code" as const,
+        path: "src/server.ts",
+        lineStart: 12,
+        lineEnd: 28,
+        symbol: "startServer",
+        contentHash: SOURCE_HASH,
+        claim: `source establishes handler ${handler.id}`,
+      }))
+    );
+    for (const handler of workflow.handlers) {
+      walkOperations(handler.steps, (operation) => evidence.push({
+        id: `operation-${handler.id}-${operation.id}`,
+        target: { kind: "operation" as const, handlerId: handler.id, operationId: operation.id },
+        targetKind: "operation" as const,
+        targetId: operation.id,
+        aspect: "behavior" as const,
+        confidence: "observed" as const,
+        source: "code" as const,
+        path: "src/server.ts",
+        lineStart: 12,
+        lineEnd: 28,
+        symbol: "startServer",
+        contentHash: SOURCE_HASH,
+        claim: `source establishes operation ${operation.id}`,
+      }));
+    }
+  }
   return {
     repository: {
       name: "checkout-service",
@@ -388,6 +467,17 @@ function repositoryArchitectureInput(calibrated = false) {
     label: "As-is · abc123",
     design,
     evidence,
+    sourceInventory: [{
+      id: "checkout-entrypoint",
+      kind: "entrypoint" as const,
+      label: "checkout request",
+      path: "src/server.ts",
+      symbol: "startServer",
+      contentHash: SOURCE_HASH,
+      disposition: "modeled" as const,
+      target: { kind: "node" as const, nodeId: design.nodes[0]!.id },
+      reason: "",
+    }],
   };
 }
 
@@ -411,6 +501,8 @@ describe("registration", () => {
       "studio_get_candidate",
       "studio_apply_architecture_patch",
       "studio_attach_code_evidence",
+      "studio_upsert_source_inventory",
+      "studio_get_grounding_report",
       "studio_validate_draft",
       "studio_create_candidate",
       "studio_replace_candidate_draft",
@@ -449,6 +541,7 @@ describe("registration", () => {
       "studio_get_architecture",
       "studio_get_catalog",
       "studio_get_candidate",
+      "studio_get_grounding_report",
       "studio_validate_draft",
       "studio_run_evaluation",
       "studio_run_production_scenarios",
@@ -474,6 +567,8 @@ describe("registration", () => {
       "studio_get_architecture",
       "studio_get_candidate",
       "studio_attach_code_evidence",
+      "studio_upsert_source_inventory",
+      "studio_get_grounding_report",
       "studio_run_production_scenarios",
       "studio_get_evaluation",
       "studio_get_implementation_handoff",
@@ -500,7 +595,7 @@ describe("registration", () => {
       expect(r.state.reason).toContain("remains usable by hand");
     }
     // And the tool definitions still exist, so the UI can list what an agent WOULD be able to do.
-    expect(r.tools.length).toBe(21);
+    expect(r.tools.length).toBe(23);
   });
 
   it("reports unsupported when registerTool is present but not a function", () => {
@@ -688,21 +783,19 @@ describe("reading the study", () => {
 // ---------------------------------------------------------------------------
 
 describe("repository-backed architecture", () => {
-  it("refuses an as-is baseline with uncovered architecture elements", async () => {
+  it("seals an incomplete baseline as provisional and reports the gap", async () => {
     await call("studio_create_study", { name: "checkout" });
     const input = repositoryArchitectureInput();
     input.evidence.pop();
     const result = await call("studio_import_architecture", input);
-    expect(result.isError).toBe(true);
-    expect(String(result.content.error)).toContain("no evidence");
-    expect(host.study.repository).toBeNull();
-    // The blank drawing the project opened with is untouched: nothing was adopted or sealed.
+    expect(result.isError).toBeFalsy();
+    expect((result.content.grounding as { status: string }).status).toBe("provisional");
+    expect(activeRepositorySnapshot(host.study)).not.toBeNull();
     expect(host.study.candidates).toHaveLength(1);
-    expect(host.study.candidates[0]!.design.nodes).toEqual([]);
-    expect(host.study.candidates[0]!.role).toBe("experiment");
+    expect(host.study.candidates[0]!.role).toBe("baseline");
   });
 
-  it("refuses to seal an active component that no client/work source can reach", async () => {
+  it("keeps unreachable source reconstruction visible as provisional", async () => {
     await call("studio_create_study", { name: "checkout" });
     const input = repositoryArchitectureInput();
     const template = input.design.nodes.find((node) => node.kind === "server")!;
@@ -717,6 +810,7 @@ describe("repository-backed architecture", () => {
       id: "orphan-worker-source",
       targetKind: "node",
       targetId: "orphan-worker",
+      target: { kind: "node", nodeId: "orphan-worker" },
       aspect: "architecture",
       confidence: "observed",
       source: "code",
@@ -724,13 +818,15 @@ describe("repository-backed architecture", () => {
       lineStart: 1,
       lineEnd: 10,
       symbol: "startWorker",
+      contentHash: SOURCE_HASH,
       claim: "source establishes the worker runtime",
     });
 
     const result = await call("studio_import_architecture", input);
-    expect(result.isError).toBe(true);
-    expect(String(result.content.error)).toContain("unreachable from every client/work source");
-    expect(host.study.repository).toBeNull();
+    expect(result.isError).toBeFalsy();
+    const grounding = result.content.grounding as { status: string; gaps: Array<{ code: string }> };
+    expect(grounding.status).toBe("provisional");
+    expect(grounding.gaps).toContainEqual(expect.objectContaining({ code: "model-invalid" }));
   });
 
   it("imports an evidence-backed baseline atomically", async () => {
@@ -739,11 +835,10 @@ describe("repository-backed architecture", () => {
     expect(result.isError).toBeFalsy();
     expect(result.content.role).toBe("baseline");
     const baseline = host.study.candidates.find((candidate) => candidate.id === result.content.candidateId)!;
-    expect(result.content.evidenceCount).toBe(
-      baseline.design.nodes.length + baseline.design.edges.length
-    );
-    expect(host.study.repository?.revision).toBe("abc123");
+    expect(result.content.evidenceCount).toBe(baseline.evidence.length);
+    expect(activeRepositorySnapshot(host.study)?.revision).toBe("abc123");
     expect(baseline.role).toBe("baseline");
+    expect((result.content.grounding as { status: string }).status).toBe("grounded");
     expect(host.study.activeCandidateId).toBe(baseline.id);
   });
 
@@ -764,10 +859,48 @@ describe("repository-backed architecture", () => {
       (candidate) => candidate.id === imported.content.candidateId
     )!;
     expect(result.content.topologyIssues).toEqual([]);
-    expect(summary.total).toBe(baseline.design.nodes.length + baseline.design.edges.length);
-    expect(summary.observed).toBe(baseline.design.nodes.length);
+    expect(summary.total).toBe(baseline.evidence.length);
+    expect(summary.observed).toBeGreaterThanOrEqual(baseline.design.nodes.length);
     expect(summary.inferred).toBe(baseline.design.edges.length);
     expect(summary.uncoveredNodes).toEqual([]);
+  });
+
+  it("reports grounding without letting the caller set its status", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const report = await call("studio_get_grounding_report", {
+      candidateId: imported.content.candidateId,
+    });
+    expect(report.content).toMatchObject({
+      status: "grounded",
+      eligibleForApproval: true,
+      repository: { revision: "abc123" },
+      inventory: { total: 1, unresolved: 0 },
+    });
+    expect(JSON.stringify(report.content)).not.toContain("source excerpt");
+  });
+
+  it("upserts source inventory with a revision guard and recomputes the receipt", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const input = repositoryArchitectureInput();
+    input.sourceInventory = [];
+    const imported = await call("studio_import_architecture", input);
+    expect((imported.content.grounding as { status: string }).status).toBe("provisional");
+
+    const stale = await call("studio_upsert_source_inventory", {
+      candidateId: imported.content.candidateId,
+      expectedRevision: 99,
+      items: repositoryArchitectureInput().sourceInventory,
+    });
+    expect(stale.isError).toBe(true);
+    expect(String(stale.content.error)).toContain("revision 0, not 99");
+
+    const updated = await call("studio_upsert_source_inventory", {
+      candidateId: imported.content.candidateId,
+      expectedRevision: 0,
+      items: repositoryArchitectureInput().sourceInventory,
+    });
+    expect(updated.content).toMatchObject({ revision: 1, grounding: { status: "grounded" } });
   });
 
   it("keeps the as-is baseline immutable and patches an experiment instead", async () => {
@@ -932,7 +1065,7 @@ describe("repository-backed architecture", () => {
     expect(sealed.content.role).toBe("baseline");
     expect(sealed.content.evidenceCount).toBe(3);
     expect(host.study.candidates).toHaveLength(1);
-    expect(host.study.repository?.revision).toBe("abc123");
+    expect(activeRepositorySnapshot(host.study)?.revision).toBe("abc123");
 
     const again = await call("studio_import_architecture", {
       repository: { name: "checkout-service", revision: "abc123" },
@@ -943,7 +1076,7 @@ describe("repository-backed architecture", () => {
     expect(String(again.content.error)).toContain("already an as-is baseline");
   });
 
-  it("refuses to seal declared correctness invariants without an executable workflow", async () => {
+  it("seals declared correctness invariants without a workflow as provisional", async () => {
     await call("studio_create_study", { name: "checkout" });
     await call("studio_update_study", {
       contract: {
@@ -968,11 +1101,12 @@ describe("repository-backed architecture", () => {
       expectedRevision: 0,
     });
 
-    expect(sealed.isError).toBe(true);
-    expect(String(sealed.content.error)).toContain("declares 1 correctness invariant");
-    expect(String(sealed.content.error)).toContain("no workflow handlers");
-    expect(host.study.repository).toBeNull();
-    expect(host.study.candidates[0]!.role).toBe("experiment");
+    expect(sealed.isError).toBeFalsy();
+    const report = sealed.content.grounding as { status: string; gaps: Array<{ code: string }> };
+    expect(report.status).toBe("provisional");
+    expect(report.gaps).toContainEqual(expect.objectContaining({ code: "model-invalid" }));
+    expect(activeRepositorySnapshot(host.study)).not.toBeNull();
+    expect(host.study.candidates[0]!.role).toBe("baseline");
   });
 
   it("lays a drawing out by dependency depth when the agent asks, placing nodes added without coordinates", async () => {
@@ -1714,18 +1848,26 @@ describe("promotion and deletion are human-only", () => {
   });
 
   it("pins the as-is revision and withdraws approval when that baseline changes", () => {
+    const sourceDesign = pizzaStudy().candidates[0]!.design;
+    const grounded = repositoryArchitectureInput(false, sourceDesign);
     const imported = importRepositoryArchitecture(blankStudy({ id: "repo-study" }), {
       repository: {
+        id: "repo-abc123",
         name: "checkout",
         rootHint: "services/checkout",
         branch: "main",
         revision: "abc123",
         dirty: false,
         scope: ["src"],
+        excludedScope: [],
+        changedPaths: [],
+        workingTreeFingerprint: "",
         capturedAt: 100,
       },
       label: "As-is",
-      design: pizzaStudy().candidates[0]!.design,
+      design: sourceDesign,
+      evidence: grounded.evidence,
+      sourceInventory: grounded.sourceInventory,
       origin: "human",
     });
     const experiment = createCandidate(imported.study, {
@@ -1753,18 +1895,26 @@ describe("promotion and deletion are human-only", () => {
   });
 
   it("does not let an agent change either side of an approved comparison", () => {
+    const sourceDesign = pizzaStudy().candidates[0]!.design;
+    const grounded = repositoryArchitectureInput(false, sourceDesign);
     const imported = importRepositoryArchitecture(blankStudy({ id: "repo-study" }), {
       repository: {
+        id: "repo-abc123",
         name: "checkout",
         rootHint: "services/checkout",
         branch: "main",
         revision: "abc123",
         dirty: false,
         scope: ["src"],
+        excludedScope: [],
+        changedPaths: [],
+        workingTreeFingerprint: "",
         capturedAt: 100,
       },
       label: "As-is",
-      design: pizzaStudy().candidates[0]!.design,
+      design: sourceDesign,
+      evidence: grounded.evidence,
+      sourceInventory: grounded.sourceInventory,
       origin: "human",
     });
     const experiment = createCandidate(imported.study, {
@@ -1784,7 +1934,7 @@ describe("promotion and deletion are human-only", () => {
     ).toThrow(/human-approved comparison/);
     expect(() =>
       importRepositoryArchitecture(approved, {
-        repository: { ...approved.repository!, revision: "def456", capturedAt: 300 },
+        repository: { ...activeRepositorySnapshot(approved)!, id: "repo-def456", revision: "def456", capturedAt: 300 },
         label: "New as-is",
         design: imported.candidate.design,
         origin: "agent",

@@ -285,6 +285,17 @@ export function buildCatalog(): Catalog {
       })),
     },
 
+    groundingGuide: {
+      documentationPolicy:
+        "README files and documentation may orient the scan but never qualify as evidence for an architecture or behavior target.",
+      qualifyingEvidence:
+        "Every node and link needs architecture-scoped code/config evidence; every collection, handler and operation needs behavior-scoped code/config evidence. Qualifying records are observed or inferred and include a repository-relative path plus SHA-256 of the normalized cited slice.",
+      inventoryPolicy:
+        "Inventory entrypoints, work sources, runtimes, dependencies, queues and state stores. Mark each modeled, excluded with a reason, or unresolved; any unresolved or unhashed item keeps the baseline provisional.",
+      dirtyTreePolicy:
+        "A dirty snapshot records its base revision, changed path inventory, and deterministic fingerprint of included working-tree content.",
+    },
+
     notes: [
       "Choose graph granularity from runtime, capacity and failure boundaries. Do not turn every source module, HTTP handler, goroutine, class or cron callback into a server. Keep ordinary responsibilities as workflow handlers on their deployed host; split an in-process subsystem only when an independently bounded resource is important to the question, label it '(in-process)', and cite the shared lifecycle.",
       "A link is executed work: every request reaching its source may traverse it according to classes and probability. Never draw an ownership, startup or shared-process relationship as a link. Give every traffic-bearing external entrypoint a client/work source; give autonomous polling, timers, cron and queue delivery their own source instead of routing them from an HTTP service. Every active component must be reachable from one of those sources.",

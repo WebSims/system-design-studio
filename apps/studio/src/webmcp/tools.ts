@@ -2,7 +2,11 @@ import { z } from "zod";
 import {
   ArchitectureEvidenceSchema,
   DesignSchema,
+  SourceInventoryItemSchema,
+  activeRepositorySnapshot,
   contentHash,
+  groundingReport,
+  groundingReportForCandidate,
   migrateAndParse,
   validateDesign,
   validateStudy,
@@ -12,6 +16,7 @@ import {
   type ArchitectureEvidence,
   type PortfolioResult,
   type RepositorySnapshot,
+  type SourceInventoryItem,
   performanceCalibration,
   isPlaceholderWorkload,
   PLACEHOLDER_WORKLOAD_MESSAGE,
@@ -183,8 +188,38 @@ const RepositoryInput = z
       .max(128)
       .default([])
       .describe("Repository-relative directories or packages included in the scan."),
+    excludedScope: z
+      .array(z.string().min(1).max(512))
+      .max(128)
+      .default([])
+      .describe("Repository-relative areas intentionally excluded from the reconstruction."),
+    changedPaths: z
+      .array(z.string().min(1).max(1024))
+      .max(4096)
+      .default([])
+      .describe("Paths changed from revision when dirty is true."),
+    workingTreeFingerprint: z
+      .string()
+      .max(256)
+      .default("")
+      .describe("Deterministic fingerprint of included working-tree content; required when dirty."),
   })
-  .strict();
+  .strict()
+  .superRefine((repository, ctx) => {
+    if (repository.dirty === true && repository.revision.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["revision"], message: "dirty snapshots require a base revision" });
+    }
+    if (repository.dirty === true && repository.workingTreeFingerprint.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workingTreeFingerprint"],
+        message: "dirty snapshots require a deterministic working-tree fingerprint",
+      });
+    }
+    if (repository.dirty === true && repository.changedPaths.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["changedPaths"], message: "dirty snapshots require changed paths" });
+    }
+  });
 
 const ImportArchitectureInput = z
   .object({
@@ -223,6 +258,14 @@ const ImportArchitectureInput = z
       .describe(
         "Evidence records supporting nodes and links. Keep assumptions explicit. With fromCandidateId these are " +
           "appended to the evidence already attached."
+      ),
+    sourceInventory: z
+      .array(SourceInventoryItemSchema)
+      .max(4096)
+      .default([])
+      .describe(
+        "Audited inventory of entrypoints, work sources, runtimes, dependencies, queues and state stores. " +
+          "Every item is modeled, excluded with a reason, or unresolved."
       ),
   })
   .strict()
@@ -301,6 +344,18 @@ const AttachEvidenceInput = z
     expectedRevision: z.number().int().nonnegative(),
     evidence: z.array(ArchitectureEvidenceSchema).min(1).max(256),
   })
+  .strict();
+
+const UpsertSourceInventoryInput = z
+  .object({
+    candidateId: z.string().min(1).max(64),
+    expectedRevision: z.number().int().nonnegative(),
+    items: z.array(SourceInventoryItemSchema).min(1).max(256),
+  })
+  .strict();
+
+const GetGroundingReportInput = z
+  .object({ candidateId: z.string().min(1).max(64).optional() })
   .strict();
 
 const CompareInput = z
@@ -404,6 +459,7 @@ export interface ToolHost {
     fromCandidateId?: string;
     expectedRevision?: number;
     evidence: ArchitectureEvidence[];
+    sourceInventory: SourceInventoryItem[];
   }): Promise<Candidate>;
   /** Create an isolated, visibly-marked agent candidate. Returns the new candidate. */
   createCandidate(input: {
@@ -429,6 +485,12 @@ export interface ToolHost {
     candidateId: string;
     expectedRevision: number;
     evidence: ArchitectureEvidence[];
+  }): Promise<Candidate>;
+  /** Upsert audited source inventory records on a baseline. */
+  upsertSourceInventory(input: {
+    candidateId: string;
+    expectedRevision: number;
+    items: SourceInventoryItem[];
   }): Promise<Candidate>;
   /** Run an evaluation. Must honour the abort signal. */
   runEvaluation(input: {
@@ -519,6 +581,12 @@ export interface Catalog {
       source: string;
       asOf: string;
     }>;
+  };
+  groundingGuide: {
+    documentationPolicy: string;
+    qualifyingEvidence: string;
+    inventoryPolicy: string;
+    dirtyTreePolicy: string;
   };
   notes: string[];
 }
@@ -835,14 +903,13 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_import_architecture",
         description:
           "Import the current as-is architecture of a repository revision. Atomically links the repository and creates an " +
-          "immutable baseline with code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
+          "immutable baseline with a source inventory and code, config, runtime, documentation or user evidence. Use observed only for facts directly " +
           "supported by the cited source; mark deductions inferred and unknown production behaviour assumed. " +
-          "Evidence must cover every component and link. Mark numeric measurements aspect=performance; code proving that a call " +
+          "Code/config citations carry a SHA-256 hash of the normalized cited slice. Documentation may orient the scan but never " +
+          "qualifies as grounding evidence. Mark numeric measurements aspect=performance; code proving that a call " +
           "exists is architecture evidence, not timing calibration. Every component timing and link latency must be positive; " +
-          "every link must set fanoutFactor (1 for one-to-one), and every active component must be reachable from a client/work source. " +
-          "Zero timings and orphan components are refused. " +
-          "If the project declares correctness invariants, the design must contain a workflow handler that can exercise them; " +
-          "a vacuous immutable baseline is refused. " +
+          "every link must set fanoutFactor (1 for one-to-one). Missing inventory, evidence, workflow or source-state details seal " +
+          "the baseline as PROVISIONAL: it can be evaluated, but cannot be approved or handed off until the grounding report is clear. " +
           "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
           "step by step on the canvas (the version studio_create_study opened, patched with studio_apply_architecture_patch per component and link). " +
           "Either way this is what makes the drawing the immutable as-is baseline, shown to the person as CURRENT.",
@@ -850,14 +917,18 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         annotations: { readOnlyHint: false, untrustedContentHint: true },
         async run(args) {
           const sealing = args.fromCandidateId !== undefined;
+          const capturedAt = Date.now();
+          const snapshotId = `snapshot-${capturedAt.toString(36)}-${contentHash(args.repository)}`;
           const candidate = await host.importArchitecture({
-            repository: { ...args.repository, capturedAt: Date.now() },
+            repository: { id: snapshotId, ...args.repository, capturedAt },
             label: args.label,
             intent: args.intent,
             ...(sealing ? { fromCandidateId: args.fromCandidateId } : { design: args.design }),
             ...(args.expectedRevision !== undefined ? { expectedRevision: args.expectedRevision } : {}),
             evidence: args.evidence,
+            sourceInventory: args.sourceInventory,
           });
+          const grounding = groundingReport(host.getStudy(), candidate);
           host.log({
             tool: "studio_import_architecture",
             at: Date.now(),
@@ -872,9 +943,11 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             revision: candidate.revision,
             designHash: contentHash(candidate.design),
             evidenceCount: candidate.evidence.length,
+            grounding,
             next:
-              "The as-is baseline is sealed. Next: studio_run_evaluation { candidateId, correctness: true }, then studio_annotate and " +
-              "studio_focus the highest risk. To propose a change, create a new version from this baseline with studio_create_candidate.",
+              grounding.status === "grounded"
+                ? "The as-is baseline is grounded. Next: run evaluation, annotate the highest risk, then create experiments from this baseline."
+                : "The as-is baseline is provisional. Read studio_get_grounding_report, attach missing evidence or inventory, then evaluate while approval remains blocked.",
           };
         },
       },
@@ -974,6 +1047,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             intent: candidate.intent,
             notes: candidate.notes,
             evidence: candidate.evidence,
+            grounding: groundingReportForCandidate(host.getStudy(), candidate),
             isPromoted: host.getStudy().promotedCandidateId === candidate.id,
             design: candidate.design,
           };
@@ -1030,7 +1104,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_attach_code_evidence",
         description:
-          "Append evidence to nodes or links without replacing the architecture. Requires the current version revision and " +
+          "Append evidence to nodes, links, collections, handlers or operations without replacing the architecture. Requires the current version revision and " +
           "refuses duplicate ids or missing targets. Evidence is append-only through WebMCP so an agent cannot silently erase " +
           "the basis for an as-is claim.",
         input: AttachEvidenceInput,
@@ -1049,6 +1123,65 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             candidateId: candidate.id,
             revision: candidate.revision,
             evidenceCount: candidate.evidence.length,
+            grounding: candidate.role === "baseline" ? groundingReport(host.getStudy(), candidate) : null,
+          };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_upsert_source_inventory",
+        description:
+          "Add or replace audited source-inventory items on a repository baseline. The update is deterministic by item id and " +
+          "revision-guarded. Every runtime boundary must be modeled, excluded with a reason, or left visibly unresolved.",
+        input: UpsertSourceInventoryInput,
+        annotations: { readOnlyHint: false, untrustedContentHint: true },
+        async run(args) {
+          const candidate = await host.upsertSourceInventory(args);
+          const report = groundingReport(host.getStudy(), candidate);
+          host.log({
+            tool: "studio_upsert_source_inventory",
+            at: Date.now(),
+            ok: true,
+            summary: `updated ${args.items.length} source inventory records on "${candidate.label}"`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
+          });
+          return { candidateId: candidate.id, revision: candidate.revision, grounding: report };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_get_grounding_report",
+        description:
+          "Read the computed grounding status, coverage, source inventory and exact gaps for a repository baseline. This tool " +
+          "cannot set the status; it is derived from the current snapshot, model, evidence and receipt.",
+        input: GetGroundingReportInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run(args) {
+          const study = host.getStudy();
+          const candidate = args.candidateId
+            ? requireCandidate(study, args.candidateId)
+            : study.candidates.find((item) => item.id === study.activeCandidateId) ?? study.candidates[0];
+          if (!candidate) throw new Error("the project has no version to report");
+          const report = groundingReport(study, candidate);
+          host.log({
+            tool: "studio_get_grounding_report",
+            at: Date.now(),
+            ok: true,
+            summary: `read ${report.status} grounding for "${candidate.label}"`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
+          });
+          return {
+            repository: activeRepositorySnapshot(study),
+            sourceInventory: candidate.grounding?.sourceInventory ?? [],
+            ...report,
           };
         },
       },
@@ -1497,7 +1630,8 @@ function architecturePayload(study: Study, candidate: Candidate) {
   for (const evidence of candidate.evidence) confidence[evidence.confidence] += 1;
   for (const evidence of candidate.evidence) aspects[evidence.aspect] += 1;
   return {
-    repository: study.repository,
+    repository: activeRepositorySnapshot(study),
+    grounding: groundingReportForCandidate(study, candidate),
     candidate: {
       id: candidate.id,
       label: candidate.label,
@@ -1556,7 +1690,9 @@ export function summariseStudy(study: Study) {
     id: study.id,
     name: study.name,
     problem: study.problem,
-    repository: study.repository,
+    repository: activeRepositorySnapshot(study),
+    repositorySnapshots: study.repositorySnapshots,
+    activeRepositorySnapshotId: study.activeRepositorySnapshotId,
     contract: study.contract,
     workload: study.workload,
     targets: study.targets,
@@ -1579,6 +1715,7 @@ export function summariseStudy(study: Study) {
       evidenceCount: c.evidence.length,
       nodeCount: c.design.nodes.length,
       hasWorkflow: c.design.workflow !== null,
+      grounding: groundingReportForCandidate(study, c),
       performanceCalibration: performanceCalibration(study, c),
       isPromoted: study.promotedCandidateId === c.id,
       isActive: study.activeCandidateId === c.id,

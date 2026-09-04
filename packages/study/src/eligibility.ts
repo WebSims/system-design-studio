@@ -1,4 +1,4 @@
-import { performanceCalibration } from "@sds/schema";
+import { groundingReportForCandidate, performanceCalibration } from "@sds/schema";
 import type {
   BusinessGoal,
   CandidateEvaluation,
@@ -9,7 +9,7 @@ import type {
 } from "@sds/schema";
 
 /**
- * The hard gates. A candidate opens all six or it is not compared at all.
+ * The hard gates. A candidate opens every gate or it is not compared at all.
  *
  * WHY GATES RATHER THAN A WEIGHTED SCORE
  *
@@ -25,11 +25,12 @@ import type {
  * THE ORDER IS THE ORDER, AND THE THIRD GATE IS THE INTERESTING ONE
  *
  *   1. schema-valid              -- the document parses and its references resolve
- *   2. correctness-exhausted     -- the search finished rather than running out of budget
- *   3. no-violation              -- and it found nothing
- *   4. performance-calibrated    -- repository timing and capacity inputs are measured
- *   5. slo-satisfied             -- the CONSERVATIVE end of the interval meets the SLO
- *   6. business-goals-satisfied  -- likewise for the business goals
+ *   2. source-grounded           -- repository-derived claims have an auditable receipt
+ *   3. correctness-exhausted     -- the search finished rather than running out of budget
+ *   4. no-violation              -- and it found nothing
+ *   5. performance-calibrated    -- repository timing and capacity inputs are measured
+ *   6. slo-satisfied             -- the CONSERVATIVE end of the interval meets the SLO
+ *   7. business-goals-satisfied  -- likewise for the business goals
  *
  * Gate two comes before gate three deliberately. A candidate that hit a state cap has not
  * been shown to be safe and has not been shown to be broken; it has been shown nothing. Every
@@ -60,7 +61,31 @@ export function decideEligibility(input: EligibilityInput): EligibilityDecision 
         }
   );
 
-  // ---- 2 and 3: correctness ----
+  const candidate = study.candidates.find((item) => item.id === evaluation.candidateId);
+  const grounding = candidate ? groundingReportForCandidate(study, candidate) : null;
+  if (study.repositorySnapshots.length === 0) {
+    gates.push({
+      gate: "source-grounded",
+      passed: true,
+      reason: "freehand model; repository grounding is not required",
+    });
+  } else if (grounding?.status === "grounded") {
+    gates.push({
+      gate: "source-grounded",
+      passed: true,
+      reason: `baseline is grounded against repository snapshot ${grounding.repositorySnapshotId}`,
+    });
+  } else {
+    gates.push({
+      gate: "source-grounded",
+      passed: false,
+      reason:
+        grounding?.gaps[0]?.message ??
+        "the candidate has no repository baseline in its ancestry",
+    });
+  }
+
+  // ---- 3 and 4: correctness ----
   const c = evaluation.correctness;
   if (!c) {
     gates.push({
@@ -126,10 +151,9 @@ export function decideEligibility(input: EligibilityInput): EligibilityDecision 
     }
   }
 
-  // ---- 4: the numeric model is grounded before any performance result can count ----
-  const candidate = study.candidates.find((item) => item.id === evaluation.candidateId);
+  // ---- 5: the numeric model is calibrated before any performance result can count ----
   const calibration =
-    study.repository === null
+    study.repositorySnapshots.length === 0
       ? {
           required: false,
           calibrated: true,

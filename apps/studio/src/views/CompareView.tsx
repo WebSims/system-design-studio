@@ -81,7 +81,7 @@ export function CompareView() {
             <header className="section-head">
               <h2>does each version pass?</h2>
             </header>
-            <p className="muted">A version has to pass all six checks before its numbers are compared with the others.</p>
+            <p className="muted">A version has to pass every check before its numbers are compared with the others.</p>
 
             <div className="gate-grid">
               {portfolio.decisions.map((decision) => {
@@ -190,7 +190,7 @@ function ImplementationHandoffPanel() {
       study.approval !== null &&
       !["approval-stale", "evaluation-required", "approval-ineligible"].includes(handoff.code);
     const steps = [
-      { label: "Repository snapshot", done: study.repository !== null },
+      { label: "Repository snapshot", done: study.activeRepositorySnapshotId !== null },
       { label: "A version that passes the rules is approved", done: approvalReady },
       { label: "Ready to send to the agent", done: false },
     ];

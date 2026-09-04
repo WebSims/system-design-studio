@@ -7,6 +7,23 @@ import {
   performanceInputState,
 } from "../src/canvas/provenance";
 
+const repositoryState = {
+  repositorySnapshots: [{
+    id: "repo-1",
+    name: "checkout",
+    rootHint: "",
+    branch: "main",
+    revision: "abc123",
+    dirty: false as const,
+    scope: [],
+    excludedScope: [],
+    changedPaths: [],
+    workingTreeFingerprint: "",
+    capturedAt: 1,
+  }],
+  activeRepositorySnapshotId: "repo-1",
+};
+
 describe("canvas model input provenance", () => {
   it("makes assumed and unsupported repository inputs explicit", () => {
     expect(modelInputLabel(true, "assumed")).toBe("assumed inputs");
@@ -49,15 +66,7 @@ describe("repository performance calibration", () => {
     const candidate = structuredClone(base.candidates[0]!);
     const study: Study = {
       ...base,
-      repository: {
-        name: "checkout",
-        rootHint: "",
-        branch: "main",
-        revision: "abc123",
-        dirty: false,
-        scope: [],
-        capturedAt: 1,
-      },
+      ...repositoryState,
       candidates: [candidate],
       activeCandidateId: candidate.id,
     };
@@ -68,6 +77,7 @@ describe("repository performance calibration", () => {
       id: "benchmark-only",
       targetKind: "edge",
       targetId: candidate.design.edges[0]!.id,
+      target: { kind: "edge", edgeId: candidate.design.edges[0]!.id },
       aspect: "performance",
       confidence: "assumed",
       source: "documentation",
@@ -75,6 +85,7 @@ describe("repository performance calibration", () => {
       lineStart: null,
       lineEnd: null,
       symbol: "",
+      contentHash: "",
       claim: "A locality-matched benchmark is used as a placeholder.",
     };
     candidate.evidence = [assumed];
@@ -92,6 +103,9 @@ describe("repository performance calibration", () => {
       id: `perf-${index}`,
       targetKind: target.kind,
       targetId: target.id,
+      target: target.kind === "node"
+        ? { kind: "node" as const, nodeId: target.id }
+        : { kind: "edge" as const, edgeId: target.id },
       aspect: "performance",
       confidence: "observed",
       source: index % 2 ? "user" : "runtime",
@@ -99,19 +113,12 @@ describe("repository performance calibration", () => {
       lineStart: null,
       lineEnd: null,
       symbol: "",
+      contentHash: "",
       claim: "Observed data supports this target's numeric inputs.",
     }));
     const study: Study = {
       ...base,
-      repository: {
-        name: "checkout",
-        rootHint: "",
-        branch: "main",
-        revision: "abc123",
-        dirty: false,
-        scope: [],
-        capturedAt: 1,
-      },
+      ...repositoryState,
       candidates: [candidate],
       activeCandidateId: candidate.id,
     };
@@ -132,6 +139,7 @@ describe("repository performance calibration", () => {
         id: `perf-node-${index}`,
         targetKind: "node" as const,
         targetId: node.id,
+        target: { kind: "node" as const, nodeId: node.id },
         aspect: "performance" as const,
         confidence: "observed" as const,
         source: "runtime" as const,
@@ -139,12 +147,14 @@ describe("repository performance calibration", () => {
         lineStart: null,
         lineEnd: null,
         symbol: "",
+        contentHash: "",
         claim: "Observed performance data.",
       })),
       ...candidate.design.edges.map((edge, index) => ({
         id: `perf-edge-${index}`,
         targetKind: "edge" as const,
         targetId: edge.id,
+        target: { kind: "edge" as const, edgeId: edge.id },
         aspect: "performance" as const,
         confidence: "observed" as const,
         source: "runtime" as const,
@@ -152,20 +162,13 @@ describe("repository performance calibration", () => {
         lineStart: null,
         lineEnd: null,
         symbol: "",
+        contentHash: "",
         claim: "Observed performance data.",
       })),
     ];
     const study: Study = {
       ...base,
-      repository: {
-        name: "checkout",
-        rootHint: "",
-        branch: "main",
-        revision: "abc123",
-        dirty: false,
-        scope: [],
-        capturedAt: 1,
-      },
+      ...repositoryState,
       candidates: [candidate],
       activeCandidateId: candidate.id,
     };

@@ -2,9 +2,10 @@ import {
   CandidateSchema,
   StudySchema,
   blankDesign,
+  contentHash,
   distributionHasPositiveMean,
+  groundingReportForCandidate,
   migrateAndParse,
-  nodeTimingInputs,
   validateDesign,
   validateWorkflow,
   type ArchitectureEvidence,
@@ -12,6 +13,7 @@ import {
   type CandidateRole,
   type Design,
   type RepositorySnapshot,
+  type SourceInventoryItem,
   type Study,
 } from "@sds/schema";
 import { layeredPositions, layoutIssue, type LayoutEdge, type LayoutNode } from "../canvas/layout"
@@ -422,6 +424,7 @@ export interface ImportRepositoryArchitectureInput {
   /** Required with `fromCandidateId` for an agent: the revision it believes it is sealing. */
   expectedRevision?: number;
   evidence?: ArchitectureEvidence[];
+  sourceInventory?: SourceInventoryItem[];
   origin: "human" | "agent";
 }
 
@@ -430,6 +433,39 @@ export interface AttachArchitectureEvidenceInput {
   expectedRevision: number;
   evidence: ArchitectureEvidence[];
   by: "human" | "agent";
+}
+
+export interface UpsertSourceInventoryInput {
+  candidateId: string;
+  expectedRevision: number;
+  items: SourceInventoryItem[];
+  by: "human" | "agent";
+}
+
+function withGroundingReceipt(
+  candidate: Candidate,
+  repositorySnapshotId: string,
+  sourceInventory: SourceInventoryItem[],
+  sealedAt = Date.now()
+): Candidate {
+  const policyVersion = 1;
+  return CandidateSchema.parse({
+    ...candidate,
+    grounding: {
+      repositorySnapshotId,
+      policyVersion,
+      sourceInventory,
+      receipt: {
+        repositorySnapshotId,
+        policyVersion,
+        candidateRevision: candidate.revision,
+        designHash: contentHash(candidate.design),
+        inventoryHash: contentHash(sourceInventory),
+        evidenceHash: contentHash(candidate.evidence),
+        sealedAt,
+      },
+    },
+  });
 }
 
 /**
@@ -511,9 +547,31 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
 
   const nodeIds = new Set(design.nodes.map((node) => node.id));
   const edgeIds = new Set(design.edges.map((edge) => edge.id));
-  const evidence = existing.evidence.filter((item) =>
-    item.targetKind === "node" ? nodeIds.has(item.targetId) : edgeIds.has(item.targetId)
-  );
+  const evidence = existing.evidence.filter((item) => {
+    const target = item.target;
+    switch (target.kind) {
+      case "node":
+        return nodeIds.has(target.nodeId);
+      case "edge":
+        return edgeIds.has(target.edgeId);
+      case "collection":
+        return design.workflow?.collections.some((collection) => collection.id === target.collectionId) ?? false;
+      case "handler":
+        return design.workflow?.handlers.some((handler) => handler.id === target.handlerId) ?? false;
+      case "operation": {
+        const handler = design.workflow?.handlers.find((candidate) => candidate.id === target.handlerId);
+        if (!handler) return false;
+        const pending = [...handler.steps];
+        while (pending.length > 0) {
+          const operation = pending.shift()!;
+          if (operation.id === target.operationId) return true;
+          if (operation.op === "atomic") pending.unshift(...operation.body);
+          if (operation.op === "branch") pending.unshift(...operation.then, ...operation.else);
+        }
+        return false;
+      }
+    }
+  });
   const candidate: Candidate = {
     ...existing,
     design,
@@ -545,9 +603,22 @@ export function importRepositoryArchitecture(
       "approved-study"
     );
   }
+  if (input.fromCandidateId !== undefined) {
+    const existing = study.candidates.find((candidate) => candidate.id === input.fromCandidateId);
+    if (existing?.role === "baseline") {
+      throw new MutationRefused(`"${existing.label}" is already an as-is baseline`, "baseline-immutable");
+    }
+  }
+  if (study.repositorySnapshots.some((snapshot) => snapshot.id === input.repository.id)) {
+    throw new MutationRefused(
+      `repository snapshot id "${input.repository.id}" already exists`,
+      "duplicate-repository-snapshot"
+    );
+  }
   const linked = StudySchema.parse({
     ...study,
-    repository: input.repository,
+    repositorySnapshots: [...study.repositorySnapshots, input.repository],
+    activeRepositorySnapshotId: input.repository.id,
     // A new source snapshot changes the meaning of "as-is". Any prior decision must be reviewed
     // against the new baseline rather than silently carried across the import.
     promotedCandidateId: null,
@@ -574,10 +645,18 @@ export function importRepositoryArchitecture(
   };
   const drawing = untouchedDrawing(linked);
   const created = drawing ? adoptDrawing(linked, drawing, baselineInput) : createCandidate(linked, baselineInput);
-  assertRepositoryBaselineContract(created.study, created.candidate, input.origin);
+  const candidate = withGroundingReceipt(
+    created.candidate,
+    input.repository.id,
+    structuredClone(input.sourceInventory ?? [])
+  );
   return {
-    candidate: created.candidate,
-    study: StudySchema.parse({ ...created.study, activeCandidateId: created.candidate.id }),
+    candidate,
+    study: StudySchema.parse({
+      ...created.study,
+      candidates: created.study.candidates.map((item) => (item.id === candidate.id ? candidate : item)),
+      activeCandidateId: candidate.id,
+    }),
   };
 }
 
@@ -587,95 +666,6 @@ export function importRepositoryArchitecture(
  * declares no invariants; the problem is specifically the contradictory combination the explorer
  * would otherwise evaluate vacuously.
  */
-function assertRepositoryBaselineContract(
-  study: Study,
-  candidate: Candidate,
-  origin: "human" | "agent"
-): void {
-  if (
-    study.correctness.invariants.length > 0 &&
-    (candidate.design.workflow?.handlers.length ?? 0) === 0
-  ) {
-    throw new MutationRefused(
-      `cannot seal "${candidate.label}" as the immutable CURRENT version: the project declares ` +
-        `${study.correctness.invariants.length} correctness invariant${study.correctness.invariants.length === 1 ? "" : "s"}, ` +
-        "but the drawing has no workflow handlers, so every correctness result would be vacuous. " +
-        "Add a source-backed workflow with studio_apply_architecture_patch, or remove unsupported invariants before sealing.",
-      "baseline-workflow-required"
-    );
-  }
-
-  if (origin !== "agent") return;
-
-  const topologyIssues = validateDesign(candidate.design);
-  if (topologyIssues.some((issue) => issue.code === "no-client")) {
-    throw new MutationRefused(
-      `cannot seal "${candidate.label}": the topology has no client/work source, so it generates no simulated load. ` +
-        "Add the real external entrypoint, timer, poller or consumer source before sealing.",
-      "baseline-no-work-source"
-    );
-  }
-  const unwiredSources = topologyIssues.filter((issue) => issue.code === "client-unwired");
-  if (unwiredSources.length > 0) {
-    throw new MutationRefused(
-      `cannot seal "${candidate.label}": ${unwiredSources.length} client/work source${unwiredSources.length === 1 ? " is" : "s are"} not connected to any modeled work. ` +
-        "Connect each source to its real entrypoint or remove it before sealing.",
-      "baseline-unwired-source"
-    );
-  }
-  const unreachable = topologyIssues.filter(
-    (issue) => issue.code === "unreachable-from-client"
-  );
-  if (unreachable.length > 0) {
-    throw new MutationRefused(
-      `cannot seal "${candidate.label}": ${unreachable.length} component${unreachable.length === 1 ? " is" : "s are"} unreachable from every client/work source ` +
-        `(${unreachable.slice(0, 4).map((issue) => `"${candidate.design.nodes.find((node) => node.id === issue.nodeId)?.label ?? issue.nodeId}"`).join(", ")}${unreachable.length > 4 ? ", …" : ""}). ` +
-        "Connect each real external entrypoint, timer, poller or consumer source before sealing; orphan nodes receive no simulated load.",
-      "baseline-unreachable"
-    );
-  }
-
-  const zeroTiming = candidate.design.nodes.flatMap((node) =>
-    nodeTimingInputs(node)
-      .filter((input) => !distributionHasPositiveMean(input.distribution))
-      .map((input) => ({ node, field: input.field }))
-  )[0];
-  if (zeroTiming) {
-    throw new MutationRefused(
-      `cannot seal "${candidate.label}": component "${zeroTiming.node.label}" has zero or unusable mean ${zeroTiming.field}. ` +
-        "Use a non-zero catalog benchmark marked assumed, then leave performance uncalibrated until measured.",
-      "baseline-zero-timing"
-    );
-  }
-
-  const evidenced = new Set(
-    candidate.evidence
-      .filter((item) => item.aspect !== "performance")
-      .map((item) => `${item.targetKind}:${item.targetId}`)
-  );
-  const missing = [
-    ...candidate.design.nodes.map((node) => ({ key: `node:${node.id}`, label: node.label })),
-    ...candidate.design.edges.map((edge) => ({ key: `edge:${edge.id}`, label: edge.id })),
-  ].filter((target) => !evidenced.has(target.key));
-  if (missing.length > 0) {
-    throw new MutationRefused(
-      `cannot seal "${candidate.label}": ${missing.length} architecture element${missing.length === 1 ? " has" : "s have"} no evidence ` +
-        `(${missing.slice(0, 4).map((item) => `"${item.label}"`).join(", ")}${missing.length > 4 ? ", …" : ""}). ` +
-        "Attach observed, inferred or assumed evidence to every component and link first.",
-      "baseline-evidence-required"
-    );
-  }
-
-  const zero = candidate.design.edges.find((edge) => !distributionHasPositiveMean(edge.latency));
-  if (zero) {
-    throw new MutationRefused(
-      `cannot seal "${candidate.label}": link "${zero.id}" uses 0ms latency. ` +
-        "Use a non-zero catalog benchmark as an assumed placeholder, then leave performance uncalibrated until measured.",
-      "baseline-zero-latency"
-    );
-  }
-}
-
 /**
  * Turn an experiment that was drawn on the canvas into the as-is baseline, in place.
  *
@@ -714,7 +704,7 @@ function sealDrawnArchitecture(
   if (duplicate) {
     throw new MutationRefused(`evidence id "${duplicate.id}" already exists`, "duplicate-evidence");
   }
-  const candidate = CandidateSchema.parse({
+  const sealed = CandidateSchema.parse({
     ...existing,
     label: input.label,
     intent: input.intent ?? existing.intent,
@@ -723,7 +713,11 @@ function sealDrawnArchitecture(
     evidence: [...existing.evidence, ...structuredClone(added)],
     revision: existing.revision + 1,
   });
-  assertRepositoryBaselineContract(linked, candidate, input.origin);
+  const candidate = withGroundingReceipt(
+    sealed,
+    input.repository.id,
+    structuredClone(input.sourceInventory ?? [])
+  );
   return {
     candidate,
     study: StudySchema.parse({
@@ -873,11 +867,18 @@ export function attachArchitectureEvidence(
   if (duplicate) {
     throw new MutationRefused(`evidence id "${duplicate.id}" already exists`, "duplicate-evidence");
   }
-  const candidate = CandidateSchema.parse({
+  const revised = CandidateSchema.parse({
     ...existing,
     evidence: [...existing.evidence, ...input.evidence],
     revision: existing.revision + 1,
   });
+  const candidate = revised.grounding
+    ? withGroundingReceipt(
+        revised,
+        revised.grounding.repositorySnapshotId,
+        revised.grounding.sourceInventory
+      )
+    : revised;
   return {
     study: StudySchema.parse({
       ...study,
@@ -886,6 +887,51 @@ export function attachArchitectureEvidence(
       updatedAt: Date.now(),
     }),
     candidate,
+  };
+}
+
+/** Revision-guarded deterministic upsert of the baseline's repository inventory. */
+export function upsertSourceInventory(
+  study: Study,
+  input: UpsertSourceInventoryInput
+): { study: Study; candidate: Candidate } {
+  const existing = study.candidates.find((candidate) => candidate.id === input.candidateId);
+  if (!existing) throw new MutationRefused(`no candidate "${input.candidateId}"`, "no-such-candidate");
+  if (existing.role !== "baseline" || existing.grounding === null) {
+    throw new MutationRefused(
+      `"${existing.label}" is not an audited repository baseline`,
+      "grounding-required"
+    );
+  }
+  if (input.by === "agent" && existing.revision !== input.expectedRevision) {
+    throw new MutationRefused(
+      `"${existing.label}" is at revision ${existing.revision}, not ${input.expectedRevision}. Re-read the grounding report and try again.`,
+      "revision-conflict"
+    );
+  }
+  const inputIds = new Set<string>();
+  for (const item of input.items) {
+    if (inputIds.has(item.id)) {
+      throw new MutationRefused(`inventory id "${item.id}" appears twice in this update`, "duplicate-inventory");
+    }
+    inputIds.add(item.id);
+  }
+  const inventory = new Map(existing.grounding.sourceInventory.map((item) => [item.id, item]));
+  for (const item of input.items) inventory.set(item.id, structuredClone(item));
+  const revised = CandidateSchema.parse({ ...existing, revision: existing.revision + 1 });
+  const candidate = withGroundingReceipt(
+    revised,
+    existing.grounding.repositorySnapshotId,
+    [...inventory.values()]
+  );
+  return {
+    candidate,
+    study: StudySchema.parse({
+      ...study,
+      ...approvalAfterCandidateEdit(study, existing.id),
+      candidates: study.candidates.map((item) => (item.id === candidate.id ? candidate : item)),
+      updatedAt: Date.now(),
+    }),
   };
 }
 
@@ -907,6 +953,13 @@ export function promoteCandidate(study: Study, candidateId: string, now = Date.n
   const candidate = study.candidates.find((item) => item.id === candidateId);
   if (!candidate) {
     throw new MutationRefused(`no candidate "${candidateId}"`, "no-such-candidate");
+  }
+  const grounding = groundingReportForCandidate(study, candidate);
+  if (grounding && !grounding.eligibleForApproval) {
+    throw new MutationRefused(
+      `"${candidate.label}" cannot be approved because its repository baseline is ${grounding.status}: ${grounding.gaps[0]?.message ?? "grounding is incomplete"}`,
+      "source-not-grounded"
+    );
   }
   const baseline = baselineAncestor(study, candidateId);
   return StudySchema.parse({

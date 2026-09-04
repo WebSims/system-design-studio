@@ -478,15 +478,17 @@ describe("the interface has one place for each thing", () => {
     expect(canvas.match(/width: NODE_WIDTH,\s*height: NODE_HEIGHT/g)).toHaveLength(2);
     expect(canvas).toContain("<MiniMap");
     expect(canvas).toContain("nodeClassName");
-    // The old separate overlays are gone; the toolbox hosts find, route, link and zoom.
-    expect(canvas).not.toMatch(/<Controls|link-panel/);
+    // The Link panel is gone; Link sits at the end of the topology row inside the toolbox, and
+    // zoom stays in React Flow's own controls rather than in the pane.
+    expect(canvas).not.toContain("link-panel");
+    expect(canvas).toContain("<Controls showInteractive={false} />");
     expect(canvas).toContain("<CanvasToolbox");
+    expect(canvas).toMatch(/actions=\{\s*<LinkAction/);
     expect(source("canvas/TopologyExplorer.tsx")).not.toMatch(/<Panel/);
+    expect(source("canvas/TopologyExplorer.tsx")).toContain("{actions}");
     const toolbox = source("canvas/CanvasToolbox.tsx");
-    expect(toolbox).toContain("zoomIn");
-    expect(toolbox).toContain("fitView");
-    expect(toolbox).toContain("onToggleLinking");
-    expect(toolbox).toContain("minimap");
+    expect(toolbox).toContain("export const LinkAction");
+    expect(toolbox).not.toMatch(/zoomIn|toolbox-actions|useReactFlow/);
     // The pane moves freely by its header and is clamped to the canvas; no dock menu remains.
     expect(toolbox).toContain("clampToolboxPosition");
     expect(toolbox).not.toMatch(/toolbox-menu|nearestDock|DOCKS/);

@@ -265,7 +265,10 @@ function useWebmcp() {
       attachArchitectureEvidence: async (input) => {
         const candidate = useStudyStore.getState().attachEvidence({ ...input, by: "agent" });
         const last = input.evidence[input.evidence.length - 1];
-        const primary: ElementRef | null = last ? { kind: last.targetKind, id: last.targetId } : null;
+        const primary: ElementRef | null =
+          last && (last.targetKind === "node" || last.targetKind === "edge")
+            ? { kind: last.targetKind, id: last.targetId }
+            : null;
         revealAgentWork({
           candidateId: candidate.id,
           scope: primary ? "element" : "design",
@@ -276,6 +279,8 @@ function useWebmcp() {
         });
         return candidate;
       },
+      upsertSourceInventory: async (input) =>
+        useStudyStore.getState().upsertInventory({ ...input, by: "agent" }),
       runEvaluation: async (input) => {
         if (input.signal?.aborted) throw new Error("evaluation aborted before it began");
         const abort = () => cancelWorker();

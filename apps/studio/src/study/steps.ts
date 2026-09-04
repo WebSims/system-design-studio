@@ -18,7 +18,7 @@ import type { ActivityEntry } from "../webmcp/tools"
  * valid design has, for every practical purpose, read enough of it.
  */
 
-export type StepId = "project" | "catalog" | "draw" | "workflow" | "yardstick" | "seal" | "evaluate"
+export type StepId = "project" | "repository" | "inventory" | "catalog" | "draw" | "workflow" | "yardstick" | "seal" | "evaluate"
 
 export type StepStatus = "done" | "current" | "todo"
 
@@ -106,14 +106,32 @@ export const AGENT_STEPS: readonly AgentStep[] = [
     },
   },
   {
+    id: "repository",
+    label: "capture repository state",
+    unblocks: "the source revision, scope and dirty-tree identity are ready to seal",
+    done: ({ study }) => study.repositorySnapshots.length > 0,
+    hint: () =>
+      "Inspect the repository branch, base revision, included and excluded paths. If it is dirty, also collect changedPaths and a deterministic workingTreeFingerprint for studio_import_architecture.",
+  },
+  {
+    id: "inventory",
+    label: "inventory runtime boundaries",
+    unblocks: "entrypoints, work sources, runtimes, dependencies, queues and stores are accounted for",
+    done: ({ drawing }) => (drawing?.grounding?.sourceInventory.length ?? 0) > 0,
+    hint: ({ drawing }) =>
+      drawing?.role === "baseline"
+        ? `studio_upsert_source_inventory { candidateId: "${drawing.id}", expectedRevision: ${drawing.revision}, items }`
+        : "Build sourceInventory while inspecting code, then include it in studio_import_architecture. Every item is modeled, excluded with a reason, or unresolved.",
+  },
+  {
     id: "seal",
     label: "seal the as-is baseline",
     unblocks: "the drawing is the immutable baseline, linked to a repository revision",
-    done: ({ study }) => study.repository !== null && study.candidates.some((candidate) => candidate.role === "baseline"),
+    done: ({ study }) => study.activeRepositorySnapshotId !== null && study.candidates.some((candidate) => candidate.role === "baseline"),
     hint: ({ drawing }) =>
       drawing
         ? `studio_import_architecture { fromCandidateId: "${drawing.id}", expectedRevision: ${drawing.revision}, repository, evidence } ` +
-          "with architecture evidence for every component and link, marked observed, inferred or assumed."
+          "with the repository state, sourceInventory, and hashed code/config evidence for every architecture and behavior target. Incomplete work seals as PROVISIONAL."
         : "studio_import_architecture { fromCandidateId, expectedRevision, repository, evidence }.",
   },
   {

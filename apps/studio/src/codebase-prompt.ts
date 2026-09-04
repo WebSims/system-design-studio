@@ -17,17 +17,12 @@
  * The order here is the one `study/steps.ts` tracks in the agent panel.
  */
 export const CODEBASE_PROMPT = [
-  "Inspect this repository and use the System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; do not drive its UI.",
-  "Identify entrypoints, processes or containers, dependencies, and flows. A node is a runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
-    "Keep in-process work on its host; if separately bounded, label it '(in-process)'. Links are causal work, never ownership. " +
-    "Give each external entrypoint, poller, timer, or consumer its own client/work source. Set server fanout from code and edge fanoutFactor from each source event (1 for one-to-one). Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
-  "Create the project (an empty as-is version opens) and read its catalog. Plan topology and layout from layoutGuide or use auto-layout; add one component or link per patch; carry forward each returned revision. " +
-    "Never invent production rates, replicas, latencies, or provider choices. Set timings and latency explicitly, positive placeholders assumed for unknowns, never 0ms; do not run performance until calibrated. " +
-    "Trace the highest-risk state-changing flow into a workflow. If unsupported, state exact checked scope and leave it unmodeled; never substitute an easier flow or imply full coverage.",
-  "Once the workflow exists, record only evidenced workloads, goals, SLOs, and invariants, naming the collections you drew via the catalog's invariant templates. State the arrival you observed or assume before the first run; the placeholder is refused. " +
-    "Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. Safety is checked after every step; postconditions allow divergence.",
-  "Seal the immutable as-is baseline with branch, commit, dirty state, scope, and evidence for every element. Mark facts observed, deductions inferred, unknown production behaviour assumed. " +
-    "Follow the tool schemas and next-step guidance. Report gaps and focus the highest risk. Stop before redesigning or editing code.",
+  "Inspect the repository. Use System Design Studio's studio_* WebMCP site tools to draw an evidence-backed as-is architecture without UI-driving. README/docs are orientation, never evidence. Ground claims in code/config with repository-relative paths, lines, and CRLF-normalized SHA-256 hashes.",
+  "Identify processes or containers and flows. A node is a runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
+    "Keep in-process work on its host; if separate, label it '(in-process)'. Give each external entrypoint, poller, timer, or consumer its own client/work source. Set fanoutFactor from each source event. Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
+  "Create the project—the empty as-is version opens—and read its catalog. Plan topology and layout from layoutGuide or use auto-layout; add one component or link per patch and carry forward each returned revision. Never invent production rates, replicas, latencies, or provider choices. Use positive placeholders assumed for unknown timings; do not run performance until calibrated. Trace the highest-risk state-changing flow into a workflow, state exact checked scope, and never substitute an easier flow.",
+  "Once the workflow exists, record evidenced workloads, goals, SLOs, and invariants, naming the collections you drew through invariant templates. State arrival before the first run; the placeholder is refused. Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. Catalogue entrypoints, work sources, runtimes, dependencies, queues, and state stores as modeled, excluded with reason, or unresolved.",
+  "Seal the immutable as-is baseline with branch, commit, dirty state, included/excluded and changed paths, working-tree fingerprint, and evidence for every architecture and behavior target. Mark facts observed, deductions inferred, unknown production behaviour assumed. A provisional baseline cannot be approved or handed off; read studio_get_grounding_report and close its gaps. Follow the tool schemas and next-step guidance. Report gaps and focus highest risk. Stop before redesigning or editing code.",
 ].join("\n\n")
 
 export const CODEBASE_PROMPT_ROUTE = [

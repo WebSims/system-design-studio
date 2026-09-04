@@ -152,14 +152,14 @@ whose label follows the lens, **+ Component**, **Agent** and **Review**.
 
 ## The canvas tools
 
-One floating pane, **Tools**, holds the canvas tools: Find, Route, Upstream and Downstream
-for exploring the topology, Link for connecting two components, zoom in, out and fit, and a
-minimap toggle. Drag its header to put it anywhere on the canvas; it stays inside the
-canvas edges. Collapse it to a small pill; `/` expands it and focuses Find. Its position,
-collapsed state and minimap choice are remembered on this device. The minimap draws every
-component in its kind's colour and echoes the selection and whatever the agent just touched;
-the button on its corner folds it to a **map** pill in the same corner, and the pill brings it
-back.
+One floating pane, **Tools**, holds one row: Find, Route, Upstream and Downstream for
+exploring the topology, and Link for connecting two components. Drag its header to put it
+anywhere on the canvas; it stays inside the canvas edges. Collapse it to a small pill; `/`
+expands it and focuses Find. Its position, collapsed state and the minimap choice are
+remembered on this device. Zoom in, out and fit sit at the canvas's bottom-left. The minimap
+at the bottom-right draws every component in its kind's colour and echoes the selection and
+whatever the agent just touched; the button on its corner folds it to a **map** pill in the
+same corner, and the pill brings it back.
 
 ## The left rail
 

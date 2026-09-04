@@ -62,6 +62,8 @@ describe("the canonical step order", () => {
       "draw",
       "workflow",
       "yardstick",
+      "repository",
+      "inventory",
       "seal",
       "evaluate",
     ])
@@ -159,7 +161,7 @@ describe("the canonical step order", () => {
   it("marks sealing done when a baseline is linked to a repository", () => {
     const { study, candidate } = drawn()
     const sealed = importRepositoryArchitecture(study, {
-      repository: { name: "checkout", rootHint: "", branch: "main", revision: "abc", dirty: false, scope: [], capturedAt: 1 },
+      repository: { id: "repo-1", name: "checkout", rootHint: "", branch: "main", revision: "abc", dirty: false, scope: [], excludedScope: [], changedPaths: [], workingTreeFingerprint: "", capturedAt: 1 },
       label: "as-is",
       fromCandidateId: candidate.id,
       expectedRevision: candidate.revision,
@@ -193,7 +195,12 @@ describe("the canonical step order", () => {
     expect(nextStepHint(fresh())).toContain("studio_create_study")
     const { study } = drawn()
     expect(nextStepHint(study)).toContain("set-workflow")
-    const finished: Study = { ...study, evaluations: { k: {} as never }, repository: { name: "r", rootHint: "", branch: "", revision: "", dirty: null, scope: [], capturedAt: 1 } }
+    const finished: Study = {
+      ...study,
+      evaluations: { k: {} as never },
+      repositorySnapshots: [{ id: "repo-1", name: "r", rootHint: "", branch: "", revision: "", dirty: null, scope: [], excludedScope: [], changedPaths: [], workingTreeFingerprint: "", capturedAt: 1 }],
+      activeRepositorySnapshotId: "repo-1",
+    }
     const all = deriveAgentProgress({
       ...finished,
       candidates: finished.candidates.map((candidate) => ({ ...candidate, role: "baseline" as const })),

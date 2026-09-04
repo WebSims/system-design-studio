@@ -1,5 +1,7 @@
 import {
+  activeRepositorySnapshot,
   contentHash,
+  groundingReport,
   type ArchitectureEvidence,
   type Candidate,
   type CandidateEvaluation,
@@ -20,6 +22,7 @@ export type ImplementationHandoffBlocker =
   | "experiment-required"
   | "baseline-required"
   | "baseline-stale"
+  | "source-not-grounded"
   | "evaluation-required"
   | "approval-ineligible"
   | "no-code-delta";
@@ -145,7 +148,8 @@ export type ImplementationHandoff =
  * pinned receipt into a payload that an agent can inspect and a person can audit.
  */
 export function buildImplementationHandoff(study: Study): ImplementationHandoff {
-  if (!study.repository) {
+  const repository = activeRepositorySnapshot(study);
+  if (!repository) {
     return blocked(
       "repository-unlinked",
       "Link a repository and import an evidence-backed as-is architecture before creating a code handoff."
@@ -198,6 +202,13 @@ export function buildImplementationHandoff(study: Study): ImplementationHandoff 
     return blocked(
       "baseline-stale",
       "The as-is side of the approved comparison no longer matches its receipt. Re-scan or review the baseline, then approve again."
+    );
+  }
+  const grounding = groundingReport(study, baseline);
+  if (!grounding.eligibleForApproval) {
+    return blocked(
+      "source-not-grounded",
+      `The as-is baseline is ${grounding.status}: ${grounding.gaps[0]?.message ?? "grounding is incomplete"}`
     );
   }
 
@@ -283,7 +294,7 @@ export function buildImplementationHandoff(study: Study): ImplementationHandoff 
     }));
 
   const warnings = buildWarnings({
-    repository: study.repository,
+    repository,
     topology,
     unmappedTargets,
     unresolvedFindings,
@@ -291,7 +302,7 @@ export function buildImplementationHandoff(study: Study): ImplementationHandoff 
   const handoff: Omit<ReadyImplementationHandoff, "implementationPrompt"> = {
     status: "ready",
     approval,
-    repository: study.repository,
+    repository,
     baseline: revisionRef(baseline),
     approvedDesign: {
       ...revisionRef(approved),

@@ -37,7 +37,7 @@ export function AgentPanel() {
   const study = useStudyStore((s) => s.study)
   const webmcpReady = webmcp.status.includes("tools")
   // The tracker earns its space once the agent has done anything, or the project is still being built.
-  const showSteps = activity.length > 0 || study.repository === null
+  const showSteps = activity.length > 0 || study.repositorySnapshots.length === 0
 
   const stream = useMemo(() => {
     const items: Array<{ at: number; kind: "call"; entry: (typeof activity)[number] } | { at: number; kind: "note"; note: Annotation }> = [

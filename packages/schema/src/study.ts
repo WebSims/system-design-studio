@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ExprSchema } from "./domain";
+import { ExprSchema, walkOperations } from "./domain";
 import {
   ArrivalProcessSchema,
   DesignSchema,
@@ -7,6 +7,7 @@ import {
   SloSchema,
   distributionHasPositiveMean,
   nodeHasUsablePerformanceInputs,
+  nodeTimingInputs,
 } from "./design";
 
 /**
@@ -383,6 +384,7 @@ export type StudyTargets = z.infer<typeof StudyTargetsSchema>;
  */
 export const RepositorySnapshotSchema = z
   .object({
+    id: z.string().min(1).max(128),
     name: z.string().min(1).max(160),
     rootHint: z.string().max(1024).default(""),
     branch: z.string().max(256).default(""),
@@ -390,10 +392,84 @@ export const RepositorySnapshotSchema = z
     dirty: z.boolean().nullable().default(null),
     /** Relative directories or packages included in this architecture snapshot. */
     scope: z.array(z.string().min(1).max(512)).max(128).default([]),
+    /** Relative paths explicitly left outside the reconstruction. */
+    excludedScope: z.array(z.string().min(1).max(512)).max(128).default([]),
+    /** Repository-relative paths changed from `revision` when the snapshot is dirty. */
+    changedPaths: z.array(z.string().min(1).max(1024)).max(4096).default([]),
+    /** Deterministic hash of the included working tree; required for dirty snapshots. */
+    workingTreeFingerprint: z.string().max(256).default(""),
     capturedAt: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  .superRefine((snapshot, ctx) => {
+    if (snapshot.dirty === true && snapshot.revision.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["revision"],
+        message: "a dirty snapshot requires its base revision",
+      });
+    }
+    if (snapshot.dirty === true && snapshot.workingTreeFingerprint.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workingTreeFingerprint"],
+        message: "a dirty snapshot requires a deterministic working-tree fingerprint",
+      });
+    }
+    if (snapshot.dirty === true && snapshot.changedPaths.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["changedPaths"],
+        message: "a dirty snapshot requires its changed-path inventory",
+      });
+    }
+  });
 export type RepositorySnapshot = z.infer<typeof RepositorySnapshotSchema>;
+
+export const EvidenceTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("node"), nodeId: z.string().min(1).max(128) }).strict(),
+  z.object({ kind: z.literal("edge"), edgeId: z.string().min(1).max(128) }).strict(),
+  z.object({ kind: z.literal("collection"), collectionId: z.string().min(1).max(128) }).strict(),
+  z.object({ kind: z.literal("handler"), handlerId: z.string().min(1).max(128) }).strict(),
+  z
+    .object({
+      kind: z.literal("operation"),
+      handlerId: z.string().min(1).max(128),
+      operationId: z.string().min(1).max(128),
+    })
+    .strict(),
+]);
+export type EvidenceTarget = z.infer<typeof EvidenceTargetSchema>;
+
+export function evidenceTargetKey(target: EvidenceTarget): string {
+  switch (target.kind) {
+    case "node":
+      return `node:${target.nodeId}`;
+    case "edge":
+      return `edge:${target.edgeId}`;
+    case "collection":
+      return `collection:${target.collectionId}`;
+    case "handler":
+      return `handler:${target.handlerId}`;
+    case "operation":
+      return `operation:${target.handlerId}:${target.operationId}`;
+  }
+}
+
+export function evidenceTargetLabel(target: EvidenceTarget): string {
+  switch (target.kind) {
+    case "node":
+      return target.nodeId;
+    case "edge":
+      return target.edgeId;
+    case "collection":
+      return target.collectionId;
+    case "handler":
+      return target.handlerId;
+    case "operation":
+      return `${target.handlerId}/${target.operationId}`;
+  }
+}
 
 /** How strongly the available source supports an architectural claim. */
 export const EvidenceConfidenceSchema = z.enum(["observed", "inferred", "assumed"]);
@@ -414,10 +490,13 @@ export type EvidenceSource = z.infer<typeof EvidenceSourceSchema>;
  * runtime traces and user-supplied constraints do not always have a source location. `claim` says
  * what the evidence establishes; a path on its own would only prove that a file exists.
  */
-export const ArchitectureEvidenceSchema = z
+const ArchitectureEvidenceObjectSchema = z
   .object({
     id: z.string().min(1).max(128),
-    targetKind: z.enum(["node", "edge"]),
+    target: EvidenceTargetSchema,
+    /** Compatibility projection retained through v3 so existing integrations keep working. */
+    targetKind: z.enum(["node", "edge", "collection", "handler", "operation"]),
+    /** For operations this is the operation id; `target` also carries the owning handler id. */
     targetId: z.string().min(1).max(128),
     /**
      * Architecture proves that an element or dependency exists; behavior proves ordering,
@@ -432,6 +511,8 @@ export const ArchitectureEvidenceSchema = z
     lineStart: z.number().int().min(1).nullable().default(null),
     lineEnd: z.number().int().min(1).nullable().default(null),
     symbol: z.string().max(512).default(""),
+    /** SHA-256 of the cited slice after CRLF-to-LF normalization. */
+    contentHash: z.union([z.string().regex(/^[a-f0-9]{64}$/i), z.literal("")]).default(""),
     claim: z.string().min(1).max(2000),
   })
   .strict()
@@ -461,8 +542,146 @@ export const ArchitectureEvidenceSchema = z
         message: "lineEnd cannot be before lineStart",
       });
     }
+    if ((evidence.source === "code" || evidence.source === "config") && evidence.path.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["path"],
+        message: `${evidence.source} evidence requires a repository-relative path`,
+      });
+    }
+    if (evidence.path.startsWith("/") || evidence.path.split(/[\\/]+/).includes("..")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["path"],
+        message: "evidence paths must stay repository-relative",
+      });
+    }
+    if (evidence.target.kind !== evidence.targetKind) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["targetKind"],
+        message: "targetKind must match target.kind",
+      });
+    }
+    const projectedId = evidenceTargetLabel(evidence.target).split("/").at(-1)!;
+    if (projectedId !== evidence.targetId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["targetId"],
+        message: "targetId must identify the structured target",
+      });
+    }
   });
+export const ArchitectureEvidenceSchema = z.preprocess((value) => {
+  if (typeof value !== "object" || value === null) return value;
+  const raw = value as Record<string, unknown>;
+  if (raw.target !== undefined) {
+    const target = raw.target as Record<string, unknown>;
+    const kind = target.kind;
+    const targetId =
+      kind === "node"
+        ? target.nodeId
+        : kind === "edge"
+          ? target.edgeId
+          : kind === "collection"
+            ? target.collectionId
+            : kind === "handler"
+              ? target.handlerId
+              : kind === "operation"
+                ? target.operationId
+                : undefined;
+    return { ...raw, targetKind: raw.targetKind ?? kind, targetId: raw.targetId ?? targetId };
+  }
+  if (typeof raw.targetKind !== "string" || typeof raw.targetId !== "string") return raw;
+  const target =
+    raw.targetKind === "node"
+      ? { kind: "node", nodeId: raw.targetId }
+      : raw.targetKind === "edge"
+        ? { kind: "edge", edgeId: raw.targetId }
+        : raw.targetKind === "collection"
+          ? { kind: "collection", collectionId: raw.targetId }
+          : raw.targetKind === "handler"
+            ? { kind: "handler", handlerId: raw.targetId }
+            : raw.targetKind === "operation" && typeof raw.handlerId === "string"
+              ? { kind: "operation", handlerId: raw.handlerId, operationId: raw.targetId }
+              : undefined;
+  return target ? { ...raw, target } : raw;
+}, ArchitectureEvidenceObjectSchema);
 export type ArchitectureEvidence = z.infer<typeof ArchitectureEvidenceSchema>;
+
+export const SourceInventoryKindSchema = z.enum([
+  "entrypoint",
+  "work-source",
+  "runtime",
+  "dependency",
+  "queue",
+  "state-store",
+]);
+export type SourceInventoryKind = z.infer<typeof SourceInventoryKindSchema>;
+
+export const SourceInventoryDispositionSchema = z.enum(["modeled", "excluded", "unresolved"]);
+export type SourceInventoryDisposition = z.infer<typeof SourceInventoryDispositionSchema>;
+
+export const SourceInventoryItemSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    kind: SourceInventoryKindSchema,
+    label: z.string().min(1).max(256),
+    path: z.string().min(1).max(1024),
+    symbol: z.string().max(512).default(""),
+    contentHash: z.union([z.string().regex(/^[a-f0-9]{64}$/i), z.literal("")]).default(""),
+    disposition: SourceInventoryDispositionSchema,
+    target: EvidenceTargetSchema.nullable().default(null),
+    reason: z.string().max(2000).default(""),
+  })
+  .strict()
+  .superRefine((item, ctx) => {
+    if (item.path.startsWith("/") || item.path.split(/[\\/]+/).includes("..")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["path"],
+        message: "inventory paths must stay repository-relative",
+      });
+    }
+    if (item.disposition === "modeled" && item.target === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["target"],
+        message: "a modeled inventory item must identify its architecture or behavior target",
+      });
+    }
+    if (item.disposition === "excluded" && item.reason.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "an excluded inventory item requires a reason",
+      });
+    }
+  });
+export type SourceInventoryItem = z.infer<typeof SourceInventoryItemSchema>;
+
+export const GroundingReceiptSchema = z
+  .object({
+    repositorySnapshotId: z.string().min(1).max(128),
+    policyVersion: z.number().int().positive(),
+    candidateRevision: z.number().int().nonnegative(),
+    designHash: z.string().min(1),
+    inventoryHash: z.string().min(1),
+    evidenceHash: z.string().min(1),
+    sealedAt: z.number().int().nonnegative(),
+  })
+  .strict();
+export type GroundingReceipt = z.infer<typeof GroundingReceiptSchema>;
+
+export const BaselineGroundingSchema = z
+  .object({
+    repositorySnapshotId: z.string().min(1).max(128),
+    policyVersion: z.number().int().positive().default(1),
+    sourceInventory: z.array(SourceInventoryItemSchema).max(4096).default([]),
+    receipt: GroundingReceiptSchema,
+  })
+  .strict();
+export type BaselineGrounding = z.infer<typeof BaselineGroundingSchema>;
 
 // ---------------------------------------------------------------------------
 // candidates
@@ -512,6 +731,8 @@ export const CandidateSchema = z
      */
     intent: z.string().default(""),
     evidence: z.array(ArchitectureEvidenceSchema).max(4096).default([]),
+    /** Present only on a repository-derived baseline. Its status is always derived. */
+    grounding: BaselineGroundingSchema.nullable().default(null),
     design: DesignSchema,
   })
   .strict()
@@ -529,17 +750,44 @@ export const CandidateSchema = z
         });
       }
       evidenceIds.add(evidence.id);
-      const targetExists =
-        evidence.targetKind === "node"
-          ? nodeIds.has(evidence.targetId)
-          : edgeIds.has(evidence.targetId);
+      const workflow = candidate.design.workflow;
+      const target = evidence.target;
+      const targetExists = (() => {
+        switch (target.kind) {
+          case "node":
+            return nodeIds.has(target.nodeId);
+          case "edge":
+            return edgeIds.has(target.edgeId);
+          case "collection":
+            return workflow?.collections.some((item) => item.id === target.collectionId) ?? false;
+          case "handler":
+            return workflow?.handlers.some((item) => item.id === target.handlerId) ?? false;
+          case "operation": {
+            const handler = workflow?.handlers.find((item) => item.id === target.handlerId);
+            if (!handler) return false;
+            let found = false;
+            walkOperations(handler.steps, (operation) => {
+              if (operation.id === target.operationId) found = true;
+            });
+            return found;
+          }
+        }
+      })();
       if (!targetExists) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ["evidence", index, "targetId"],
-          message: `missing ${evidence.targetKind} "${evidence.targetId}"`,
+          path: ["evidence", index, "target"],
+          message: `missing ${evidence.targetKind} "${evidenceTargetLabel(evidence.target)}"`,
         });
       }
+    }
+    if (candidate.role === "baseline" && candidate.grounding === null) return;
+    if (candidate.role !== "baseline" && candidate.grounding !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["grounding"],
+        message: "grounding metadata belongs only to repository baselines",
+      });
     }
   });
 export type Candidate = z.infer<typeof CandidateSchema>;
@@ -870,6 +1118,7 @@ export type CandidateEvaluation = z.infer<typeof CandidateEvaluationSchema>;
  */
 export const EligibilityGateSchema = z.enum([
   "schema-valid",
+  "source-grounded",
   "correctness-exhausted",
   "no-violation",
   "performance-calibrated",
@@ -947,7 +1196,7 @@ export type PortfolioResult = z.infer<typeof PortfolioResultSchema>;
 // the study document
 // ---------------------------------------------------------------------------
 
-export const STUDY_SCHEMA_VERSION = 2 as const;
+export const STUDY_SCHEMA_VERSION = 3 as const;
 
 /**
  * The exact architecture revisions a person approved.
@@ -991,8 +1240,10 @@ export const StudySchema = z
      * reading the two next to each other.
      */
     problem: z.string().default(""),
-    /** Null for a freehand project; present when an agent reconstructed the baseline from code. */
-    repository: RepositorySnapshotSchema.nullable().default(null),
+    /** Immutable source states used by repository-derived baselines. */
+    repositorySnapshots: z.array(RepositorySnapshotSchema).max(128).default([]),
+    /** Snapshot that currently defines the source-grounded CURRENT baseline. */
+    activeRepositorySnapshotId: z.string().min(1).max(128).nullable().default(null),
     contract: ProductContractSchema.default({}),
     workload: StudyWorkloadSchema,
     targets: StudyTargetsSchema.default({}),
@@ -1021,7 +1272,38 @@ export const StudySchema = z
     createdAt: z.number().int().nonnegative().default(0),
     updatedAt: z.number().int().nonnegative().default(0),
   })
-  .strict();
+  .strict()
+  .superRefine((study, ctx) => {
+    const snapshotIds = new Set<string>();
+    for (let index = 0; index < study.repositorySnapshots.length; index += 1) {
+      const snapshot = study.repositorySnapshots[index]!;
+      if (snapshotIds.has(snapshot.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["repositorySnapshots", index, "id"],
+          message: `duplicate repository snapshot id "${snapshot.id}"`,
+        });
+      }
+      snapshotIds.add(snapshot.id);
+    }
+    if (study.activeRepositorySnapshotId !== null && !snapshotIds.has(study.activeRepositorySnapshotId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["activeRepositorySnapshotId"],
+        message: `active repository snapshot "${study.activeRepositorySnapshotId}" is missing`,
+      });
+    }
+    for (let index = 0; index < study.candidates.length; index += 1) {
+      const grounding = study.candidates[index]!.grounding;
+      if (grounding && !snapshotIds.has(grounding.repositorySnapshotId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["candidates", index, "grounding", "repositorySnapshotId"],
+          message: `grounding references missing repository snapshot "${grounding.repositorySnapshotId}"`,
+        });
+      }
+    }
+  });
 export type Study = z.infer<typeof StudySchema>;
 
 // ---------------------------------------------------------------------------
@@ -1042,6 +1324,234 @@ export interface PerformanceCalibration {
   message: string;
 }
 
+export const GroundingStatusSchema = z.enum(["grounded", "provisional", "legacy-unverified"]);
+export type GroundingStatus = z.infer<typeof GroundingStatusSchema>;
+
+export interface GroundingGap {
+  code:
+    | "legacy-baseline"
+    | "snapshot-missing"
+    | "snapshot-not-active"
+    | "revision-missing"
+    | "dirty-state-unknown"
+    | "dirty-paths-missing"
+    | "dirty-fingerprint-missing"
+    | "inventory-empty"
+    | "inventory-unresolved"
+    | "inventory-hash-missing"
+    | "architecture-evidence-missing"
+    | "behavior-evidence-missing"
+    | "receipt-stale"
+    | "model-invalid";
+  message: string;
+  target: EvidenceTarget | null;
+  inventoryId: string | null;
+}
+
+export interface GroundingCoverage {
+  required: number;
+  covered: number;
+}
+
+export interface GroundingReport {
+  candidateId: string;
+  repositorySnapshotId: string | null;
+  policyVersion: number;
+  status: GroundingStatus;
+  architecture: GroundingCoverage;
+  behavior: GroundingCoverage;
+  inventory: { total: number; modeled: number; excluded: number; unresolved: number };
+  gaps: GroundingGap[];
+  eligibleForApproval: boolean;
+}
+
+function qualifyingEvidence(evidence: ArchitectureEvidence, aspect: "architecture" | "behavior"): boolean {
+  return (
+    evidence.aspect === aspect &&
+    (evidence.source === "code" || evidence.source === "config") &&
+    (evidence.confidence === "observed" || evidence.confidence === "inferred") &&
+    evidence.path.length > 0 &&
+    /^[a-f0-9]{64}$/i.test(evidence.contentHash)
+  );
+}
+
+function requiredGroundingTargets(candidate: Candidate): {
+  architecture: EvidenceTarget[];
+  behavior: EvidenceTarget[];
+} {
+  const architecture: EvidenceTarget[] = [
+    ...candidate.design.nodes.map((node) => ({ kind: "node" as const, nodeId: node.id })),
+    ...candidate.design.edges.map((edge) => ({ kind: "edge" as const, edgeId: edge.id })),
+  ];
+  const behavior: EvidenceTarget[] = [];
+  const workflow = candidate.design.workflow;
+  if (workflow) {
+    behavior.push(
+      ...workflow.collections.map((collection) => ({ kind: "collection" as const, collectionId: collection.id })),
+      ...workflow.handlers.map((handler) => ({ kind: "handler" as const, handlerId: handler.id }))
+    );
+    for (const handler of workflow.handlers) {
+      walkOperations(handler.steps, (operation) => {
+        behavior.push({ kind: "operation", handlerId: handler.id, operationId: operation.id });
+      });
+    }
+  }
+  return { architecture, behavior };
+}
+
+/** Derive repository grounding; callers cannot supply or override this status. */
+export function groundingReport(study: Study, candidate: Candidate): GroundingReport {
+  const targets = requiredGroundingTargets(candidate);
+  const emptyCoverage = {
+    architecture: { required: targets.architecture.length, covered: 0 },
+    behavior: { required: targets.behavior.length, covered: 0 },
+  };
+  if (candidate.role !== "baseline" || candidate.grounding === null) {
+    return {
+      candidateId: candidate.id,
+      repositorySnapshotId: null,
+      policyVersion: 1,
+      status: "legacy-unverified",
+      ...emptyCoverage,
+      inventory: { total: 0, modeled: 0, excluded: 0, unresolved: 0 },
+      gaps: [
+        {
+          code: "legacy-baseline",
+          message: "This baseline predates auditable repository grounding and must be re-verified.",
+          target: null,
+          inventoryId: null,
+        },
+      ],
+      eligibleForApproval: false,
+    };
+  }
+
+  const grounding = candidate.grounding;
+  const snapshot = study.repositorySnapshots.find((item) => item.id === grounding.repositorySnapshotId);
+  const gaps: GroundingGap[] = [];
+  const addGap = (
+    code: GroundingGap["code"],
+    message: string,
+    target: EvidenceTarget | null = null,
+    inventoryId: string | null = null
+  ) => gaps.push({ code, message, target, inventoryId });
+
+  if (!snapshot) addGap("snapshot-missing", "The baseline's repository snapshot is missing.");
+  if (study.activeRepositorySnapshotId !== grounding.repositorySnapshotId) {
+    addGap("snapshot-not-active", "The baseline is not linked to the project's active repository snapshot.");
+  }
+  if (snapshot && snapshot.revision.length === 0) addGap("revision-missing", "Record the repository base revision.");
+  if (snapshot?.dirty === null) addGap("dirty-state-unknown", "Record whether the working tree was dirty.");
+  if (snapshot?.dirty === true && snapshot.changedPaths.length === 0) {
+    addGap("dirty-paths-missing", "List the paths changed from the recorded base revision.");
+  }
+  if (snapshot?.dirty === true && snapshot.workingTreeFingerprint.length === 0) {
+    addGap("dirty-fingerprint-missing", "Record a deterministic working-tree fingerprint.");
+  }
+
+  const inventory = grounding.sourceInventory;
+  if (inventory.length === 0) addGap("inventory-empty", "Inventory the repository entrypoints and runtime boundaries.");
+  for (const item of inventory) {
+    if (item.disposition === "unresolved") {
+      addGap("inventory-unresolved", `Resolve inventory item "${item.label}".`, item.target, item.id);
+    }
+    if (!/^[a-f0-9]{64}$/i.test(item.contentHash)) {
+      addGap("inventory-hash-missing", `Inventory item "${item.label}" needs a source hash.`, item.target, item.id);
+    }
+  }
+
+  const evidenceKeys = new Set(
+    candidate.evidence.filter((item) => qualifyingEvidence(item, "architecture")).map((item) => evidenceTargetKey(item.target))
+  );
+  const behaviorKeys = new Set(
+    candidate.evidence.filter((item) => qualifyingEvidence(item, "behavior")).map((item) => evidenceTargetKey(item.target))
+  );
+  const missingArchitecture = targets.architecture.filter((target) => !evidenceKeys.has(evidenceTargetKey(target)));
+  const missingBehavior = targets.behavior.filter((target) => !behaviorKeys.has(evidenceTargetKey(target)));
+  for (const target of missingArchitecture) {
+    addGap("architecture-evidence-missing", `Add qualifying source evidence for ${evidenceTargetKey(target)}.`, target);
+  }
+  for (const target of missingBehavior) {
+    addGap("behavior-evidence-missing", `Add qualifying behavior evidence for ${evidenceTargetKey(target)}.`, target);
+  }
+
+  const sourceIds = new Set(candidate.design.nodes.filter((node) => node.kind === "client").map((node) => node.id));
+  const reachable = new Set(sourceIds);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of candidate.design.edges) {
+      if (reachable.has(edge.from) && !reachable.has(edge.to)) {
+        reachable.add(edge.to);
+        changed = true;
+      }
+    }
+  }
+  const unreachable = candidate.design.nodes.filter((node) => !reachable.has(node.id));
+  const invalidTiming = candidate.design.nodes.find((node) =>
+    nodeTimingInputs(node).some((input) => !distributionHasPositiveMean(input.distribution))
+  );
+  const invalidEdge = candidate.design.edges.find((edge) => !distributionHasPositiveMean(edge.latency));
+  if (sourceIds.size === 0) addGap("model-invalid", "The topology has no client or work-source node.");
+  if (unreachable.length > 0) {
+    addGap("model-invalid", `${unreachable.length} component${unreachable.length === 1 ? " is" : "s are"} unreachable from every work source.`);
+  }
+  if (invalidTiming) addGap("model-invalid", `Component "${invalidTiming.label}" has zero or unusable timing.`);
+  if (invalidEdge) addGap("model-invalid", `Link "${invalidEdge.id}" has zero or unusable latency.`);
+  if (study.correctness.invariants.length > 0 && (candidate.design.workflow?.handlers.length ?? 0) === 0) {
+    addGap("model-invalid", "The project declares correctness invariants but the baseline has no workflow handlers.");
+  }
+
+  const receipt = grounding.receipt;
+  if (
+    receipt.repositorySnapshotId !== grounding.repositorySnapshotId ||
+    receipt.policyVersion !== grounding.policyVersion ||
+    receipt.candidateRevision !== candidate.revision ||
+    receipt.designHash !== contentHash(candidate.design) ||
+    receipt.inventoryHash !== contentHash(grounding.sourceInventory) ||
+    receipt.evidenceHash !== contentHash(candidate.evidence)
+  ) {
+    addGap("receipt-stale", "Grounding inputs changed after the baseline receipt was created.");
+  }
+
+  const counts = inventory.reduce(
+    (result, item) => ({ ...result, [item.disposition]: result[item.disposition] + 1 }),
+    { modeled: 0, excluded: 0, unresolved: 0 }
+  );
+  const status: GroundingStatus = gaps.length === 0 ? "grounded" : "provisional";
+  return {
+    candidateId: candidate.id,
+    repositorySnapshotId: grounding.repositorySnapshotId,
+    policyVersion: grounding.policyVersion,
+    status,
+    architecture: {
+      required: targets.architecture.length,
+      covered: targets.architecture.length - missingArchitecture.length,
+    },
+    behavior: {
+      required: targets.behavior.length,
+      covered: targets.behavior.length - missingBehavior.length,
+    },
+    inventory: { total: inventory.length, ...counts },
+    gaps,
+    eligibleForApproval: status === "grounded",
+  };
+}
+
+/** Follow candidate ancestry to the repository baseline that governs approval eligibility. */
+export function groundingReportForCandidate(study: Study, candidate: Candidate): GroundingReport | null {
+  let current: Candidate | undefined = candidate;
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.role === "baseline") return groundingReport(study, current);
+    current = current.basedOnCandidateId
+      ? study.candidates.find((item) => item.id === current!.basedOnCandidateId)
+      : undefined;
+  }
+  return null;
+}
+
 /**
  * Whether a repository-derived candidate has enough evidence to print performance results.
  *
@@ -1052,10 +1562,10 @@ export interface PerformanceCalibration {
  * turn a source reconstruction into a calibrated load model.
  */
 export function performanceCalibration(
-  study: Pick<Study, "repository">,
+  study: Pick<Study, "repositorySnapshots">,
   candidate: Candidate
 ): PerformanceCalibration {
-  if (study.repository === null) {
+  if (study.repositorySnapshots.length === 0) {
     return { required: false, calibrated: true, gaps: [], message: "Performance calibration is not required for a freehand model." };
   }
 
@@ -1113,6 +1623,13 @@ export function performanceCalibration(
 
 export function candidateById(study: Study, id: string): Candidate | undefined {
   return study.candidates.find((c) => c.id === id);
+}
+
+export function activeRepositorySnapshot(
+  study: Pick<Study, "repositorySnapshots" | "activeRepositorySnapshotId">
+): RepositorySnapshot | null {
+  if (study.activeRepositorySnapshotId === null) return null;
+  return study.repositorySnapshots.find((snapshot) => snapshot.id === study.activeRepositorySnapshotId) ?? null;
 }
 
 /**

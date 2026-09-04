@@ -1,4 +1,4 @@
-import { Panel, useReactFlow } from "@xyflow/react"
+import { Panel } from "@xyflow/react"
 import {
   useCallback,
   useEffect,
@@ -22,11 +22,12 @@ import {
  *
  * WHY ONE PANE
  *
- * The canvas used to carry four overlays in four corners: the topology explorer, React Flow's zoom
- * controls, a Link button that appeared once two nodes existed, and the minimap. Each was
- * defensible alone; together they boxed the drawing in and none could be moved out of the way of
- * the thing a person was looking at. This pane holds the first three, goes wherever it is dragged
- * by its header, collapses to a pill, and remembers all of that across reloads.
+ * The canvas used to carry a topology explorer in one corner and a Link button that appeared once
+ * two nodes existed in another; neither could be moved out of the way of the thing a person was
+ * looking at. This pane holds both on one row, goes wherever it is dragged by its header, collapses
+ * to a pill, and remembers all of that across reloads. Zoom stays in React Flow's own controls at
+ * the bottom-left and the minimap folds in place at the bottom-right, so the pane is only about
+ * the drawing's structure.
  *
  * The position is clamped to the canvas on every drag step, on collapse, and whenever the canvas
  * is resized, so the pane can never be lost off-screen.
@@ -47,14 +48,10 @@ export const useCanvasToolboxPrefs = (): [ToolboxPrefs, (patch: Partial<ToolboxP
 interface CanvasToolboxProps {
   prefs: ToolboxPrefs
   onPrefs(patch: Partial<ToolboxPrefs>): void
-  /** The topology rows (Find, Route, Upstream, Downstream). */
+  /** The topology rows (Find, Route, Upstream, Downstream, Link). */
   children: ReactNode
+  /** Shown on the collapsed pill so a link in progress is never invisible. */
   linking: boolean
-  linkFrom: string | null
-  linkFromLabel: string | null
-  linkableTargets: number
-  nodeCount: number
-  onToggleLinking(): void
 }
 
 interface DragStart {
@@ -67,18 +64,7 @@ interface DragStart {
 
 const canvasOf = (element: HTMLElement): HTMLElement | null => element.closest<HTMLElement>(".canvas-wrap")
 
-export const CanvasToolbox = ({
-  prefs,
-  onPrefs,
-  children,
-  linking,
-  linkFrom,
-  linkFromLabel,
-  linkableTargets,
-  nodeCount,
-  onToggleLinking,
-}: CanvasToolboxProps) => {
-  const { zoomIn, zoomOut, fitView } = useReactFlow()
+export const CanvasToolbox = ({ prefs, onPrefs, children, linking }: CanvasToolboxProps) => {
   const paneRef = useRef<HTMLDivElement | null>(null)
   const dragStart = useRef<DragStart | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -165,13 +151,6 @@ export const CanvasToolbox = ({
     if (settled.x !== prefs.x || settled.y !== prefs.y) onPrefs(settled)
   }
 
-  const linkDisabled = nodeCount < 2 || linkableTargets === 0
-  const linkTitle = linkDisabled
-    ? nodeCount < 2
-      ? "Add a second component to link them."
-      : "Every component here is a client; clients receive no links."
-    : "Make a link by clicking two components in turn. You can also drag from a component's right handle to another's left."
-
   return (
     <Panel
       position="top-left"
@@ -205,56 +184,49 @@ export const CanvasToolbox = ({
           </button>
         </header>
 
-        {!prefs.collapsed && (
-          <div className="toolbox-body">
-            {children}
-            <div className="toolbox-actions" role="group" aria-label="Canvas actions">
-              <button
-                type="button"
-                className={`topology-action nodrag nopan ${linking ? "active" : ""}`}
-                onClick={onToggleLinking}
-                aria-pressed={linking}
-                disabled={linkDisabled}
-                title={linkTitle}
-              >
-                {linking ? "Linking\u2026" : "Link"}
-              </button>
-              {linking && (
-                <span className="link-hint">
-                  {linkFrom ? `now click the component ${linkFromLabel ?? "it"} calls` : "click the component that makes the call"}
-                  <span className="muted">{" \u00b7 Esc to cancel"}</span>
-                </span>
-              )}
-              <span className="topology-divider" aria-hidden="true" />
-              <button type="button" className="topology-action nodrag nopan" aria-label="Zoom in" title="Zoom in" onClick={() => void zoomIn()}>
-                +
-              </button>
-              <button type="button" className="topology-action nodrag nopan" aria-label="Zoom out" title="Zoom out" onClick={() => void zoomOut()}>
-                {"\u2212"}
-              </button>
-              <button
-                type="button"
-                className="topology-action nodrag nopan"
-                title="Fit the whole drawing on screen"
-                onClick={() => void fitView({ padding: 0.25, maxZoom: 1, duration: 280 })}
-              >
-                fit
-              </button>
-              <span className="topology-divider" aria-hidden="true" />
-              <button
-                type="button"
-                className={`topology-action nodrag nopan ${prefs.minimap ? "active" : ""}`}
-                aria-pressed={prefs.minimap}
-                title={prefs.minimap ? "Hide the minimap" : "Show the minimap"}
-                onClick={() => onPrefs({ minimap: !prefs.minimap })}
-              >
-                minimap
-              </button>
-            </div>
-          </div>
-        )}
+        {!prefs.collapsed && <div className="toolbox-body">{children}</div>}
       </div>
     </Panel>
+  )
+}
+
+interface LinkActionProps {
+  linking: boolean
+  linkFrom: string | null
+  linkFromLabel: string | null
+  linkableTargets: number
+  nodeCount: number
+  onToggleLinking(): void
+}
+
+/** The Link action and its in-progress hint; sits at the end of the topology row. */
+export const LinkAction = ({ linking, linkFrom, linkFromLabel, linkableTargets, nodeCount, onToggleLinking }: LinkActionProps) => {
+  const linkDisabled = nodeCount < 2 || linkableTargets === 0
+  const linkTitle = linkDisabled
+    ? nodeCount < 2
+      ? "Add a second component to link them."
+      : "Every component here is a client; clients receive no links."
+    : "Make a link by clicking two components in turn. You can also drag from a component's right handle to another's left."
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`topology-action nodrag nopan ${linking ? "active" : ""}`}
+        onClick={onToggleLinking}
+        aria-pressed={linking}
+        disabled={linkDisabled}
+        title={linkTitle}
+      >
+        {linking ? "Linking\u2026" : "Link"}
+      </button>
+      {linking && (
+        <span className="link-hint">
+          {linkFrom ? `now click the component ${linkFromLabel ?? "it"} calls` : "click the component that makes the call"}
+          <span className="muted">{" \u00b7 Esc to cancel"}</span>
+        </span>
+      )}
+    </>
   )
 }
 

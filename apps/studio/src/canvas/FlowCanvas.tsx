@@ -1,6 +1,7 @@
 import {
   Background,
   BackgroundVariant,
+  Controls,
   MiniMap,
   Panel,
   ReactFlow,
@@ -35,7 +36,7 @@ import { useStudio } from "../store";
 import { useStudyStore, type Annotation } from "../study/store";
 import { compareDesignTopology, type DesignDelta } from "../topology";
 import { TopologyTools, type TopologyExploration } from "./TopologyExplorer";
-import { CanvasToolbox, MinimapChrome, useCanvasToolboxPrefs } from "./CanvasToolbox";
+import { CanvasToolbox, LinkAction, MinimapChrome, useCanvasToolboxPrefs } from "./CanvasToolbox";
 
 const edgeTypes = { pipe: PipeEdge };
 
@@ -302,7 +303,7 @@ function Canvas() {
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
         data: {
-          repositoryLinked: study.repository !== null,
+          repositoryLinked: study.repositorySnapshots.length > 0,
           performanceCalibrated: !uncalibratedTargets.has(`node:${n.id}`),
           hasPerformanceEvidence:
             evidenceByTarget.get(`node:${n.id}`)?.some((item) => item.aspect === "performance") ?? false,
@@ -336,7 +337,7 @@ function Canvas() {
       notesByTarget,
       primaryTouch,
       selection,
-      study.repository,
+      study.repositorySnapshots.length,
       touchedNodeIds,
       uncalibratedTargets,
     ]
@@ -365,7 +366,7 @@ function Canvas() {
               ? "match"
               : "muted"
             : "none",
-          repositoryLinked: study.repository !== null,
+          repositoryLinked: study.repositorySnapshots.length > 0,
           performanceCalibrated: !uncalibratedTargets.has(`edge:${e.id}`),
           hasPerformanceEvidence:
             evidenceByTarget.get(`edge:${e.id}`)?.some((item) => item.aspect === "performance") ?? false,
@@ -381,7 +382,7 @@ function Canvas() {
       highlightedEdgeIds,
       primaryTouch,
       selection,
-      study.repository,
+      study.repositorySnapshots.length,
       touchedEdgeIds,
       uncalibratedTargets,
     ]
@@ -507,16 +508,8 @@ function Canvas() {
           />
         )}
         <MinimapChrome shown={toolbox.minimap} onToggle={() => setToolbox({ minimap: !toolbox.minimap })} />
-        <CanvasToolbox
-          prefs={toolbox}
-          onPrefs={setToolbox}
-          linking={linking}
-          linkFrom={linkFrom}
-          linkFromLabel={linkFrom ? (design.nodes.find((n) => n.id === linkFrom)?.label ?? null) : null}
-          linkableTargets={linkableTargets}
-          nodeCount={design.nodes.length}
-          onToggleLinking={toggleLinking}
-        >
+        <Controls showInteractive={false} />
+        <CanvasToolbox prefs={toolbox} onPrefs={setToolbox} linking={linking}>
           <TopologyTools
             key={`${activeCandidateId ?? "none"}:${topologyFingerprint}`}
             design={design}
@@ -525,6 +518,16 @@ function Canvas() {
             onExplorationChange={setExploration}
             onSelectNode={onSelectNode}
             onReveal={expandToolbox}
+            actions={
+              <LinkAction
+                linking={linking}
+                linkFrom={linkFrom}
+                linkFromLabel={linkFrom ? (design.nodes.find((n) => n.id === linkFrom)?.label ?? null) : null}
+                linkableTargets={linkableTargets}
+                nodeCount={design.nodes.length}
+                onToggleLinking={toggleLinking}
+              />
+            }
           />
         </CanvasToolbox>
         {diffBase && delta && (

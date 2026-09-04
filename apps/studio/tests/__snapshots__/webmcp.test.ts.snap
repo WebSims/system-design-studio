@@ -272,6 +272,17 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
               ],
               "type": "string",
             },
+            "contentHash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                },
+                {
+                  "const": "",
+                },
+              ],
+              "default": "",
+            },
             "id": {
               "maxLength": 128,
               "minLength": 1,
@@ -313,6 +324,106 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
               "maxLength": 512,
               "type": "string",
             },
+            "target": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "node",
+                    },
+                    "nodeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "nodeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "edgeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "edge",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "edgeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "collectionId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "collection",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "collectionId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "handler",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "operation",
+                    },
+                    "operationId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                    "operationId",
+                  ],
+                  "type": "object",
+                },
+              ],
+            },
             "targetId": {
               "maxLength": 128,
               "minLength": 1,
@@ -322,12 +433,16 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
               "enum": [
                 "node",
                 "edge",
+                "collection",
+                "handler",
+                "operation",
               ],
               "type": "string",
             },
           },
           "required": [
             "id",
+            "target",
             "targetKind",
             "targetId",
             "confidence",
@@ -695,6 +810,17 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     ],
     "type": "object",
   },
+  "studio_get_grounding_report": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
   "studio_get_implementation_handoff": {
     "additionalProperties": false,
     "properties": {},
@@ -735,6 +861,17 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
                 "assumed",
               ],
               "type": "string",
+            },
+            "contentHash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                },
+                {
+                  "const": "",
+                },
+              ],
+              "default": "",
             },
             "id": {
               "maxLength": 128,
@@ -777,6 +914,106 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
               "maxLength": 512,
               "type": "string",
             },
+            "target": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "node",
+                    },
+                    "nodeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "nodeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "edgeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "edge",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "edgeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "collectionId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "collection",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "collectionId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "handler",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "operation",
+                    },
+                    "operationId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                    "operationId",
+                  ],
+                  "type": "object",
+                },
+              ],
+            },
             "targetId": {
               "maxLength": 128,
               "minLength": 1,
@@ -786,12 +1023,16 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
               "enum": [
                 "node",
                 "edge",
+                "collection",
+                "handler",
+                "operation",
               ],
               "type": "string",
             },
           },
           "required": [
             "id",
+            "target",
             "targetKind",
             "targetId",
             "confidence",
@@ -831,12 +1072,32 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
             "maxLength": 256,
             "type": "string",
           },
+          "changedPaths": {
+            "default": [],
+            "items": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string",
+            },
+            "maxItems": 4096,
+            "type": "array",
+          },
           "dirty": {
             "default": null,
             "type": [
               "boolean",
               "null",
             ],
+          },
+          "excludedScope": {
+            "default": [],
+            "items": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string",
+            },
+            "maxItems": 128,
+            "type": "array",
           },
           "name": {
             "description": "Repository or workspace display name.",
@@ -864,11 +1125,193 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
             "maxItems": 128,
             "type": "array",
           },
+          "workingTreeFingerprint": {
+            "default": "",
+            "maxLength": 256,
+            "type": "string",
+          },
         },
         "required": [
           "name",
         ],
         "type": "object",
+      },
+      "sourceInventory": {
+        "default": [],
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "contentHash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                },
+                {
+                  "const": "",
+                },
+              ],
+              "default": "",
+            },
+            "disposition": {
+              "enum": [
+                "modeled",
+                "excluded",
+                "unresolved",
+              ],
+              "type": "string",
+            },
+            "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "kind": {
+              "enum": [
+                "entrypoint",
+                "work-source",
+                "runtime",
+                "dependency",
+                "queue",
+                "state-store",
+              ],
+              "type": "string",
+            },
+            "label": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string",
+            },
+            "path": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string",
+            },
+            "reason": {
+              "default": "",
+              "maxLength": 2000,
+              "type": "string",
+            },
+            "symbol": {
+              "default": "",
+              "maxLength": 512,
+              "type": "string",
+            },
+            "target": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "node",
+                    },
+                    "nodeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "nodeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "edgeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "edge",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "edgeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "collectionId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "collection",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "collectionId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "handler",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "operation",
+                    },
+                    "operationId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                    "operationId",
+                  ],
+                  "type": "object",
+                },
+              ],
+              "default": null,
+              "type": [
+                "null",
+              ],
+            },
+          },
+          "required": [
+            "id",
+            "kind",
+            "label",
+            "path",
+            "disposition",
+          ],
+          "type": "object",
+        },
+        "maxItems": 4096,
+        "type": "array",
       },
     },
     "required": [
@@ -970,6 +1413,203 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "type": "string",
       },
     },
+    "type": "object",
+  },
+  "studio_upsert_source_inventory": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "expectedRevision": {
+        "minimum": 0,
+        "type": "integer",
+      },
+      "items": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "contentHash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                },
+                {
+                  "const": "",
+                },
+              ],
+              "default": "",
+            },
+            "disposition": {
+              "enum": [
+                "modeled",
+                "excluded",
+                "unresolved",
+              ],
+              "type": "string",
+            },
+            "id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "kind": {
+              "enum": [
+                "entrypoint",
+                "work-source",
+                "runtime",
+                "dependency",
+                "queue",
+                "state-store",
+              ],
+              "type": "string",
+            },
+            "label": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string",
+            },
+            "path": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string",
+            },
+            "reason": {
+              "default": "",
+              "maxLength": 2000,
+              "type": "string",
+            },
+            "symbol": {
+              "default": "",
+              "maxLength": 512,
+              "type": "string",
+            },
+            "target": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "node",
+                    },
+                    "nodeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "nodeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "edgeId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "edge",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "edgeId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "collectionId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "collection",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "collectionId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "handler",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "handlerId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "kind": {
+                      "const": "operation",
+                    },
+                    "operationId": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "kind",
+                    "handlerId",
+                    "operationId",
+                  ],
+                  "type": "object",
+                },
+              ],
+              "default": null,
+              "type": [
+                "null",
+              ],
+            },
+          },
+          "required": [
+            "id",
+            "kind",
+            "label",
+            "path",
+            "disposition",
+          ],
+          "type": "object",
+        },
+        "maxItems": 256,
+        "minItems": 1,
+        "type": "array",
+      },
+    },
+    "required": [
+      "candidateId",
+      "expectedRevision",
+      "items",
+    ],
     "type": "object",
   },
   "studio_validate_draft": {
