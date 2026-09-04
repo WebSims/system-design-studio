@@ -764,6 +764,41 @@ export const CandidateIssuePlanSchema = z
   .strict();
 export type CandidateIssuePlan = z.infer<typeof CandidateIssuePlanSchema>;
 
+// ---------------------------------------------------------------------------
+// canvas-only objects
+// ---------------------------------------------------------------------------
+
+/**
+ * Presentation objects live with a candidate but outside its executable design.
+ *
+ * They are deliberately absent from `Design`: frames and prose should survive a
+ * save/export, but must not affect simulation hashes, grounding coverage, approval
+ * evidence, or worker input. Freehand strokes and images are intentionally not part
+ * of this union.
+ */
+const CanvasObjectBoundsSchema = z.object({
+  id: z.string().min(1).max(128),
+  x: z.number().finite(),
+  y: z.number().finite(),
+  width: z.number().positive().max(10_000),
+  height: z.number().positive().max(10_000),
+});
+
+export const CanvasObjectSchema = z.discriminatedUnion("kind", [
+  CanvasObjectBoundsSchema.extend({
+    kind: z.literal("frame"),
+    title: z.string().max(256).default("System boundary"),
+    tone: z.enum(["neutral", "info", "warn"]).default("neutral"),
+  }).strict(),
+  CanvasObjectBoundsSchema.extend({
+    kind: z.literal("text"),
+    text: z.string().max(4000).default("Note"),
+    fontSize: z.number().int().min(10).max(48).default(16),
+    tone: z.enum(["neutral", "info", "warn"]).default("neutral"),
+  }).strict(),
+]);
+export type CanvasObject = z.infer<typeof CanvasObjectSchema>;
+
 export const CandidateSchema = z
   .object({
     id: z.string().min(1).max(64),
@@ -798,6 +833,8 @@ export const CandidateSchema = z
     evidence: z.array(ArchitectureEvidenceSchema).max(4096).default([]),
     /** Present only on a repository-derived baseline. Its status is always derived. */
     grounding: BaselineGroundingSchema.nullable().default(null),
+    /** Persisted editor presentation; excluded from the executable `Design`. */
+    canvasObjects: z.array(CanvasObjectSchema).max(1024).default([]),
     design: DesignSchema,
   })
   .strict()

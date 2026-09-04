@@ -158,6 +158,27 @@ whose label follows the lens, **+ Component**, **Agent** and **Review**.
 
 ## The canvas tools
 
+The command bar makes each edit one transaction. Undo and redo cover component edits,
+links, notes, frames, batch changes, and a whole drag gesture; they never roll repository
+evidence or evaluation receipts backward. Drag a component from **+ Component** or a quick-add
+button to place its centre at the exact canvas point, or click it to use the next free slot.
+Drag empty canvas space for a selection rectangle, and use Cmd/Ctrl or Shift to extend a
+selection. Copy, paste, duplicate, batch delete, align, and distribute act on the selection;
+copies always receive fresh component and link ids and deliberately carry no source evidence.
+
+Frames and text notes are saved with each version but remain presentation objects outside the
+executable design. They cannot receive connections or evidence and do not change simulations,
+evaluation hashes, or approvals. The inspector edits their bounds, text, and a visibly labelled
+neutral/info/warning tone. This is an architecture editor: freehand drawing and image tools are
+intentionally absent.
+
+All canvas commands have keyboard equivalents and visible focus. Cmd/Ctrl-Z and
+Shift-Cmd/Ctrl-Z undo and redo; Cmd/Ctrl-C, V, D, and A copy, paste, duplicate, and select all;
+Delete removes the selection; Escape clears it. Focused React Flow elements can be moved with
+arrow keys, while a general selection uses the same arrows and Shift moves in 10-pixel steps.
+Selection and command results are announced to assistive technology and selected elements carry
+a check mark as well as colour.
+
 One floating pane, **Tools**, holds one row: Find, Route, Upstream and Downstream for
 exploring the topology, and Link for connecting two components. Drag its header to put it
 anywhere on the canvas; it stays inside the canvas edges. Collapse it to a small pill; `/`

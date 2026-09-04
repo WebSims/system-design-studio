@@ -179,7 +179,10 @@ function AskAgent() {
     candidateId: active?.id ?? null,
     candidateLabel: active?.label ?? null,
     candidateRevision: active?.revision ?? null,
-    selected: selection && selectedLabel ? { kind: selection.kind, id: selection.id, label: selectedLabel } : null,
+    selected:
+      selection && selection.kind !== "canvas" && selectedLabel
+        ? { kind: selection.kind, id: selection.id, label: selectedLabel }
+        : null,
     breaks:
       ce && invariant
         ? `rule "${invariant.label}" is broken after ${ce.steps.length} steps${

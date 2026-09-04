@@ -326,6 +326,7 @@ export function StudioNode({ id, selected, data }: NodeProps) {
 
       <div className="node-head">
         <span className="node-label">{node.label}</span>
+        {selected && <span className="node-selected-marker" aria-hidden="true">✓</span>}
         {evidence.noteCount ? (
           <button
             className={`node-note note-${evidence.noteTone ?? "info"}`}

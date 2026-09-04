@@ -22,6 +22,7 @@ import { KindTile, Palette } from "./Palette"
 import { ProjectMenu } from "./ProjectMenu"
 import { ORDERED_PRESETS } from "./presetGroups"
 import { useAddPreset } from "./useAddPreset"
+import { CANVAS_PRESET_MIME } from "../canvas/editing"
 
 const LENSES: Array<{ id: LensId; label: string; hint: string; icon: IconComponent }> = [
   { id: "behaviour", label: "Behaviour", hint: "Does it break? A few requests, every order they can run in.", icon: BranchIcon },
@@ -183,6 +184,12 @@ const QuickInsert = () => {
           className="tool-btn icon-only"
           aria-label={`Add ${preset.label}`}
           title={`${preset.label}\n${preset.blurb}`}
+          draggable
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "copy"
+            event.dataTransfer.setData(CANVAS_PRESET_MIME, preset.id)
+            event.dataTransfer.setData("text/plain", preset.id)
+          }}
           onClick={(e) => {
             e.stopPropagation()
             add(preset.id)

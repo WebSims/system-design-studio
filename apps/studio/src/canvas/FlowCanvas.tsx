@@ -6,17 +6,18 @@ import {
   Panel,
   ReactFlow,
   ReactFlowProvider,
-  applyNodeChanges,
   getViewportForBounds,
+  SelectionMode,
   useReactFlow,
   useStore,
   type Edge,
   type Node,
   type NodeChange,
+  type OnNodeDrag,
   type OnConnect,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   EdgeSchema,
   performanceCalibration,
@@ -37,8 +38,13 @@ import { useStudyStore, type Annotation } from "../study/store";
 import { compareDesignTopology, type DesignDelta } from "../topology";
 import { TopologyTools, type TopologyExploration } from "./TopologyExplorer";
 import { CanvasToolbox, LinkAction, MinimapChrome, useCanvasToolboxPrefs } from "./CanvasToolbox";
+import { CanvasObjectNode, canvasFlowId, canvasObjectId } from "./CanvasObjects";
+import { CanvasEditingToolbar } from "./CanvasEditingToolbar";
+import { useAddPreset } from "../chrome/useAddPreset";
+import { CANVAS_PRESET_MIME } from "./editing";
 
 const edgeTypes = { pipe: PipeEdge };
+const allNodeTypes = { ...nodeTypes, canvasObject: CanvasObjectNode };
 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
@@ -150,14 +156,28 @@ function useFocusRequests(design: Design) {
 function Canvas() {
   const design = useStudio((s) => s.design);
   const selection = useStudio((s) => s.selection);
+  const canvasSelection = useStudio((s) => s.canvasSelection);
+  const canvasObjects = useStudio((s) => s.canvasObjects);
+  const canvasAnnouncement = useStudio((s) => s.canvasAnnouncement);
   const trace = useStudio((s) =>
     s.runStale ? null : (s.session?.trace ?? s.run?.trace ?? null)
   );
   const sessionMode = useStudio((s) => s.sessionMode);
   const injectRequest = useStudio((s) => s.injectRequest);
-  const moveNode = useStudio((s) => s.moveNode);
   const select = useStudio((s) => s.select);
+  const selectMany = useStudio((s) => s.selectMany);
   const edit = useStudio((s) => s.edit);
+  const editWorkspace = useStudio((s) => s.editWorkspace);
+  const undo = useStudio((s) => s.undo);
+  const redo = useStudio((s) => s.redo);
+  const copySelection = useStudio((s) => s.copySelection);
+  const pasteSelection = useStudio((s) => s.pasteSelection);
+  const duplicateSelection = useStudio((s) => s.duplicateSelection);
+  const deleteSelection = useStudio((s) => s.deleteSelection);
+  const nudgeSelection = useStudio((s) => s.nudgeSelection);
+  const selectAll = useStudio((s) => s.selectAll);
+  const addPreset = useAddPreset();
+  const { screenToFlowPosition } = useReactFlow();
   const study = useStudyStore((s) => s.study);
   const lens = useStudyStore((s) => s.lens);
   const annotations = useStudyStore((s) => s.annotations);
@@ -171,6 +191,9 @@ function Canvas() {
   );
   const touchedNodeIds = useMemo(() => new Set(attention?.nodeIds ?? []), [attention]);
   const touchedEdgeIds = useMemo(() => new Set(attention?.edgeIds ?? []), [attention]);
+  const selectedNodeIds = useMemo(() => new Set(canvasSelection.nodeIds), [canvasSelection.nodeIds]);
+  const selectedEdgeIds = useMemo(() => new Set(canvasSelection.edgeIds), [canvasSelection.edgeIds]);
+  const selectedObjectIds = useMemo(() => new Set(canvasSelection.objectIds), [canvasSelection.objectIds]);
   const primaryTouch = attention?.primary ?? null;
   const activeCandidate =
     study.candidates.find((candidate) => candidate.id === activeCandidateId) ?? study.candidates[0];
@@ -318,7 +341,7 @@ function Canvas() {
           noteCount: notesByTarget.get(`node:${n.id}`)?.length ?? 0,
           noteTone: noteTone(notesByTarget.get(`node:${n.id}`) ?? []),
         },
-        selected: selection?.kind === "node" && selection.id === n.id,
+        selected: selectedNodeIds.has(n.id),
         className: [
           exploration ? (highlightedNodeIds.has(n.id) ? "topology-match" : "topology-muted") : "",
           exploration && n.id === explorationOrigin ? "topology-origin" : "",
@@ -342,7 +365,7 @@ function Canvas() {
       linkFrom,
       notesByTarget,
       primaryTouch,
-      selection,
+      selectedNodeIds,
       study.repositorySnapshots.length,
       touchedNodeIds,
       uncalibratedTargets,
@@ -356,7 +379,7 @@ function Canvas() {
         source: e.from,
         target: e.to,
         type: "pipe",
-        selected: selection?.kind === "edge" && selection.id === e.id,
+        selected: selectedEdgeIds.has(e.id),
         className:
           [
             exploration ? (highlightedEdgeIds.has(e.id) ? "topology-match" : "topology-muted") : "",
@@ -387,29 +410,132 @@ function Canvas() {
       exploration,
       highlightedEdgeIds,
       primaryTouch,
-      selection,
+      selectedEdgeIds,
       study.repositorySnapshots.length,
       touchedEdgeIds,
       uncalibratedTargets,
     ]
   );
 
-  const allNodes = useMemo(() => (ghostNodes.length ? [...nodes, ...ghostNodes] : nodes), [ghostNodes, nodes]);
+  const objectNodes = useMemo<Node[]>(
+    () =>
+      [...canvasObjects]
+        .sort((first, second) => (first.kind === second.kind ? 0 : first.kind === "frame" ? -1 : 1))
+        .map((object) => ({
+          id: canvasFlowId(object.id),
+          type: "canvasObject",
+          position: { x: object.x, y: object.y },
+          width: object.width,
+          height: object.height,
+          style: { width: object.width, height: object.height },
+          data: { object },
+          selected: selectedObjectIds.has(object.id),
+          connectable: false,
+          zIndex: object.kind === "frame" ? -10 : 2,
+          ariaLabel:
+            object.kind === "frame"
+              ? `Frame: ${object.title || "Untitled frame"}`
+              : `Text note: ${object.text || "Empty note"}`,
+          className: `canvas-object-node canvas-${object.kind}-node`,
+        })),
+    [canvasObjects, selectedObjectIds]
+  );
+  /**
+   * Drag positions stay local until pointer-up, then become one document edit and one
+   * undo step. Persisting every pointermove would create dozens of revisions per drag.
+   */
+  const dragPositionsRef = useRef(new Map<string, { x: number; y: number }>());
+  const pointerDragActiveRef = useRef(false);
+  const [dragPositions, setDragPositions] = useState(new Map<string, { x: number; y: number }>());
+  useEffect(() => {
+    dragPositionsRef.current = new Map();
+    setDragPositions(new Map());
+  }, [design.nodes, canvasObjects]);
+  const positionedNodes = useMemo(
+    () =>
+      [...objectNodes, ...nodes].map((node) => ({
+        ...node,
+        position: dragPositions.get(node.id) ?? node.position,
+      })),
+    [dragPositions, nodes, objectNodes]
+  );
+  const allNodes = useMemo(
+    () => (ghostNodes.length ? [...positionedNodes, ...ghostNodes] : positionedNodes),
+    [ghostNodes, positionedNodes]
+  );
   const allEdges = useMemo(() => (ghostEdges.length ? [...edges, ...ghostEdges] : edges), [edges, ghostEdges]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      // Only positions are written back; React Flow's other change kinds concern
-      // its own view state, which the design has no business storing.
-      const next = applyNodeChanges(changes, nodes);
+      const next = new Map(dragPositionsRef.current);
+      let changed = false;
       for (const change of changes) {
         if (change.type === "position" && change.position) {
-          moveNode(change.id, change.position.x, change.position.y);
+          next.set(change.id, change.position);
+          changed = true;
         }
       }
-      void next;
+      if (!changed) return;
+      if (!pointerDragActiveRef.current) {
+        editWorkspace((workspace) => {
+          for (const [flowId, position] of next) {
+            const objectId = canvasObjectId(flowId);
+            if (objectId) {
+              const object = workspace.objects.find((item) => item.id === objectId);
+              if (object) {
+                object.x = Math.round(position.x);
+                object.y = Math.round(position.y);
+              }
+              continue;
+            }
+            const component = workspace.design.nodes.find((item) => item.id === flowId);
+            if (component) {
+              component.x = Math.round(position.x);
+              component.y = Math.round(position.y);
+            }
+          }
+        }, `Moved ${next.size} element${next.size === 1 ? "" : "s"}.`);
+        return;
+      }
+      dragPositionsRef.current = next;
+      setDragPositions(next);
     },
-    [nodes, moveNode]
+    [editWorkspace]
+  );
+
+  const onNodeDragStart = useCallback(() => {
+    pointerDragActiveRef.current = true;
+    dragPositionsRef.current = new Map();
+    setDragPositions(new Map());
+  }, []);
+
+  const onNodeDragStop = useCallback<OnNodeDrag>(
+    (_event, node) => {
+      const positions = new Map(dragPositionsRef.current);
+      positions.set(node.id, node.position);
+      editWorkspace((workspace) => {
+        for (const [flowId, position] of positions) {
+          const objectId = canvasObjectId(flowId);
+          if (objectId) {
+            const object = workspace.objects.find((item) => item.id === objectId);
+            if (object) {
+              object.x = Math.round(position.x);
+              object.y = Math.round(position.y);
+            }
+            continue;
+          }
+          const component = workspace.design.nodes.find((item) => item.id === flowId);
+          if (component) {
+            component.x = Math.round(position.x);
+            component.y = Math.round(position.y);
+          }
+        }
+      }, `Moved ${positions.size} element${positions.size === 1 ? "" : "s"}.`);
+      pointerDragActiveRef.current = false;
+      dragPositionsRef.current = new Map();
+      setDragPositions(new Map());
+    },
+    [editWorkspace]
   );
 
   const onConnect = useCallback<OnConnect>(
@@ -429,8 +555,8 @@ function Canvas() {
     (_event: React.MouseEvent, node: Node) => {
       // Ghosts belong to the other version; there is nothing to select or link.
       if (node.type === "ghost") return;
+      if (canvasObjectId(node.id)) return;
       if (!linking) {
-        select({ kind: "node", id: node.id });
         if (lens === "load" && sessionMode === "manual" && node.type === "client") {
           void injectRequest(node.id);
         }
@@ -464,9 +590,25 @@ function Canvas() {
     return () => window.removeEventListener("keydown", onKey);
   }, [linking]);
 
-  const onEdgeClick = useCallback(
-    (_event: React.MouseEvent, edge: Edge) => select({ kind: "edge", id: edge.id }),
-    [select]
+  const onSelectionChange = useCallback(
+    ({ nodes: selectedNodes, edges: selectedEdges }: { nodes: Node[]; edges: Edge[] }) => {
+      const nodeIds: string[] = [];
+      const objectIds: string[] = [];
+      for (const node of selectedNodes) {
+        const objectId = canvasObjectId(node.id);
+        if (objectId) objectIds.push(objectId);
+        else if (node.type !== "ghost") nodeIds.push(node.id);
+      }
+      const next = {
+        nodeIds,
+        objectIds,
+        edgeIds: selectedEdges
+          .filter((edge) => !edge.id.startsWith("ghost:"))
+          .map((edge) => edge.id),
+      };
+      selectMany(next);
+    },
+    [selectMany]
   );
 
   const onPaneClick = useCallback(() => {
@@ -475,20 +617,123 @@ function Canvas() {
   }, [select]);
   const onSelectNode = useCallback((id: string) => select({ kind: "node", id }), [select]);
 
+  const onDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes(CANVAS_PRESET_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const onDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const presetId = event.dataTransfer.getData(CANVAS_PRESET_MIME);
+      if (!presetId) return;
+      event.preventDefault();
+      const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      addPreset(presetId, {
+        x: point.x - NODE_WIDTH / 2,
+        y: point.y - NODE_HEIGHT / 2,
+      });
+    },
+    [addPreset, screenToFlowPosition]
+  );
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        target?.matches("input, textarea, select") || target?.isContentEditable === true;
+      if (typing) return;
+      const command = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (command && key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (command && key === "y") {
+        event.preventDefault();
+        redo();
+        return;
+      }
+      if (command && key === "c") {
+        event.preventDefault();
+        copySelection();
+        return;
+      }
+      if (command && key === "v") {
+        event.preventDefault();
+        pasteSelection();
+        return;
+      }
+      if (command && key === "d") {
+        event.preventDefault();
+        duplicateSelection();
+        return;
+      }
+      if (command && key === "a") {
+        event.preventDefault();
+        selectAll();
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        deleteSelection();
+        return;
+      }
+      if (event.key === "Escape") {
+        select(null);
+        return;
+      }
+      const step = event.shiftKey ? 10 : 1;
+      const delta: [number, number] | null =
+        event.key === "ArrowLeft"
+          ? [-step, 0]
+          : event.key === "ArrowRight"
+            ? [step, 0]
+            : event.key === "ArrowUp"
+              ? [0, -step]
+              : event.key === "ArrowDown"
+                ? [0, step]
+                : null;
+      if (delta) {
+        event.preventDefault();
+        // Capture before React Flow's built-in 1/4px key handler so every focus location
+        // uses the Studio's documented 1/10px movement contract.
+        if (target?.closest(".react-flow__node")) event.stopPropagation();
+        nudgeSelection(delta[0], delta[1]);
+      }
+    };
+    window.addEventListener("keydown", onShortcut, true);
+    return () => window.removeEventListener("keydown", onShortcut, true);
+  }, [copySelection, deleteSelection, duplicateSelection, nudgeSelection, pasteSelection, redo, select, selectAll, undo]);
+
   const linkableTargets = design.nodes.filter((n) => n.kind !== "client").length;
 
   return (
-    <div className={`canvas-wrap ${linking ? "linking" : ""}`}>
+    <div
+      className={`canvas-wrap ${linking ? "linking" : ""}`}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <ReactFlow
         nodes={allNodes}
         edges={allEdges}
-        nodeTypes={nodeTypes}
+        nodeTypes={allNodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
+        onNodeDragStart={onNodeDragStart}
+        onNodeDragStop={onNodeDragStop}
         onConnect={onConnect}
         onNodeClick={onNodeClick}
-        onEdgeClick={onEdgeClick}
+        onSelectionChange={onSelectionChange}
         onPaneClick={onPaneClick}
+        selectionOnDrag
+        selectionMode={SelectionMode.Partial}
+        panOnDrag={[1, 2]}
+        multiSelectionKeyCode={["Meta", "Control", "Shift"]}
+        elevateNodesOnSelect={false}
+        deleteKeyCode={null}
         fitView
         fitViewOptions={{ padding: FIT_PADDING, maxZoom: FIT_MAX_ZOOM }}
         minZoom={MIN_ZOOM}
@@ -518,6 +763,7 @@ function Canvas() {
         )}
         <MinimapChrome shown={toolbox.minimap} onToggle={() => setToolbox({ minimap: !toolbox.minimap })} />
         <Controls showInteractive={false} />
+        <CanvasEditingToolbar />
         <CanvasToolbox prefs={toolbox} onPrefs={setToolbox} linking={linking}>
           <TopologyTools
             key={`${activeCandidateId ?? "none"}:${topologyFingerprint}`}
@@ -558,6 +804,9 @@ function Canvas() {
         )}
         {lens === "load" ? <PacketLayer design={design} trace={trace} /> : <RaceLayer />}
       </ReactFlow>
+      <p className="sr-only" role="status" aria-live="polite">
+        {canvasAnnouncement}
+      </p>
     </div>
   );
 }

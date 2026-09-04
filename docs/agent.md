@@ -69,6 +69,11 @@ inspector with a strip naming the fields that were set, and pulses it for a mome
 a call is in flight the Agent button in the top bar says so. `studio_focus` is therefore
 for pointing at something the agent did *not* just change.
 
+Human-authored frames and text notes are candidate-scoped presentation, not agent architecture.
+They are persisted outside `Design`, excluded from hashes, evidence, evaluations, simulation,
+and implementation handoff, and are not accepted as grounding evidence. Copying a repository-
+derived component on the canvas creates a new id without copying its evidence association.
+
 ## The repository loop
 
 The seven steps below are the one order every hint follows. `apps/studio/src/study/steps.ts`

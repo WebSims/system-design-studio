@@ -5,7 +5,7 @@ import { useStudio } from "../store"
 import { nextNodePosition } from "../canvas/layout"
 
 /**
- * Drop a preset onto the canvas, in the next free grid slot, and select it.
+ * Add a preset at an exact drop coordinate, or in the next free grid slot, and select it.
  *
  * Every preset is assembled from the cited benchmark library, so the new node starts at a defensible
  * number with visible provenance rather than at a placeholder. Shared by the palette menu and the
@@ -16,20 +16,18 @@ export const useAddPreset = () => {
   const select = useStudio((s) => s.select)
 
   return useCallback(
-    (presetId: string) => {
+    (presetId: string, position?: { x: number; y: number }) => {
       const preset = PRESET_BY_ID[presetId]
       if (!preset) return
+      let addedId: string | null = null
       edit((d) => {
         const id = nextNodeId(preset.kind, d.nodes.map((n) => n.id))
-        const { x, y } = nextNodePosition(d.nodes)
+        const { x, y } = position ?? nextNodePosition(d.nodes)
         d.nodes.push(preset.build(id, x, y))
+        addedId = id
       })
       // Select the new node so the inspector opens on it immediately.
-      setTimeout(() => {
-        const nodes = useStudio.getState().design.nodes
-        const last = nodes[nodes.length - 1]
-        if (last) select({ kind: "node", id: last.id })
-      }, 0)
+      if (addedId) select({ kind: "node", id: addedId })
     },
     [edit, select]
   )

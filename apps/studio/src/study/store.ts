@@ -15,6 +15,7 @@ import {
   studyContractLock,
   type Candidate,
   type CandidateEvaluation,
+  type CanvasObject,
   type Design,
   type DesignIssue,
   type PortfolioResult,
@@ -52,6 +53,7 @@ import {
   createCandidate,
   createCandidateAlternatives,
   deleteCandidate,
+  editActiveCanvasObjects,
   editActiveDesign,
   importRepositoryArchitecture,
   promoteCandidate,
@@ -261,6 +263,10 @@ export interface StudioState {
   exportStudyJson(): string;
   updateStudy(mutate: (study: Study) => Study): void;
   editActive(mutate: (design: Design) => Design): void;
+  /** Edit persisted, non-executable frames and text without bumping architecture revision. */
+  editActiveCanvas(mutate: (objects: CanvasObject[]) => CanvasObject[]): void;
+  /** Restore design and presentation as one architecture-changing history transaction. */
+  restoreActiveWorkspace(design: Design, objects: CanvasObject[]): void;
 
   // ---- candidates ----
   addCandidate(input: CreateCandidateInput): Candidate;
@@ -669,6 +675,24 @@ export const useStudyStore = create<StudioState>((set, get) => {
       // A topology edit invalidates every portfolio claim derived from the previous revision.
       // Do not recompute here: node drags and inspector inputs can produce dozens of edits per
       // second. The compare view keeps an explicit refresh action for that boundary.
+      set({ portfolio: null });
+    },
+
+    editActiveCanvas: (mutate) => {
+      commit(editActiveCanvasObjects(get().study, mutate));
+    },
+
+    restoreActiveWorkspace: (design, objects) => {
+      const study = get().study;
+      commit(
+        editActiveDesign(study, (candidate) =>
+          syncCandidateToStudy(study, {
+            ...candidate,
+            design,
+            canvasObjects: objects,
+          })
+        )
+      );
       set({ portfolio: null });
     },
 

@@ -60,7 +60,7 @@ export function PipeEdge({
       <BaseEdge id={id} path={path} className={`pipe-core ${selected ? "selected" : ""}`} />
       <EdgeLabelRenderer>
         <div
-          className={`edge-chip edge-latency-${inputState} ${topology ? `topology-${topology}` : ""}`}
+          className={`edge-chip edge-latency-${inputState} ${selected ? "selected" : ""} ${topology ? `topology-${topology}` : ""}`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
           <span
@@ -75,6 +75,7 @@ export function PipeEdge({
           >
             {latencyLabel(latencyMs, inputState)}
           </span>
+          {selected && <span className="edge-selected-marker" aria-hidden="true">✓</span>}
           {edge && roundTripMs > latencyMs * 2 && (
             <span className="edge-network-total tnum" title="Mean request + response network cost">
               {roundTripMs.toFixed(1)}ms RTT

@@ -16,6 +16,7 @@ import {
   validateDesign,
   type Design,
   type DesignIssue,
+  type CanvasObject,
   type FailureEvent,
   type SdsNode,
 } from "@sds/schema";
@@ -41,6 +42,21 @@ import {
   type FullAnalysis,
   type ReplicationSummary,
 } from "./engine/client";
+import {
+  EMPTY_CANVAS_SELECTION,
+  alignWorkspaceSelection,
+  copyWorkspaceSelection,
+  deleteWorkspaceSelection,
+  distributeWorkspaceSelection,
+  geometrySelectionCount,
+  nudgeWorkspaceSelection,
+  pasteWorkspaceSelection,
+  selectionCount,
+  selectionRemovalIds,
+  type CanvasClipboard,
+  type CanvasSelectionState,
+  type CanvasWorkspace,
+} from "./canvas/editing";
 
 /**
  * The DESIGN store: everything about editing and measuring one architecture.
@@ -59,7 +75,15 @@ import {
  * they read `design`, call `edit`, and neither knows a study exists.
  */
 
-export type Selection = { kind: "node"; id: string } | { kind: "edge"; id: string } | null;
+export type Selection =
+  | { kind: "node"; id: string }
+  | { kind: "edge"; id: string }
+  | { kind: "canvas"; id: string }
+  | null;
+
+interface WorkspaceSnapshot extends CanvasWorkspace {
+  candidateId: string;
+}
 
 interface StudioState {
   design: Design;
@@ -95,6 +119,14 @@ interface StudioState {
   comparison: ComparisonSummary | null;
   comparing: boolean;
   selection: Selection;
+  canvasSelection: CanvasSelectionState;
+  canvasObjects: CanvasObject[];
+  historyPast: WorkspaceSnapshot[];
+  historyFuture: WorkspaceSnapshot[];
+  clipboard: CanvasClipboard | null;
+  pasteCount: number;
+  /** Visible and announced feedback for keyboard and batch canvas commands. */
+  canvasAnnouncement: string;
   /** Incremental simulation state. The completed result is also copied into `run`. */
   sessionMode: SimulationMode;
   sessionId: string | null;
@@ -103,8 +135,22 @@ interface StudioState {
   enabledSourceIds: string[];
 
   select: (s: Selection) => void;
+  selectMany: (selection: CanvasSelectionState, primary?: Selection) => void;
   edit: (fn: (d: Design) => void) => void;
+  editWorkspace: (fn: (workspace: CanvasWorkspace) => void, announcement?: string) => void;
+  editCanvas: (fn: (objects: CanvasObject[]) => void, announcement?: string) => void;
   moveNode: (id: string, x: number, y: number) => void;
+  undo: () => void;
+  redo: () => void;
+  copySelection: () => void;
+  pasteSelection: () => void;
+  duplicateSelection: () => void;
+  deleteSelection: () => void;
+  alignSelection: (edge: "left" | "top") => void;
+  distributeSelection: (axis: "horizontal" | "vertical") => void;
+  nudgeSelection: (dx: number, dy: number) => void;
+  selectAll: () => void;
+  insertCanvasObject: (kind: CanvasObject["kind"], x: number, y: number) => void;
   loadDesign: (design: Design) => void;
   execute: () => Promise<void>;
   startSession: (mode?: SimulationMode) => Promise<void>;
@@ -167,11 +213,13 @@ function recompute(design: Design): { preview: DesignPreview; issues: DesignIssu
 }
 
 /** The active candidate's design, or an empty one while a study is still loading. */
-function activeDesign(): Design {
+function activeCandidate() {
   const study = useStudyStore.getState().study;
-  const active =
-    study.candidates.find((c) => c.id === study.activeCandidateId) ?? study.candidates[0];
-  return active ? active.design : blankDesign();
+  return study.candidates.find((c) => c.id === study.activeCandidateId) ?? study.candidates[0];
+}
+
+function activeDesign(): Design {
+  return activeCandidate()?.design ?? blankDesign();
 }
 
 /** Refuse numeric results for a repository reconstruction whose timing inputs are still guesses. */
@@ -193,8 +241,115 @@ function performanceCalibrationError(): string | null {
  * every call site in the inspector is written against -- while the study store takes a pure
  * function. Converting at the boundary keeps two thousand lines of inspector code unchanged.
  */
-function forwardEdit(fn: (d: Design) => void): void {
-  useStudyStore.getState().editActive((design) => produce(design, fn));
+let localWorkspaceMutation = 0;
+
+function locally(mutator: () => void): void {
+  localWorkspaceMutation += 1;
+  try {
+    mutator();
+  } finally {
+    localWorkspaceMutation -= 1;
+  }
+}
+
+function forwardDesign(design: Design, objects: CanvasObject[]): void {
+  locally(() => useStudyStore.getState().restoreActiveWorkspace(design, objects));
+}
+
+function forwardCanvas(objects: CanvasObject[]): void {
+  locally(() => useStudyStore.getState().editActiveCanvas(() => objects));
+}
+
+const cloneWorkspace = <T>(value: T): T => structuredClone(value);
+
+function currentWorkspaceSnapshot(): WorkspaceSnapshot | null {
+  const state = useStudio.getState();
+  const candidateId = useStudyStore.getState().study.activeCandidateId;
+  if (!candidateId) return null;
+  return {
+    candidateId,
+    design: cloneWorkspace(state.design),
+    objects: cloneWorkspace(state.canvasObjects),
+  };
+}
+
+function workspaceContent(snapshot: Pick<WorkspaceSnapshot, "design" | "objects">): string {
+  return JSON.stringify([snapshot.design, snapshot.objects]);
+}
+
+const HISTORY_LIMIT = 100;
+
+/** Commit one atomic canvas transaction and optionally put its previous state on history. */
+function commitWorkspace(
+  next: CanvasWorkspace,
+  options: { record?: boolean; announcement?: string } = {}
+): boolean {
+  const before = currentWorkspaceSnapshot();
+  if (!before || workspaceContent(before) === workspaceContent(next)) return false;
+  const designChanged = JSON.stringify(before.design) !== JSON.stringify(next.design);
+  const executableChanged = designChanged && executableDesignChanged(before.design, next.design);
+
+  if (designChanged) forwardDesign(next.design, next.objects);
+  else forwardCanvas(next.objects);
+
+  const state = useStudio.getState();
+  useStudio.setState({
+    ...(options.record === false
+      ? {}
+      : {
+          historyPast: [...state.historyPast, before].slice(-HISTORY_LIMIT),
+          historyFuture: [],
+        }),
+    ...(executableChanged
+      ? {
+          runStale: state.run !== null,
+          analysisStale: state.analysis !== null,
+          replication: null,
+          comparison: null,
+        }
+      : {}),
+    ...(options.announcement ? { canvasAnnouncement: options.announcement } : {}),
+  });
+  return true;
+}
+
+function primaryFor(selection: CanvasSelectionState): Selection {
+  const canvasId = selection.objectIds.at(-1);
+  if (canvasId) return { kind: "canvas", id: canvasId };
+  const nodeId = selection.nodeIds.at(-1);
+  if (nodeId) return { kind: "node", id: nodeId };
+  const edgeId = selection.edgeIds.at(-1);
+  return edgeId ? { kind: "edge", id: edgeId } : null;
+}
+
+function sameCanvasSelection(
+  first: CanvasSelectionState,
+  second: CanvasSelectionState
+): boolean {
+  const sameIds = (left: readonly string[], right: readonly string[]) =>
+    left.length === right.length && left.every((id, index) => id === right[index]);
+  return (
+    sameIds(first.nodeIds, second.nodeIds) &&
+    sameIds(first.edgeIds, second.edgeIds) &&
+    sameIds(first.objectIds, second.objectIds)
+  );
+}
+
+function selectionIsIncluded(selection: CanvasSelectionState, primary: Selection): boolean {
+  return (
+    primary !== null &&
+    ((primary.kind === "node" && selection.nodeIds.includes(primary.id)) ||
+      (primary.kind === "edge" && selection.edgeIds.includes(primary.id)) ||
+      (primary.kind === "canvas" && selection.objectIds.includes(primary.id)))
+  );
+}
+
+function objectId(kind: CanvasObject["kind"], objects: readonly CanvasObject[]): string {
+  const taken = new Set(objects.map((object) => object.id));
+  for (let index = 1; ; index += 1) {
+    const id = `${kind}-${index}`;
+    if (!taken.has(id)) return id;
+  }
 }
 
 function clientSourceIds(design: Design): string[] {
@@ -239,6 +394,7 @@ function errorMessage(error: unknown): string {
 }
 
 const initial = activeDesign();
+const initialCanvasObjects = activeCandidate()?.canvasObjects ?? [];
 
 export const useStudio = create<StudioState>((set, get) => ({
   design: initial,
@@ -256,26 +412,65 @@ export const useStudio = create<StudioState>((set, get) => ({
   comparison: null,
   comparing: false,
   selection: null,
+  canvasSelection: EMPTY_CANVAS_SELECTION,
+  canvasObjects: initialCanvasObjects,
+  historyPast: [],
+  historyFuture: [],
+  clipboard: null,
+  pasteCount: 0,
+  canvasAnnouncement: "Canvas ready.",
   sessionMode: "full",
   sessionId: null,
   session: null,
   sessionBusy: false,
   enabledSourceIds: clientSourceIds(initial),
 
-  select: (selection) => set({ selection }),
+  select: (selection) =>
+    set({
+      selection,
+      canvasSelection:
+        selection?.kind === "node"
+          ? { nodeIds: [selection.id], edgeIds: [], objectIds: [] }
+          : selection?.kind === "edge"
+            ? { nodeIds: [], edgeIds: [selection.id], objectIds: [] }
+            : selection?.kind === "canvas"
+              ? { nodeIds: [], edgeIds: [], objectIds: [selection.id] }
+              : EMPTY_CANVAS_SELECTION,
+    }),
 
-  edit: (fn) => {
-    forwardEdit(fn);
-    // The subscription below writes `design` and the derived state. What is set here is only the
-    // staleness, because that is knowledge this store has and the study store does not: it is the
-    // one holding the run that just became a measurement of a system that no longer exists.
-    set((state) => ({
-      runStale: state.run !== null,
-      analysisStale: state.analysis !== null,
-      replication: null,
-      comparison: null,
-    }));
+  selectMany: (canvasSelection, primary) =>
+    set((state) => {
+      const preferred = primary ?? state.selection;
+      const selection = selectionIsIncluded(canvasSelection, preferred)
+        ? preferred
+        : primaryFor(canvasSelection);
+      if (
+        sameCanvasSelection(state.canvasSelection, canvasSelection) &&
+        state.selection?.kind === selection?.kind &&
+        state.selection?.id === selection?.id
+      ) {
+        return state;
+      }
+      const count = selectionCount(canvasSelection);
+      return {
+        canvasSelection,
+        selection,
+        canvasAnnouncement: `${count} element${count === 1 ? "" : "s"} selected.`,
+      };
+    }),
+
+  edit: (fn) => get().editWorkspace((workspace) => fn(workspace.design)),
+
+  editWorkspace: (fn, announcement) => {
+    const next = produce(
+      { design: get().design, objects: get().canvasObjects },
+      fn
+    ) as CanvasWorkspace;
+    commitWorkspace(next, { announcement });
   },
+
+  editCanvas: (fn, announcement) =>
+    get().editWorkspace((workspace) => fn(workspace.objects), announcement),
 
   /**
    * Position changes are stored but deliberately do NOT mark the run stale or
@@ -283,8 +478,8 @@ export const useStudio = create<StudioState>((set, get) => ({
    * drag as a model change would flash "stale" over a perfectly valid result.
    */
   moveNode: (id, x, y) => {
-    forwardEdit((d: Design) => {
-      const n = d.nodes.find((m: SdsNode) => m.id === id);
+    get().editWorkspace((workspace) => {
+      const n = workspace.design.nodes.find((m: SdsNode) => m.id === id);
       if (n) {
         n.x = Math.round(x);
         n.y = Math.round(y);
@@ -292,17 +487,213 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
 
-  loadDesign: (d) => {
-    useStudyStore.getState().editActive(() => d);
+  undo: () => {
+    const state = get();
+    const target = state.historyPast.at(-1);
+    const current = currentWorkspaceSnapshot();
+    if (!target || !current) return;
+    if (target.candidateId !== current.candidateId) {
+      set({ historyPast: [], historyFuture: [], canvasAnnouncement: "History cleared after switching versions." });
+      return;
+    }
+    commitWorkspace({ design: cloneWorkspace(target.design), objects: cloneWorkspace(target.objects) }, {
+      record: false,
+      announcement: "Undid the last canvas change.",
+    });
     set({
-      design: d,
-      ...recompute(d),
+      historyPast: state.historyPast.slice(0, -1),
+      historyFuture: [current, ...state.historyFuture].slice(0, HISTORY_LIMIT),
+    });
+  },
+
+  redo: () => {
+    const state = get();
+    const target = state.historyFuture[0];
+    const current = currentWorkspaceSnapshot();
+    if (!target || !current) return;
+    if (target.candidateId !== current.candidateId) {
+      set({ historyPast: [], historyFuture: [], canvasAnnouncement: "History cleared after switching versions." });
+      return;
+    }
+    commitWorkspace({ design: cloneWorkspace(target.design), objects: cloneWorkspace(target.objects) }, {
+      record: false,
+      announcement: "Redid the canvas change.",
+    });
+    set({
+      historyPast: [...state.historyPast, current].slice(-HISTORY_LIMIT),
+      historyFuture: state.historyFuture.slice(1),
+    });
+  },
+
+  copySelection: () => {
+    const clipboard = copyWorkspaceSelection(
+      { design: get().design, objects: get().canvasObjects },
+      get().canvasSelection
+    );
+    set({
+      clipboard,
+      pasteCount: 0,
+      canvasAnnouncement: clipboard
+        ? `Copied ${clipboard.nodes.length + clipboard.objects.length} element${clipboard.nodes.length + clipboard.objects.length === 1 ? "" : "s"}. Repository evidence was not copied.`
+        : "Select at least one component, frame, or text note to copy.",
+    });
+  },
+
+  pasteSelection: () => {
+    const { clipboard, pasteCount, design, canvasObjects } = get();
+    if (!clipboard) {
+      set({ canvasAnnouncement: "Nothing has been copied yet." });
+      return;
+    }
+    const result = pasteWorkspaceSelection(
+      { design, objects: canvasObjects },
+      clipboard,
+      32 * (pasteCount + 1)
+    );
+    if (!commitWorkspace(result.workspace, { announcement: "Pasted with fresh IDs and no evidence associations." })) return;
+    set({
+      canvasSelection: result.selection,
+      selection: primaryFor(result.selection),
+      pasteCount: pasteCount + 1,
+    });
+  },
+
+  duplicateSelection: () => {
+    const clipboard = copyWorkspaceSelection(
+      { design: get().design, objects: get().canvasObjects },
+      get().canvasSelection
+    );
+    if (!clipboard) {
+      set({ canvasAnnouncement: "Select at least one component, frame, or text note to duplicate." });
+      return;
+    }
+    const result = pasteWorkspaceSelection(
+      { design: get().design, objects: get().canvasObjects },
+      clipboard,
+      32
+    );
+    if (!commitWorkspace(result.workspace, { announcement: "Duplicated with fresh IDs and no evidence associations." })) return;
+    set({
+      clipboard,
+      pasteCount: 1,
+      canvasSelection: result.selection,
+      selection: primaryFor(result.selection),
+    });
+  },
+
+  deleteSelection: () => {
+    const workspace = { design: get().design, objects: get().canvasObjects };
+    const selection = get().canvasSelection;
+    if (selectionCount(selection) === 0) return;
+    const removal = selectionRemovalIds(workspace, selection);
+    const candidate = activeCandidate();
+    const protectedEvidence = (candidate?.evidence ?? []).filter((evidence) => {
+      const target = evidence.target;
+      return (
+        (target.kind === "node" && removal.nodeIds.has(target.nodeId)) ||
+        (target.kind === "edge" && removal.edgeIds.has(target.edgeId))
+      );
+    });
+    if (protectedEvidence.length > 0) {
+      set({
+        canvasAnnouncement:
+          `Delete blocked: ${protectedEvidence.length} source evidence record${protectedEvidence.length === 1 ? "" : "s"} ` +
+          "would be orphaned. Detach or revise that evidence first.",
+      });
+      return;
+    }
+    const next = deleteWorkspaceSelection(workspace, selection);
+    if (!commitWorkspace(next, { announcement: `Deleted ${selectionCount(selection)} selected element${selectionCount(selection) === 1 ? "" : "s"}.` })) return;
+    set({ selection: null, canvasSelection: EMPTY_CANVAS_SELECTION });
+  },
+
+  alignSelection: (edge) => {
+    const selection = get().canvasSelection;
+    if (geometrySelectionCount(selection) < 2) return;
+    commitWorkspace(
+      alignWorkspaceSelection({ design: get().design, objects: get().canvasObjects }, selection, edge),
+      { announcement: edge === "left" ? "Aligned selection left." : "Aligned selection to the top." }
+    );
+  },
+
+  distributeSelection: (axis) => {
+    const selection = get().canvasSelection;
+    if (geometrySelectionCount(selection) < 3) return;
+    commitWorkspace(
+      distributeWorkspaceSelection(
+        { design: get().design, objects: get().canvasObjects },
+        selection,
+        axis
+      ),
+      { announcement: `Distributed selection ${axis === "horizontal" ? "horizontally" : "vertically"}.` }
+    );
+  },
+
+  nudgeSelection: (dx, dy) => {
+    const selection = get().canvasSelection;
+    if (geometrySelectionCount(selection) === 0) return;
+    commitWorkspace(
+      nudgeWorkspaceSelection(
+        { design: get().design, objects: get().canvasObjects },
+        selection,
+        dx,
+        dy
+      ),
+      { announcement: `Moved selection ${Math.abs(dx || dy)} pixels.` }
+    );
+  },
+
+  selectAll: () => {
+    const canvasSelection = {
+      nodeIds: get().design.nodes.map((node) => node.id),
+      edgeIds: get().design.edges.map((edge) => edge.id),
+      objectIds: get().canvasObjects.map((object) => object.id),
+    };
+    get().selectMany(canvasSelection);
+  },
+
+  insertCanvasObject: (kind, x, y) => {
+    const id = objectId(kind, get().canvasObjects);
+    const object: CanvasObject =
+      kind === "frame"
+        ? {
+            id,
+            kind,
+            x: Math.round(x),
+            y: Math.round(y),
+            width: 600,
+            height: 320,
+            title: "System boundary",
+            tone: "neutral",
+          }
+        : {
+            id,
+            kind,
+            x: Math.round(x),
+            y: Math.round(y),
+            width: 260,
+            height: 96,
+            text: "Describe this part of the architecture",
+            fontSize: 16,
+            tone: "neutral",
+          };
+    get().editCanvas((objects) => void objects.push(object), `Added ${kind === "frame" ? "a frame" : "a text note"}.`);
+    get().select({ kind: "canvas", id });
+  },
+
+  loadDesign: (d) => {
+    commitWorkspace(
+      { design: d, objects: get().canvasObjects },
+      { announcement: "Applied the analyzed architecture as one undoable change." }
+    );
+    set({
       run: null,
       runStale: false,
       analysis: null,
       analysisStale: false,
       error: null,
       selection: null,
+      canvasSelection: EMPTY_CANVAS_SELECTION,
       sessionId: null,
       session: null,
       sessionBusy: false,
@@ -604,16 +995,18 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   importDesign: (json) => {
     const d = migrateAndParse(JSON.parse(json));
-    useStudyStore.getState().editActive(() => d);
+    commitWorkspace(
+      { design: d, objects: get().canvasObjects },
+      { announcement: "Imported the design as one undoable change." }
+    );
     set({
-      design: d,
-      ...recompute(d),
       run: null,
       runStale: false,
       analysis: null,
       analysisStale: false,
       error: null,
       selection: null,
+      canvasSelection: EMPTY_CANVAS_SELECTION,
       sessionId: null,
       session: null,
       sessionBusy: false,
@@ -625,7 +1018,7 @@ export const useStudio = create<StudioState>((set, get) => ({
 }));
 
 /**
- * Mirror the active candidate's design into this store.
+ * Mirror the active candidate's executable design and canvas presentation into this store.
  *
  * A single subscription, running in one direction. `moveNode` deliberately reaches here too even
  * though geometry has no model effect: recomputing a preview on a drag costs microseconds, and the
@@ -641,9 +1034,11 @@ useStudyStore.subscribe((state, previous) => {
     previous.study.candidates.find((c) => c.id === previous.study.activeCandidateId) ??
     previous.study.candidates[0];
 
-  if (previousActive && previousActive.design === active.design) return;
-
   const switchedCandidate = previousActive?.id !== active.id;
+  const designChanged = !previousActive || previousActive.design !== active.design;
+  const canvasChanged = !previousActive || previousActive.canvasObjects !== active.canvasObjects;
+  if (!switchedCandidate && !designChanged && !canvasChanged) return;
+
   const executableChanged =
     switchedCandidate ||
     !previousActive ||
@@ -662,10 +1057,35 @@ useStudyStore.subscribe((state, previous) => {
     : availableSources.filter(
         (id) => currentlyEnabled.has(id) || !previousSources.includes(id)
       );
+  const currentStudio = useStudio.getState();
+  const nodeIds = new Set(active.design.nodes.map((node) => node.id));
+  const edgeIds = new Set(active.design.edges.map((edge) => edge.id));
+  const objectIds = new Set(active.canvasObjects.map((object) => object.id));
+  const canvasSelection: CanvasSelectionState = switchedCandidate
+    ? EMPTY_CANVAS_SELECTION
+    : {
+        nodeIds: currentStudio.canvasSelection.nodeIds.filter((id) => nodeIds.has(id)),
+        edgeIds: currentStudio.canvasSelection.edgeIds.filter((id) => edgeIds.has(id)),
+        objectIds: currentStudio.canvasSelection.objectIds.filter((id) => objectIds.has(id)),
+      };
+  const selection = switchedCandidate
+    ? null
+    : currentStudio.selection?.kind === "node" && nodeIds.has(currentStudio.selection.id)
+      ? currentStudio.selection
+      : currentStudio.selection?.kind === "edge" && edgeIds.has(currentStudio.selection.id)
+        ? currentStudio.selection
+        : currentStudio.selection?.kind === "canvas" && objectIds.has(currentStudio.selection.id)
+          ? currentStudio.selection
+          : primaryFor(canvasSelection);
   useStudio.setState({
-    design: active.design,
-    ...recompute(active.design),
+    ...(designChanged ? { design: active.design, ...recompute(active.design) } : {}),
+    canvasObjects: active.canvasObjects,
+    canvasSelection,
+    selection,
     enabledSourceIds,
+    ...((switchedCandidate || localWorkspaceMutation === 0) && (designChanged || canvasChanged)
+      ? { historyPast: [], historyFuture: [] }
+      : {}),
     // Switching candidate is not an edit; it is a different subject. Carrying the previous
     // candidate's run forward and labelling it stale would be worse than clearing it, because a
     // greyed-out number still anchors a reader.
@@ -677,7 +1097,6 @@ useStudyStore.subscribe((state, previous) => {
           analysisStale: false,
           replication: null,
           comparison: null,
-          selection: null,
           sessionId: null,
           session: null,
           sessionBusy: false,

@@ -615,6 +615,7 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
     notes: input.notes ?? "",
     intent: input.intent ?? "",
     evidence: structuredClone(input.evidence ?? source?.evidence ?? []),
+    canvasObjects: structuredClone(source?.canvasObjects ?? []),
     design,
   });
 
@@ -1402,6 +1403,29 @@ export function editActiveDesign(study: Study, mutate: (candidate: Candidate) =>
     ...approvalAfterCandidateEdit(study, id),
     candidates: study.candidates.map((c) =>
       c.id === id ? { ...mutate(c), revision: c.revision + 1 } : c
+    ),
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * Edit frames and text without changing the architecture revision or its receipts.
+ *
+ * Canvas objects are persisted candidate presentation, not executable input. Moving a
+ * frame therefore must not stale an evaluation or revoke a reviewed architecture.
+ */
+export function editActiveCanvasObjects(
+  study: Study,
+  mutate: (objects: Candidate["canvasObjects"]) => Candidate["canvasObjects"]
+): Study {
+  const id = study.activeCandidateId;
+  if (!id) return study;
+  return {
+    ...study,
+    candidates: study.candidates.map((candidate) =>
+      candidate.id === id
+        ? { ...candidate, canvasObjects: mutate(candidate.canvasObjects) }
+        : candidate
     ),
     updatedAt: Date.now(),
   };

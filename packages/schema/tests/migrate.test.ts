@@ -363,6 +363,7 @@ describe("a study round-trips", () => {
     expect(migrated.repositorySnapshots).toEqual([]);
     expect(migrated.activeRepositorySnapshotId).toBeNull();
     expect(migrated.candidates.every((candidate) => candidate.role === "experiment")).toBe(true);
+    expect(migrated.candidates.every((candidate) => candidate.canvasObjects.length === 0)).toBe(true);
   });
 
   it("refuses evidence that points outside its architecture", () => {

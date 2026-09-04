@@ -3,6 +3,7 @@ import type { ComponentPreset } from "@sds/models"
 import { KindIcon, SearchIcon } from "../ui/icons"
 import { filterGroups } from "./presetGroups"
 import { useAddPreset } from "./useAddPreset"
+import { CANVAS_PRESET_MIME } from "../canvas/editing"
 
 /** The coloured square that identifies a component kind wherever it appears. */
 export const KindTile = ({ preset, size = 16 }: { preset: ComponentPreset; size?: number }) => (
@@ -41,6 +42,12 @@ export const Palette = ({ onClose }: { onClose: () => void }) => {
     onClose()
   }
 
+  const startDrag = (event: React.DragEvent<HTMLButtonElement>, presetId: string) => {
+    event.dataTransfer.effectAllowed = "copy"
+    event.dataTransfer.setData(CANVAS_PRESET_MIME, presetId)
+    event.dataTransfer.setData("text/plain", presetId)
+  }
+
   return (
     <div className="palette component-palette" role="dialog" aria-label="Add component" onClick={(e) => e.stopPropagation()}>
       <div className="palette-head">
@@ -68,7 +75,15 @@ export const Palette = ({ onClose }: { onClose: () => void }) => {
           </h3>
           <div className="palette-grid">
             {group.presets.map((preset) => (
-              <button key={preset.id} className="palette-card" title={preset.blurb} onClick={() => pick(preset.id)}>
+              <button
+                key={preset.id}
+                className="palette-card"
+                title={`${preset.blurb} Click to place automatically, or drag to an exact canvas position.`}
+                draggable
+                onDragStart={(event) => startDrag(event, preset.id)}
+                onDragEnd={onClose}
+                onClick={() => pick(preset.id)}
+              >
                 <KindTile preset={preset} />
                 <span className="palette-body">
                   <span className="palette-label">{preset.label}</span>

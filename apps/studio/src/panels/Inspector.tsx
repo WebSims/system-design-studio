@@ -6,6 +6,7 @@ import {
   isTimeVarying,
   performanceCalibration,
   type Citation,
+  type CanvasObject,
   type Distribution,
   type RetryableReason,
 } from "@sds/schema";
@@ -354,12 +355,20 @@ function DistributionField({
 
 export function Inspector() {
   const selection = useStudio((s) => s.selection);
+  const canvasSelection = useStudio((s) => s.canvasSelection);
+  const canvasObjects = useStudio((s) => s.canvasObjects);
   const design = useStudio((s) => s.design);
   const preview = useStudio((s) => s.preview);
   const edit = useStudio((s) => s.edit);
+  const editCanvas = useStudio((s) => s.editCanvas);
+  const deleteSelection = useStudio((s) => s.deleteSelection);
   const lens = useStudyStore((s) => s.lens);
-  const agentTouch = useAgentTouch(selection);
+  const agentTouch = useAgentTouch(selection?.kind === "canvas" ? null : selection);
   const railClass = `rail right ${agentTouch ? "agent-touched" : ""}`;
+  const selectedCount =
+    canvasSelection.nodeIds.length +
+    canvasSelection.edgeIds.length +
+    canvasSelection.objectIds.length;
 
   if (!selection) {
     return (
@@ -374,6 +383,99 @@ export function Inspector() {
               : "To link two components, press Link on the canvas and click them in turn, or drag from one's right handle to another's left."}
           </div>
         </div>
+      </aside>
+    );
+  }
+
+  if (selectedCount > 1) {
+    return (
+      <aside className="rail right">
+        <div className="rail-title">selection</div>
+        <div className="multi-selection-inspector">
+          <strong>{selectedCount} elements selected</strong>
+          <p>
+            Use the canvas command bar to align, distribute, copy, duplicate, or delete this
+            selection. Arrow keys move it; hold Shift for 10-pixel steps.
+          </p>
+          <dl>
+            <div><dt>components</dt><dd>{canvasSelection.nodeIds.length}</dd></div>
+            <div><dt>links</dt><dd>{canvasSelection.edgeIds.length}</dd></div>
+            <div><dt>notes &amp; frames</dt><dd>{canvasSelection.objectIds.length}</dd></div>
+          </dl>
+        </div>
+      </aside>
+    );
+  }
+
+  if (selection.kind === "canvas") {
+    const object = canvasObjects.find((item) => item.id === selection.id);
+    if (!object) return null;
+    const patch = (fn: (item: CanvasObject) => void) =>
+      editCanvas((objects) => {
+        const item = objects.find((candidate) => candidate.id === object.id);
+        if (item && item.kind === object.kind) fn(item);
+      });
+    return (
+      <aside className="rail right">
+        <PanelHead
+          icon={<span className={`canvas-object-icon ${object.kind}`}>{object.kind === "frame" ? "F" : "T"}</span>}
+          kicker="canvas only · not simulated"
+          title={object.kind === "frame" ? object.title || "Untitled frame" : "Text note"}
+          deleteLabel={`Delete ${object.kind}`}
+          onDelete={deleteSelection}
+        />
+        {object.kind === "frame" ? (
+          <Field label="title">
+            <input
+              className="input"
+              value={object.title}
+              onChange={(event) => patch((item) => {
+                if (item.kind === "frame") item.title = event.currentTarget.value;
+              })}
+            />
+          </Field>
+        ) : (
+          <Field label="text">
+            <textarea
+              className="input canvas-text-editor"
+              value={object.text}
+              rows={6}
+              onChange={(event) => patch((item) => {
+                if (item.kind === "text") item.text = event.currentTarget.value;
+              })}
+            />
+          </Field>
+        )}
+        <FieldRow>
+          <Field label="width" hint="px">
+            <NumberInput value={object.width} min={80} max={10_000} onChange={(value) => patch((item) => { item.width = value; })} />
+          </Field>
+          <Field label="height" hint="px">
+            <NumberInput value={object.height} min={40} max={10_000} onChange={(value) => patch((item) => { item.height = value; })} />
+          </Field>
+        </FieldRow>
+        {object.kind === "text" && (
+          <Field label="font size" hint="px">
+            <NumberInput value={object.fontSize} min={10} max={48} onChange={(value) => patch((item) => {
+              if (item.kind === "text") item.fontSize = Math.round(value);
+            })} />
+          </Field>
+        )}
+        <Field label="tone" hint="also labelled in text">
+          <Select
+            value={object.tone}
+            options={[
+              { value: "neutral", label: "Neutral" },
+              { value: "info", label: "Info" },
+              { value: "warn", label: "Warning" },
+            ]}
+            onChange={(tone) => patch((item) => { item.tone = tone; })}
+          />
+        </Field>
+        <p className="note">
+          This {object.kind} is saved with the version but excluded from simulations,
+          architecture evidence, and evaluation hashes.
+        </p>
       </aside>
     );
   }
@@ -399,11 +501,7 @@ export function Inspector() {
           kicker="connection"
           title={`${labelOf(edge.from)} \u2192 ${labelOf(edge.to)}`}
           deleteLabel="Delete connection"
-          onDelete={() =>
-            edit((d) => {
-              d.edges = d.edges.filter((x) => x.id !== selection.id);
-            })
-          }
+          onDelete={deleteSelection}
         />
         <AgentTouchStrip kind="edge" id={edge.id} />
         <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
@@ -684,12 +782,7 @@ export function Inspector() {
         title={node.label}
         onTitleChange={(label) => patch((n) => { n.label = label; })}
         deleteLabel="Delete node"
-        onDelete={() =>
-          edit((d) => {
-            d.nodes = d.nodes.filter((x) => x.id !== selection.id);
-            d.edges = d.edges.filter((e) => e.from !== selection.id && e.to !== selection.id);
-          })
-        }
+        onDelete={deleteSelection}
       />
       <AgentTouchStrip kind="node" id={node.id} />
       <ArchitectureEvidence targetKind="node" targetId={node.id} />

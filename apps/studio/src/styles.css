@@ -2316,6 +2316,143 @@ summary:focus-visible {
   min-width: 0;
 }
 
+/* Architecture editing: compact commands stay available without stealing topbar width. */
+.react-flow__panel.canvas-editing-toolbar {
+  display: flex;
+  max-width: calc(100% - 32px);
+  align-items: center;
+  gap: 5px;
+  margin: 12px;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-2) 94%, transparent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(6px);
+}
+.canvas-command-group { display: flex; align-items: center; gap: 2px; }
+.canvas-command {
+  min-height: 26px;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 10.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.canvas-command:hover:not(:disabled) {
+  border-color: var(--line-2);
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.canvas-command:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.canvas-command:disabled { opacity: 0.34; cursor: default; }
+.canvas-command-separator { width: 1px; height: 19px; flex: none; background: var(--line-2); }
+.canvas-selection-count { padding: 0 5px; color: var(--fg-3); font-size: 10px; white-space: nowrap; }
+
+/* Frames and text are persisted presentation, deliberately unlike executable component cards. */
+.canvas-object-node { cursor: move; }
+.react-flow__node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 5px;
+}
+.canvas-frame,
+.canvas-text {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  color: var(--fg-2);
+}
+.canvas-frame {
+  border: 1.5px dashed var(--line-2);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-3) 13%, transparent);
+}
+.canvas-frame-title {
+  position: absolute;
+  top: -12px;
+  left: 13px;
+  max-width: calc(100% - 26px);
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid var(--line-2);
+  border-radius: 99px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-text {
+  display: flex;
+  align-items: flex-start;
+  padding: 11px 12px;
+  border-left: 3px solid var(--line-2);
+  border-radius: 3px 8px 8px 3px;
+  background: color-mix(in srgb, var(--bg-2) 82%, transparent);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+.canvas-frame.tone-info,
+.canvas-text.tone-info { border-color: var(--sky); }
+.canvas-frame.tone-warn,
+.canvas-text.tone-warn { border-color: var(--warn); }
+.canvas-frame.selected,
+.canvas-text.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.canvas-selection-badge,
+.canvas-tone-label {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 99px;
+  background: var(--bg-2);
+  color: var(--fg-3);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.canvas-tone-label { right: auto; left: 6px; }
+.canvas-text-editor { min-height: 110px; resize: vertical; line-height: 1.45; }
+.canvas-object-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px dashed var(--line-2);
+  border-radius: 7px;
+  color: var(--fg-2);
+  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.multi-selection-inspector {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.multi-selection-inspector p { margin: 8px 0 14px; color: var(--fg-3); }
+.multi-selection-inspector dl { display: grid; gap: 5px; margin: 0; }
+.multi-selection-inspector dl div { display: flex; justify-content: space-between; }
+.multi-selection-inspector dt { color: var(--fg-3); }
+.multi-selection-inspector dd { margin: 0; font-variant-numeric: tabular-nums; }
+
 .packet-layer {
   position: absolute;
   inset: 0;
@@ -2429,6 +2566,7 @@ summary:focus-visible {
 /* ---------- nodes ---------- */
 
 .node {
+  position: relative;
   display: flex;
   flex-direction: column;
   background: var(--bg-2);
@@ -2446,6 +2584,23 @@ summary:focus-visible {
 .node.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
+}
+.node-selected-marker,
+.edge-selected-marker {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 8px;
+  font-weight: 800;
+}
+.edge-chip.selected {
+  outline: 1px dashed var(--accent);
+  outline-offset: 2px;
 }
 
 .node-head {
