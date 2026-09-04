@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/system-design-studio-banner.png" alt="System Design Studio architecture twin flowing through race detection, load measurement, comparison, and handoff" width="100%">
+<img src="docs/assets/system-design-studio-banner-v2.png" alt="System Design Studio architecture twin flowing through race detection, load measurement, comparison, and handoff" width="100%">
 
 # System Design Studio
 
