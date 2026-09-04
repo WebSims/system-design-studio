@@ -17,7 +17,6 @@ import {
   templateFor,
 } from "../src/correctness/builder";
 import { NODE_HEIGHT, NODE_WIDTH } from "../src/canvas/geometry";
-import { DEMO_SCENARIOS } from "../src/examples";
 import { exportStudy, importStudy, studyFilename, STUDY_EXTENSION } from "../src/persist";
 
 /**
@@ -376,32 +375,25 @@ describe("nothing in the app is wired to one domain", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("reaches the worked-scenario registry only through the opt-in examples module", () => {
-    // The scenarios are offered on the start screen, as a choice beside Import and Blank. They are
-    // never a default: the store, persistence and the tool host must not know they exist, or the
-    // auto-loaded demo comes back through a side door.
+  it("keeps the prebuilt scenario registry out of the application runtime", () => {
+    // The Projects home now offers a short prompt, not the internal seven-design project. The
+    // benchmark remains available to the CLI and tests without an app import that could load it.
     const importers = appSources()
-      .filter((f) => /STUDY_EXAMPLES/.test(f.text))
+      .filter((f) => /STUDY_EXAMPLES|DEMO_SCENARIOS/.test(f.text))
       .map((f) => f.path);
-    expect(importers).toEqual(["examples.ts"]);
+    expect(importers).toEqual([]);
   });
 
-  it("opens a worked scenario as a fresh project, never under the retired demo id", () => {
-    for (const scenario of DEMO_SCENARIOS) {
-      const opened = scenario.open();
-      expect(opened.id).not.toBe("limited-free-pizza");
-      expect(opened.id.startsWith("demo-")).toBe(true);
-      expect(opened.candidates.length).toBeGreaterThan(0);
-    }
-  });
-
-  it("offers the codebase prompt, a new project and worked scenarios on the Projects home", () => {
+  it("offers the codebase prompt, a new project and interview prompts on the Projects home", () => {
     const app = appSources().find((file) => file.path === "App.tsx")?.text ?? "";
     expect(app).not.toMatch(/ExampleMenu|AgentPromptMenu/);
     const start = appSources().find((file) => file.path === "chrome/StartScreen.tsx")?.text ?? "";
     expect(start).toContain("CODEBASE_PROMPT");
     expect(start).toContain("New project");
-    expect(start).toContain("DEMO_SCENARIOS");
+    expect(start).toContain("INTERVIEW_PROMPTS");
+    expect(start).toContain("copyPrompt(template.prompt)");
+    expect(start).not.toContain("DEMO_SCENARIOS");
+    expect(start).not.toContain("loadStudyDocument");
     // A new project is one empty human version on a blank canvas, the same shape studio_create_study makes.
     expect(start).toContain("manualCandidate");
     expect(start).toContain("createStudy({})");

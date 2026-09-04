@@ -3932,6 +3932,23 @@ summary:focus-visible {
   white-space: pre-wrap;
 }
 
+.starter-prompt-copy {
+  width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.starter-prompt-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .prompt-route {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -5917,19 +5934,20 @@ summary:focus-visible {
   transition: transform 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out;
 }
 .start-option:hover { border-color: var(--line-2); }
-.start-option.scenario {
+.start-option.interview-prompt {
   cursor: pointer;
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line-2));
   background:
     radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 55%),
     color-mix(in srgb, var(--bg-2) 92%, transparent);
 }
-.start-option.scenario:hover {
+.start-option.interview-prompt:hover:not(:disabled) {
   transform: translateY(-2px);
   border-color: var(--accent);
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
 }
-.start-option.scenario:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.start-option.interview-prompt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.start-option.interview-prompt:disabled { cursor: wait; opacity: 0.78; }
 .start-option-head {
   display: flex;
   align-items: center;
@@ -5964,7 +5982,7 @@ summary:focus-visible {
   text-transform: uppercase;
   color: var(--fg-3);
 }
-.start-option.scenario .start-kicker { color: var(--accent); }
+.start-option.interview-prompt .start-kicker { color: var(--accent); }
 .start-option strong { font-size: 14.5px; line-height: 1.3; letter-spacing: -0.01em; }
 .start-blurb { color: var(--fg-2); font-size: 12.5px; line-height: 1.5; }
 .start-cta {
@@ -5977,8 +5995,7 @@ summary:focus-visible {
   font-size: 12.5px;
   font-weight: 650;
 }
-.start-option.scenario:hover .start-cta svg { transform: translateX(3px); }
-.start-cta svg { transition: transform 120ms ease-out; }
+.start-option.interview-prompt .start-cta { min-height: 44px; }
 .start-actions {
   display: flex;
   flex-wrap: wrap;

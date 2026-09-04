@@ -3,7 +3,7 @@
 [< back to the README](../README.md)
 
 System Design Studio starts without a bundled system. Choose one of three ways in from
-the Projects home: **New project**, **From a codebase**, or a **Worked scenario**.
+the Projects home: **New project**, **From a codebase**, or the **Interview prompt**.
 
 ## Words
 
@@ -132,6 +132,22 @@ agent-created baseline can be sealed. Observed elements cite a source path and s
 ranges where available); deductions are labelled inferred and unknown production behaviour is
 labelled assumed. The result is a source-revision-pinned account of the system that
 exists now, plus evidence gaps and likely risks, not a proposed redesign.
+
+## Interview prompt
+
+**200 free pizzas** is a short, open-ended system-design request for an agent. Clicking its card
+copies the request immediately and does not create, replace, or edit a project. If clipboard access
+is unavailable, the Projects home reveals the same text for manual copying.
+
+After it is pasted, the prompt points the agent to the `studio_*` WebMCP site tools on the open page.
+The agent creates a fresh project, chooses its own architecture and test path, and returns an
+interview-style recommendation with the request flow, bottleneck, scaling limits, trade-offs,
+failure modes, and other risks. The prompt deliberately names no database, queue, lock, candidate
+count, or tool-call sequence. The tools' descriptions provide operational guidance without turning
+the visible request into a script.
+
+The repository's prebuilt seven-design pizza portfolio remains a development and CLI benchmark. It
+is not loaded by the prompt card, so the agent has to model and defend its own answer.
 
 ## New project
 

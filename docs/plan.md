@@ -28,9 +28,10 @@ design or prove that one is globally best.
 - Read-only implementation handoff with source hints, acceptance criteria, unresolved findings, and a copyable Codex request.
 - Local save, import and export.
 - Retired bundled-demo projects are removed by exact legacy ID and cannot reappear.
-- Two honest start paths: one codebase-reconstruction prompt through WebMCP, or a
-  schema-valid manual canvas with no invented components or assumptions.
-- No empty project switcher or follow-up template gallery in the MVP surface.
+- Three honest start paths: a codebase-reconstruction prompt through WebMCP, a
+  schema-valid manual canvas with no invented components or assumptions, or one short
+  system-design interview prompt that leaves the architecture to the agent.
+- No general prompt gallery or scripted answer loader in the MVP surface.
 - Canvas topology explorer: search, authored upstream/downstream reach and shortest routes.
 - Exact-ID architecture delta between candidates, with explicit comparison limits.
 

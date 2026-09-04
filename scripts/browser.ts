@@ -24,6 +24,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { PRESETS, pizzaStudy } from "@sds/models";
+import { PIZZA_INTERVIEW_PROMPT } from "../apps/studio/src/interview-prompts";
 
 
 /**
@@ -183,7 +184,47 @@ const checks: Check[] = [
       if (!/coding agent/i.test(body)) return "the empty state never says that a coding agent does the work";
       if (!/webmcp/i.test(body)) return "the empty state never names the shared WebMCP path";
       if (!/new project/i.test(body)) return "the blank-canvas entry path is missing";
-      if (!/worked scenario/i.test(body)) return "the worked-scenario entry path is missing";
+      if (!/system design interview/i.test(body) || !/200 free pizzas/i.test(body)) {
+        return "the interview-prompt entry path is missing";
+      }
+
+      await evaluate(`(() => {
+        window.__sdsCopiedPrompt = null;
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: { writeText: async (value) => { window.__sdsCopiedPrompt = String(value); } },
+        });
+      })()`);
+      await click(".start-option.interview-prompt");
+      await waitFor(
+        `document.querySelector(".start-option.interview-prompt")?.textContent.includes("Prompt copied")`,
+        "the interview prompt copy confirmation"
+      );
+      const copiedPrompt = await evaluate<string>(`window.__sdsCopiedPrompt ?? ""`);
+      if (copiedPrompt !== PIZZA_INTERVIEW_PROMPT) return "the interview card copied the wrong prompt";
+      if ((await count(".candidate-chip:not(.candidate-add)")) !== 0) {
+        return "copying the interview prompt created or changed a project";
+      }
+      if ((await count('.start-option.interview-prompt [aria-live="polite"]')) !== 1) {
+        return "the interview prompt has no accessible copy status";
+      }
+
+      await evaluate(`Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async () => { throw new DOMException("blocked", "NotAllowedError"); } },
+      })`);
+      await click(".start-option.interview-prompt");
+      await waitFor(`document.querySelector(".interview-prompt-fallback textarea")`, "the manual-copy fallback");
+      const manualPrompt = await evaluate<string>(
+        `document.querySelector(".interview-prompt-fallback textarea")?.value ?? ""`
+      );
+      if (manualPrompt !== PIZZA_INTERVIEW_PROMPT) {
+        return "the clipboard failure did not reveal the exact prompt";
+      }
+      if ((await count(".candidate-chip:not(.candidate-add)")) !== 0) {
+        return "a failed interview-prompt copy created or changed a project";
+      }
+
       await click(`.start-option.import .btn:not(.primary)`);
       await waitFor(`document.querySelector(".starter-prompt")`, "the agent prompt disclosure");
       if ((await count(".starter-prompt")) !== 1) return "expected exactly one agent prompt";

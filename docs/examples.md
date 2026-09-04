@@ -6,8 +6,10 @@ Seven architectures for one problem, four broken on purpose.
 
 ## 200 free pizzas
 
-This is a development and CLI scenario, not an app project or template.
-Seven candidates, four broken on purpose, differing **only** in architecture — the
+This prebuilt portfolio is a development and CLI scenario, not the app's interview
+prompt. The Projects home copies a short request and leaves the agent to model its own
+answer; it does not load any design from this file. Seven candidates, four broken on
+purpose, differing **only** in architecture — the
 workload, SLOs, invariants and bounds are study-level and are pushed into every
 candidate before evaluation, so no candidate can win by quietly halving its own load.
 

@@ -75,9 +75,9 @@ pnpm dev
 
 Open [http://localhost:5173](http://localhost:5173), then choose a starting point:
 
-1. **Worked scenario** — open *two hundred free pizzas* and press **Find races** to see a minimal counterexample immediately.
-2. **New project** — start with a genuinely blank canvas and model a system by hand.
-3. **From a codebase** — copy the supplied prompt into a WebMCP-capable coding agent and watch it reconstruct the repository as it reads the source.
+1. **New project** — start with a genuinely blank canvas and model a system by hand.
+2. **From a codebase** — copy the supplied prompt into a WebMCP-capable coding agent and watch it reconstruct the repository as it reads the source.
+3. **Interview prompt** — copy *200 free pizzas* into an agent and let it create, test, and explain its own answer in the Studio.
 
 The app stores projects locally in the browser. Projects can also be imported and exported as JSON.
 
@@ -226,7 +226,7 @@ pnpm browser
 
 | Guide | Covers |
 | --- | --- |
-| [MVP workflow](docs/usage.md) | Codebase reconstruction, manual modeling, worked scenarios, and the end-to-end agent loop. |
+| [MVP workflow](docs/usage.md) | Codebase reconstruction, manual modeling, the interview prompt, and the end-to-end agent loop. |
 | [Correctness](docs/correctness.md) | Search semantics, explicit bounds, counterexamples, and safety vs. postconditions. |
 | [Engine](docs/engine.md) | Components, uncertainty, failures, workload models, and the analyzer. |
 | [One kernel, two engines](docs/kernel.md) | Why exploration and simulation share one executable implementation. |

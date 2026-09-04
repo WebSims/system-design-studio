@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react"
 import { CODEBASE_PROMPT, CODEBASE_PROMPT_ROUTE } from "../codebase-prompt"
-import { DEMO_SCENARIOS } from "../examples"
+import { INTERVIEW_PROMPTS, type InterviewPrompt } from "../interview-prompts"
 import type { StoredStudy } from "../persist"
 import { manualCandidate } from "../study/mutations"
 import { useStudyStore } from "../study/store"
@@ -266,10 +266,9 @@ const AgentProgress = () => {
 /**
  * The Projects home: every saved project, and three ways to start a new one.
  *
- * A worked scenario, because a race you can watch happen in the first minute is worth more than any
- * paragraph about one. The codebase prompt, because the agent reconstructing the current system is
- * the way this gets used on real work. A blank canvas, because sometimes the design is in your head.
- * Every start makes a NEW project: the open one stays saved and one click brings it back.
+ * A short interview prompt, because an agent should solve the problem rather than load a bundled
+ * answer. The codebase prompt reconstructs a real current system. A blank canvas is for a design
+ * already in the person's head. Copying either prompt never changes the open project.
  */
 export const StartScreen = () => {
   const webmcp = useStudyStore((s) => s.webmcp)
@@ -278,11 +277,11 @@ export const StartScreen = () => {
   const setHomeOpen = useStudyStore((s) => s.setHomeOpen)
   const createStudy = useStudyStore((s) => s.createStudy)
   const addCandidate = useStudyStore((s) => s.addCandidate)
-  const loadStudyDocument = useStudyStore((s) => s.loadStudyDocument)
   const importStudyJson = useStudyStore((s) => s.importStudyJson)
   const fileRef = useRef<HTMLInputElement>(null)
-  const [copyState, setCopyState] = useState<CopyState>("idle")
-  const [promptOpen, setPromptOpen] = useState(false)
+  const [codebaseCopyState, setCodebaseCopyState] = useState<CopyState>("idle")
+  const [interviewCopyStates, setInterviewCopyStates] = useState<Record<string, CopyState>>({})
+  const [openPromptId, setOpenPromptId] = useState<string | null>(null)
   const webmcpReady = webmcp.status.includes("tools")
   const overProject = homeOpen && study.candidates.length > 0
 
@@ -296,8 +295,19 @@ export const StartScreen = () => {
   }, [overProject, setHomeOpen])
 
   const copySelected = async () => {
-    setCopyState("copying")
-    setCopyState((await copyPrompt(CODEBASE_PROMPT)) ? "copied" : "failed")
+    setCodebaseCopyState("copying")
+    setCodebaseCopyState((await copyPrompt(CODEBASE_PROMPT)) ? "copied" : "failed")
+  }
+
+  const copyInterview = async (template: InterviewPrompt) => {
+    setInterviewCopyStates((states) => ({ ...states, [template.id]: "copying" }))
+    const copied = await copyPrompt(template.prompt)
+    setInterviewCopyStates((states) => ({ ...states, [template.id]: copied ? "copied" : "failed" }))
+    if (copied) {
+      setOpenPromptId((openId) => (openId === template.id ? null : openId))
+    } else {
+      setOpenPromptId(template.id)
+    }
   }
 
   /** One click, one empty canvas, in a fresh project; the open project is already saved. */
@@ -315,18 +325,18 @@ export const StartScreen = () => {
   }
 
   const copyLabel =
-    copyState === "copying"
+    codebaseCopyState === "copying"
       ? "Copying\u2026"
-      : copyState === "copied"
+      : codebaseCopyState === "copied"
         ? "Prompt copied"
-        : copyState === "failed"
+        : codebaseCopyState === "failed"
           ? "Copy unavailable"
           : "Copy agent prompt"
 
   const copyFeedback =
-    copyState === "copied"
+    codebaseCopyState === "copied"
       ? "Ready to paste. You can edit the request before sending."
-      : copyState === "failed"
+      : codebaseCopyState === "failed"
         ? "Open the prompt and copy it by hand."
         : webmcpReady
           ? `WebMCP is ready \u00b7 ${webmcp.status}`
@@ -411,13 +421,18 @@ export const StartScreen = () => {
                 architecture here as it reads the repository, with evidence for every component and link.
               </span>
               <div className="start-actions">
-                <button className="btn primary with-icon" disabled={copyState === "copying"} onClick={() => void copySelected()}>
-                  {copyState === "copied" ? <CheckIcon size={14} /> : <ClipboardIcon size={14} />}
+                <button className="btn primary with-icon" disabled={codebaseCopyState === "copying"} onClick={() => void copySelected()}>
+                  {codebaseCopyState === "copied" ? <CheckIcon size={14} /> : <ClipboardIcon size={14} />}
                   {copyLabel}
                 </button>
-                <button className="btn with-icon" onClick={() => setPromptOpen((open) => !open)} aria-expanded={promptOpen}>
-                  {promptOpen ? <EyeOffIcon size={14} /> : <EyeIcon size={14} />}
-                  {promptOpen ? "Hide prompt" : "Show prompt"}
+                <button
+                  className="btn with-icon"
+                  onClick={() => setOpenPromptId((openId) => (openId === "codebase" ? null : "codebase"))}
+                  aria-expanded={openPromptId === "codebase"}
+                  aria-controls="codebase-starter-prompt"
+                >
+                  {openPromptId === "codebase" ? <EyeOffIcon size={14} /> : <EyeIcon size={14} />}
+                  {openPromptId === "codebase" ? "Hide prompt" : "Show prompt"}
                 </button>
               </div>
               <span className={`copy-feedback ${webmcpReady ? "ready" : ""}`} aria-live="polite">
@@ -426,29 +441,48 @@ export const StartScreen = () => {
               </span>
             </div>
 
-            {DEMO_SCENARIOS.map((scenario) => (
-              <button key={scenario.id} className="start-option scenario" onClick={() => loadStudyDocument(scenario.open())}>
-                <span className="start-option-head">
-                  <span className="start-glyph accent">
-                    <PlayIcon size={16} />
+            {INTERVIEW_PROMPTS.map((template) => {
+              const state = interviewCopyStates[template.id] ?? "idle"
+              const fallbackId = `interview-prompt-${template.id}`
+              const status =
+                state === "copying"
+                  ? "Copying\u2026"
+                  : state === "copied"
+                    ? "Prompt copied · paste into your agent"
+                    : state === "failed"
+                      ? "Copy unavailable · copy manually below"
+                      : "Copy prompt for your agent"
+              return (
+                <button
+                  key={template.id}
+                  type="button"
+                  className="start-option interview-prompt"
+                  disabled={state === "copying"}
+                  aria-busy={state === "copying"}
+                  aria-controls={state === "failed" ? fallbackId : undefined}
+                  aria-expanded={state === "failed" ? openPromptId === template.id : undefined}
+                  onClick={() => void copyInterview(template)}
+                >
+                  <span className="start-option-head">
+                    <span className="start-glyph accent">
+                      <BotIcon size={16} />
+                    </span>
+                    <span className="start-kicker">system design interview</span>
                   </span>
-                  <span className="start-kicker">worked scenario</span>
-                </span>
-                <strong>{scenario.label}</strong>
-                <span className="start-blurb" title={scenario.teaches}>
-                  {scenario.summary}
-                </span>
-                <span className="start-cta">
-                  Open and play the race
-                  <ArrowRightIcon size={13} />
-                </span>
-              </button>
-            ))}
+                  <strong>{template.label}</strong>
+                  <span className="start-blurb">{template.summary}</span>
+                  <span className="start-cta" aria-live="polite">
+                    {state === "copied" ? <CheckIcon size={13} /> : <ClipboardIcon size={13} />}
+                    {status}
+                  </span>
+                </button>
+              )
+            })}
           </div>
         </section>
 
-        {promptOpen && (
-          <div className="starter-prompt">
+        {openPromptId === "codebase" && (
+          <div className="starter-prompt" id="codebase-starter-prompt">
             <div className="starter-prompt-head">
               <span>Paste into your agent</span>
               <strong>Create system design from codebase</strong>
@@ -456,6 +490,29 @@ export const StartScreen = () => {
             <p>{CODEBASE_PROMPT}</p>
             <PromptRoute />
           </div>
+        )}
+
+        {INTERVIEW_PROMPTS.map(
+          (template) =>
+            openPromptId === template.id && (
+              <div
+                className="starter-prompt interview-prompt-fallback"
+                id={`interview-prompt-${template.id}`}
+                key={template.id}
+              >
+                <div className="starter-prompt-head">
+                  <span>Copy manually</span>
+                  <strong>{template.label}</strong>
+                </div>
+                <textarea
+                  className="starter-prompt-copy"
+                  aria-label={`${template.label} prompt`}
+                  readOnly
+                  rows={5}
+                  value={template.prompt}
+                />
+              </div>
+            )
         )}
 
         <ProjectsList />

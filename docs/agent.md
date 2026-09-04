@@ -199,12 +199,16 @@ as-is twin → create focused experiments → validate → run bounded correctne
 runtime inputs → run replicated performance and production scenarios → compare gates and trade-offs →
 human approval → read implementation handoff → edit code and tests → verify → re-scan.
 
-The MVP exposes one copyable request: inspect the repository and reconstruct the system
-that exists today, citing code or configuration for observed components and connections
-while keeping deductions and unknown production behaviour explicit. It creates one
-repository-linked as-is baseline and stops before redesigning or changing code.
+The MVP exposes two copyable requests. The codebase request inspects the repository and
+reconstructs the system that exists today, citing code or configuration for observed
+components and connections while keeping deductions and unknown production behaviour
+explicit. It creates one repository-linked as-is baseline and stops before redesigning or
+changing code. The short **200 free pizzas** interview request asks the agent to create and
+test a fresh design, then explain its recommendation, bottleneck, trade-offs and failure
+modes. It points to the `studio_*` WebMCP site tools but prescribes no architecture or
+tool-call sequence.
 
-The other start path is human-authored: **New project** creates a schema-valid empty
+The human-authored start path, **New project**, creates a schema-valid empty
 version on a blank canvas, then the existing component palette, canvas, inspector, and
 evaluation views take over. Follow-up agent work—risk analysis, incident reproduction, and
 implementation of an approved delta—happens conversationally against the current project
