@@ -5760,13 +5760,18 @@ summary:focus-visible {
   z-index: 50;
   width: var(--agent-panel);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   background: var(--bg);
   border-left: 1px solid var(--line-2);
   box-shadow: -18px 0 50px rgba(0, 0, 0, 0.4);
   animation: drawer-in 160ms ease-out;
 }
-.agent-stream { overflow-y: auto; padding: 8px 12px; }
+.agent-panel > .agent-steps {
+  max-height: min(34vh, 320px);
+  min-height: 0;
+  overflow-y: auto;
+}
+.agent-stream { min-height: 0; overflow-y: auto; padding: 8px 12px; }
 .agent-empty { padding: 12px 6px; }
 .agent-items { list-style: none; margin: 0; padding: 0; }
 .agent-item {

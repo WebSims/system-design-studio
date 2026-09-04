@@ -715,6 +715,33 @@ const checks: Check[] = [
       if (!/recommended/.test(panel) || !/external coding agent/i.test(panel)) {
         return "the Agent panel does not identify the primary external provider";
       }
+      const layout = await evaluate<{
+        stepsBottom: number;
+        streamTop: number;
+        streamBottom: number;
+        composerTop: number;
+      } | null>(`(() => {
+        const steps = document.querySelector(".agent-panel > .agent-steps");
+        const stream = document.querySelector(".agent-panel > .agent-stream");
+        const composer = document.querySelector(".agent-panel > .ask-agent");
+        if (!steps || !stream || !composer) return null;
+        const stepsRect = steps.getBoundingClientRect();
+        const streamRect = stream.getBoundingClientRect();
+        const composerRect = composer.getBoundingClientRect();
+        return {
+          stepsBottom: stepsRect.bottom,
+          streamTop: streamRect.top,
+          streamBottom: streamRect.bottom,
+          composerTop: composerRect.top,
+        };
+      })()`);
+      if (!layout) return "the Agent panel is missing a progress, activity, or composer section";
+      if (layout.stepsBottom > layout.streamTop + 0.5) {
+        return `the progress tracker overlaps the activity stream by ${Math.round(layout.stepsBottom - layout.streamTop)}px`;
+      }
+      if (layout.streamBottom > layout.composerTop + 0.5) {
+        return `the activity stream overlaps the composer by ${Math.round(layout.streamBottom - layout.composerTop)}px`;
+      }
       return null;
     },
   },
