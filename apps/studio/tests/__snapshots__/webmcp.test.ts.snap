@@ -826,6 +826,39 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     "properties": {},
     "type": "object",
   },
+  "studio_get_issues": {
+    "additionalProperties": false,
+    "properties": {
+      "severity": {
+        "enum": [
+          "critical",
+          "warning",
+          "info",
+        ],
+        "type": "string",
+      },
+      "source": {
+        "enum": [
+          "user",
+          "agent",
+          "grounding-gap",
+          "correctness-check",
+          "performance-analysis",
+        ],
+        "type": "string",
+      },
+      "status": {
+        "enum": [
+          "open",
+          "verified",
+          "accepted-risk",
+          "dismissed",
+        ],
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
   "studio_get_study": {
     "additionalProperties": false,
     "properties": {},
@@ -1413,6 +1446,331 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "type": "string",
       },
     },
+    "type": "object",
+  },
+  "studio_upsert_issue": {
+    "additionalProperties": false,
+    "properties": {
+      "candidateId": {
+        "default": null,
+        "maxLength": 64,
+        "minLength": 1,
+        "type": [
+          "string",
+          "null",
+        ],
+      },
+      "category": {
+        "enum": [
+          "grounding",
+          "correctness",
+          "reliability",
+          "performance",
+          "scalability",
+          "data-consistency",
+          "security",
+          "operability",
+          "other",
+        ],
+        "type": "string",
+      },
+      "description": {
+        "default": "",
+        "maxLength": 4000,
+        "type": "string",
+      },
+      "evidence": {
+        "default": [],
+        "items": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "candidateId": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "evidenceId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "architecture-evidence",
+                },
+              },
+              "required": [
+                "kind",
+                "candidateId",
+                "evidenceId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "candidateHash": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "evaluationId": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "evaluation",
+                },
+              },
+              "required": [
+                "kind",
+                "evaluationId",
+                "candidateHash",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "candidateId": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "gapCode": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "grounding-report",
+                },
+                "reportHash": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "candidateId",
+                "reportHash",
+                "gapCode",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "analysisHash": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "findingId": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "analysis",
+                },
+              },
+              "required": [
+                "kind",
+                "analysisHash",
+                "findingId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "user-observation",
+                },
+                "observationId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "observationId",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+        "maxItems": 256,
+        "type": "array",
+      },
+      "expectedRevision": {
+        "minimum": 0,
+        "type": "integer",
+      },
+      "severity": {
+        "enum": [
+          "critical",
+          "warning",
+          "info",
+        ],
+        "type": "string",
+      },
+      "targets": {
+        "default": [],
+        "items": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "node",
+                },
+                "nodeId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "nodeId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "edgeId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "edge",
+                },
+              },
+              "required": [
+                "kind",
+                "edgeId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "collectionId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "collection",
+                },
+              },
+              "required": [
+                "kind",
+                "collectionId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "handlerId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "handler",
+                },
+              },
+              "required": [
+                "kind",
+                "handlerId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "handlerId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "kind": {
+                  "const": "operation",
+                },
+                "operationId": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "handlerId",
+                "operationId",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+        "maxItems": 128,
+        "type": "array",
+      },
+      "title": {
+        "maxLength": 300,
+        "minLength": 1,
+        "type": "string",
+      },
+      "verification": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "grounding",
+              "correctness",
+              "performance",
+              "manual",
+            ],
+            "type": "string",
+          },
+          "requiredSignals": {
+            "default": [],
+            "items": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string",
+            },
+            "maxItems": 32,
+            "type": "array",
+          },
+          "summary": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "kind",
+          "summary",
+        ],
+        "type": "object",
+      },
+    },
+    "required": [
+      "title",
+      "severity",
+      "category",
+      "verification",
+    ],
     "type": "object",
   },
   "studio_upsert_source_inventory": {

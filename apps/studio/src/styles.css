@@ -1064,6 +1064,157 @@ summary:focus-visible {
   font-weight: 600;
 }
 
+/* Persisted issue registry ------------------------------------------------ */
+.density-toggle {
+  flex: 0 0 auto;
+}
+
+.density-toggle button {
+  min-height: 28px;
+  padding-inline: 8px;
+  font-size: 10px;
+}
+
+.issue-registry {
+  border-block: 1px solid var(--line);
+}
+
+.issue-registry .section-head {
+  gap: 7px;
+}
+
+.issue-registry .section-head h2 {
+  margin-right: auto;
+}
+
+.registry-filters,
+.registry-batch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.registry-filters select,
+.registry-add input,
+.registry-add select {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.registry-add {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  margin-block: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.registry-list,
+.registry-evidence {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.registry-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  border-top: 1px solid var(--line);
+}
+
+.registry-item:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.registry-select {
+  padding-top: 10px;
+}
+
+.registry-item details,
+.registry-item summary {
+  min-width: 0;
+}
+
+.registry-item summary {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: start;
+  padding: 9px 0;
+  cursor: pointer;
+}
+
+.registry-item summary::-webkit-details-marker {
+  display: none;
+}
+
+.registry-state {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.state-open { color: var(--bad, #d65555); }
+.state-verified { color: var(--ok, #3b936b); }
+.state-accepted-risk { color: var(--warn, #c77b22); }
+.state-dismissed { color: var(--muted); }
+
+.registry-title {
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.registry-status {
+  font-size: 9px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.registry-detail {
+  padding: 0 6px 10px 24px;
+}
+
+.registry-detail p {
+  margin: 5px 0;
+}
+
+.registry-evidence code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+}
+
+.registry-batch {
+  grid-template-columns: repeat(3, 1fr);
+  position: sticky;
+  bottom: 4px;
+  padding: 6px;
+  border: 1px solid var(--line-strong, var(--line));
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 12%);
+}
+
+.density-guided .expert-only {
+  display: none !important;
+}
+
 .behaviour-evidence {
   margin-left: 6px;
   padding: 1px 5px;

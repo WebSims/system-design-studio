@@ -250,6 +250,8 @@ export const Topbar = () => {
   const noteCount = useStudyStore((s) => s.annotations.length)
   const agentBusy = useStudyStore((s) => s.agentBusy > 0)
   const homeOpen = useStudyStore((s) => s.homeOpen)
+  const uiDensity = useStudyStore((s) => s.uiDensity)
+  const setUiDensity = useStudyStore((s) => s.setUiDensity)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const hasCandidates = study.candidates.length > 0
   /** The canvas is showing: lens, Play, Insert and Review make sense. The breadcrumb stays over the home. */
@@ -281,6 +283,10 @@ export const Topbar = () => {
         <div className="tb-spacer" />
 
         <div className="topbar-status" role="group" aria-label="Status">
+          <div className="tabs tabs-small density-toggle" role="group" aria-label="Interface detail">
+            <button className={uiDensity === "guided" ? "active" : ""} aria-pressed={uiDensity === "guided"} onClick={() => setUiDensity("guided")}>Guided</button>
+            <button className={uiDensity === "expert" ? "active" : ""} aria-pressed={uiDensity === "expert"} onClick={() => setUiDensity("expert")}>Expert</button>
+          </div>
           {onCanvas && (
             <span className="tb-meta tnum">
               {design.nodes.length} components {"\u00b7"} {design.edges.length} links

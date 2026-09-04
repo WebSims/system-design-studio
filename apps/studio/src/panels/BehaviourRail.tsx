@@ -10,6 +10,7 @@ import {
   templateFor,
   type InvariantDraft,
 } from "../correctness/builder"
+import { IssueRegistry } from "./IssueRegistry"
 
 /**
  * The left rail under the Behaviour lens: what you need now, the rest folded.
@@ -64,6 +65,8 @@ export function BehaviourRail() {
         {running && <p className="muted">Exploring every interleaving…</p>}
         {correctness && <Verdict result={correctness} />}
       </section>
+
+      <IssueRegistry />
 
       <WorkloadRow study={study} />
       <InvariantEditor study={study} />

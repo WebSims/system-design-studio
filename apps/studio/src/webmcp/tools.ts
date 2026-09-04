@@ -2,11 +2,17 @@ import { z } from "zod";
 import {
   ArchitectureEvidenceSchema,
   DesignSchema,
+  EvidenceTargetSchema,
+  IssueCategorySchema,
+  IssueEvidenceRefSchema,
+  IssueSeveritySchema,
+  IssueVerificationContractSchema,
   SourceInventoryItemSchema,
   activeRepositorySnapshot,
   contentHash,
   groundingReport,
   groundingReportForCandidate,
+  issueStatus,
   migrateAndParse,
   validateDesign,
   validateStudy,
@@ -17,6 +23,7 @@ import {
   type PortfolioResult,
   type RepositorySnapshot,
   type SourceInventoryItem,
+  type Issue,
   performanceCalibration,
   isPlaceholderWorkload,
   PLACEHOLDER_WORKLOAD_MESSAGE,
@@ -31,6 +38,7 @@ import {
   DRAWING_INTENT,
   DRAWING_LABEL,
   MutationRefused,
+  activeIssueBaseline,
   assertAgentModelFields,
   type ArchitecturePatchOperation,
 } from "../study/mutations";
@@ -358,6 +366,24 @@ const GetGroundingReportInput = z
   .object({ candidateId: z.string().min(1).max(64).optional() })
   .strict();
 
+const UpsertIssueInput = z.object({
+  title: z.string().min(1).max(300),
+  description: z.string().max(4000).default(""),
+  severity: IssueSeveritySchema,
+  category: IssueCategorySchema,
+  candidateId: z.string().min(1).max(64).nullable().default(null),
+  targets: z.array(EvidenceTargetSchema).max(128).default([]),
+  evidence: z.array(IssueEvidenceRefSchema).max(256).default([]),
+  verification: IssueVerificationContractSchema,
+  expectedRevision: z.number().int().nonnegative().optional(),
+}).strict();
+
+const GetIssuesInput = z.object({
+  status: z.enum(["open", "verified", "accepted-risk", "dismissed"]).optional(),
+  severity: IssueSeveritySchema.optional(),
+  source: z.enum(["user", "agent", "grounding-gap", "correctness-check", "performance-analysis"]).optional(),
+}).strict();
+
 const CompareInput = z
   .object({
     candidateIds: z
@@ -492,6 +518,18 @@ export interface ToolHost {
     expectedRevision: number;
     items: SourceInventoryItem[];
   }): Promise<Candidate>;
+  /** Propose or update an issue. The agent cannot attach decision receipts. */
+  upsertIssue(input: {
+    title: string;
+    description: string;
+    severity: "critical" | "warning" | "info";
+    category: import("@sds/schema").IssueCategory;
+    candidateId: string | null;
+    targets: import("@sds/schema").EvidenceTarget[];
+    evidence: import("@sds/schema").IssueEvidenceRef[];
+    verification: import("@sds/schema").IssueVerificationContract;
+    expectedRevision?: number;
+  }): Promise<Issue>;
   /** Run an evaluation. Must honour the abort signal. */
   runEvaluation(input: {
     candidateId: string;
@@ -1190,6 +1228,57 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
 
     define(
       {
+        name: "studio_upsert_issue",
+        description:
+          "Propose an evidence-linked design issue. Repeated identical analysis updates the same deterministic row rather than creating duplicates. " +
+          "If an existing row changes, pass its current expectedRevision. This tool cannot verify, dismiss, accept risk, or approve anything; those decisions remain with trusted checks or people.",
+        input: UpsertIssueInput,
+        annotations: { readOnlyHint: false, untrustedContentHint: true },
+        async run(args) {
+          const issue = await host.upsertIssue(args);
+          host.log({
+            tool: "studio_upsert_issue",
+            at: Date.now(),
+            ok: true,
+            summary: `proposed ${issue.severity} issue "${issue.title}"`,
+            ...(issue.candidateId ? { candidateId: issue.candidateId } : {}),
+            revision: issue.revision,
+          });
+          return { issue: { ...issue, status: issueStatus(issue) } };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
+        name: "studio_get_issues",
+        description:
+          "Read the unified issue registry with computed states. States come from revision-pinned evidence and trusted receipts; they are not agent-authored fields.",
+        input: GetIssuesInput,
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        async run(args) {
+          const study = host.getStudy();
+          const baselineRevision = activeIssueBaseline(study).revision;
+          const issues = study.issueRegistry
+            .map((issue) => ({ ...issue, status: issueStatus(issue, baselineRevision) }))
+            .filter((issue) => args.status === undefined || issue.status === args.status)
+            .filter((issue) => args.severity === undefined || issue.severity === args.severity)
+            .filter((issue) => args.source === undefined || issue.source === args.source);
+          host.log({
+            tool: "studio_get_issues",
+            at: Date.now(),
+            ok: true,
+            summary: `read ${issues.length} issue${issues.length === 1 ? "" : "s"}`,
+          });
+          return { baselineRevision, issues };
+        },
+      },
+      host
+    ),
+
+    define(
+      {
         name: "studio_validate_draft",
         description:
                     "Check a design without storing it. Returns schema, topology and workflow errors naming the field and what " +
@@ -1722,6 +1811,10 @@ export function summariseStudy(study: Study) {
     })),
     promotedCandidateId: study.promotedCandidateId,
     approval: study.approval,
+    issueSummary: {
+      total: study.issueRegistry.length,
+      open: study.issueRegistry.filter((issue) => issueStatus(issue, activeIssueBaseline(study).revision) === "open").length,
+    },
     notes: [
       "Vocabulary: the person sees a project (study in this schema), versions (candidates) and CURRENT (the sealed as-is baseline). Use those words with them.",
       "The workload, SLOs, invariants and exploration bounds are project-level. A version's local copies are overwritten from the project before every evaluation, so a version cannot improve its results by changing the workload.",

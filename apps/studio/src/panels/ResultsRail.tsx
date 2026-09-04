@@ -4,6 +4,7 @@ import { performanceCalibration } from "@sds/schema";
 import { useStudio } from "../store";
 import { useStudyStore } from "../study/store";
 import { AnalyzerPanel } from "./AnalyzerPanel";
+import { IssueRegistry } from "./IssueRegistry";
 import { Chart } from "./Chart";
 import { Transport } from "./Transport";
 
@@ -679,6 +680,8 @@ export function ResultsRail() {
   return (
     <aside className="rail left">
       <div className="rail-title">analysis</div>
+
+      <IssueRegistry />
 
       {blocking.length > 0 && (
         <div className="verdict bad">

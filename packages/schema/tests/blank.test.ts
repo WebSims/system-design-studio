@@ -57,6 +57,7 @@ describe("the empty study", () => {
     expect(() => StudySchema.parse(study)).not.toThrow();
     expect(study.repositorySnapshots).toEqual([]);
     expect(study.activeRepositorySnapshotId).toBeNull();
+    expect(study.issueRegistry).toEqual([]);
     expect(study.candidates).toEqual([]);
     expect(validateStudy(study)).toEqual([]);
   });

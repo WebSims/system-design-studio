@@ -4,6 +4,7 @@ import { previewDesign, type DesignPreview } from "@sds/analytic";
 import type { RunResult } from "@sds/core";
 import {
   blankDesign,
+  contentHash,
   DesignSchema,
   migrateAndParse,
   performanceCalibration,
@@ -13,6 +14,7 @@ import {
   type SdsNode,
 } from "@sds/schema";
 import { useStudyStore } from "./study/store";
+import { syncAnalysisIssues } from "./study/issueSync";
 import {
   analyzeInWorker,
   compareInWorker,
@@ -255,6 +257,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     try {
       const analysis = await analyzeInWorker(design);
       set({ analysis, analysing: false, analysisStale: false });
+      const studyStore = useStudyStore.getState();
+      const candidateId = studyStore.study.activeCandidateId;
+      if (candidateId) {
+        studyStore.updateStudy((study) =>
+          syncAnalysisIssues(study, candidateId, analysis.report.findings, contentHash(analysis))
+        );
+      }
     } catch (e) {
       set({
         analysing: false,

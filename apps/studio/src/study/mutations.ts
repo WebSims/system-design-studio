@@ -1,10 +1,16 @@
 import {
   CandidateSchema,
+  IssueReceiptSchema,
+  IssueSchema,
   StudySchema,
+  activeRepositorySnapshot,
   blankDesign,
   contentHash,
   distributionHasPositiveMean,
   groundingReportForCandidate,
+  issueEvidenceRefKey,
+  issueFingerprint,
+  issueStatus,
   migrateAndParse,
   validateDesign,
   validateWorkflow,
@@ -12,6 +18,14 @@ import {
   type Candidate,
   type CandidateRole,
   type Design,
+  type EvidenceTarget,
+  type Issue,
+  type IssueCategory,
+  type IssueEvidenceRef,
+  type IssueReceipt,
+  type IssueSeverity,
+  type IssueSource,
+  type IssueVerificationContract,
   type RepositorySnapshot,
   type SourceInventoryItem,
   type Study,
@@ -45,6 +59,191 @@ export class MutationRefused extends Error {
     super(message);
     this.name = "MutationRefused";
   }
+}
+
+export interface UpsertIssueInput {
+  title: string;
+  description?: string;
+  source: IssueSource;
+  severity: IssueSeverity;
+  category: IssueCategory;
+  candidateId?: string | null;
+  targets?: EvidenceTarget[];
+  evidence?: IssueEvidenceRef[];
+  verification: IssueVerificationContract;
+  /** Required only when changing a matching issue; identical retries remain idempotent. */
+  expectedRevision?: number;
+  by: "human" | "agent" | "check";
+}
+
+export interface RecordIssueDecisionInput {
+  issueId: string;
+  expectedRevision: number;
+  outcome: IssueReceipt["outcome"];
+  authority: "human" | "check" | "agent";
+  candidateId?: string | null;
+  evaluationHash?: string;
+  evidenceRefs?: string[];
+  reason?: string;
+  now?: number;
+}
+
+/** The source revision every issue/receipt is pinned to, including deterministic freehand work. */
+export function activeIssueBaseline(study: Study): { snapshotId: string | null; revision: string } {
+  const snapshot = activeRepositorySnapshot(study);
+  if (snapshot) return { snapshotId: snapshot.id, revision: snapshot.revision || `snapshot:${snapshot.id}` };
+  const active = study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ?? study.candidates[0];
+  return { snapshotId: null, revision: `freehand:${contentHash(active?.design ?? null)}` };
+}
+
+const sameIssueCore = (left: Issue, right: Issue): boolean =>
+  contentHash({
+    title: left.title,
+    description: left.description,
+    source: left.source,
+    severity: left.severity,
+    category: left.category,
+    candidateId: left.candidateId,
+    targets: left.targets,
+    evidence: left.evidence,
+    verification: left.verification,
+    baselineSnapshotId: left.baselineSnapshotId,
+    baselineRevision: left.baselineRevision,
+  }) ===
+  contentHash({
+    title: right.title,
+    description: right.description,
+    source: right.source,
+    severity: right.severity,
+    category: right.category,
+    candidateId: right.candidateId,
+    targets: right.targets,
+    evidence: right.evidence,
+    verification: right.verification,
+    baselineSnapshotId: right.baselineSnapshotId,
+    baselineRevision: right.baselineRevision,
+  });
+
+/** Deterministic, authority-safe registry upsert used by people, checks and the agent tool. */
+export function upsertIssue(study: Study, input: UpsertIssueInput, now = Date.now()): { study: Study; issue: Issue } {
+  if (input.candidateId && !study.candidates.some((candidate) => candidate.id === input.candidateId)) {
+    throw new MutationRefused(`no candidate "${input.candidateId}"`, "no-such-candidate");
+  }
+  if (input.by === "agent" && input.source !== "agent") {
+    throw new MutationRefused("agents may only propose agent-sourced issues", "issue-source-authority");
+  }
+  const baseline = activeIssueBaseline(study);
+  const targets = [...(input.targets ?? [])].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const fingerprint = issueFingerprint({
+    source: input.source,
+    category: input.category,
+    targets,
+    baselineRevision: baseline.revision,
+    title: input.title,
+  });
+  const existing = study.issueRegistry.find((issue) => issue.fingerprint === fingerprint);
+  const evidence = [...new Map((input.evidence ?? []).map((item) => [issueEvidenceRefKey(item), item])).values()];
+  const candidate = IssueSchema.parse({
+    id: existing?.id ?? `issue-${fingerprint}`,
+    fingerprint,
+    revision: existing?.revision ?? 0,
+    title: input.title.trim(),
+    description: input.description ?? "",
+    source: input.source,
+    severity: input.severity,
+    category: input.category,
+    candidateId: input.candidateId ?? null,
+    targets,
+    baselineSnapshotId: baseline.snapshotId,
+    baselineRevision: baseline.revision,
+    evidence,
+    verification: input.verification,
+    receipts: existing?.receipts ?? [],
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: existing?.updatedAt ?? now,
+  });
+  if (existing && sameIssueCore(existing, candidate)) return { study, issue: existing };
+  if (existing && input.by === "agent" && input.expectedRevision !== existing.revision) {
+    throw new MutationRefused(
+      `issue "${existing.id}" is at revision ${existing.revision}, not ${String(input.expectedRevision)}. Re-read the registry and try again.`,
+      "revision-conflict"
+    );
+  }
+  const issue = existing
+    ? IssueSchema.parse({ ...candidate, revision: existing.revision + 1, updatedAt: now })
+    : candidate;
+  const issueRegistry = existing
+    ? study.issueRegistry.map((item) => item.id === existing.id ? issue : item)
+    : [...study.issueRegistry, issue];
+  return {
+    issue,
+    study: StudySchema.parse({ ...study, issueRegistry, updatedAt: now }),
+  };
+}
+
+/** Append a human/check decision. No agent-callable surface reaches this mutation. */
+export function recordIssueDecision(study: Study, input: RecordIssueDecisionInput): { study: Study; issue: Issue } {
+  if (input.authority === "agent") {
+    throw new MutationRefused("agents cannot verify, dismiss, or accept risk", "issue-decision-authority");
+  }
+  if (input.outcome === "accepted-risk" && input.authority !== "human") {
+    throw new MutationRefused("only a human may accept risk", "issue-decision-authority");
+  }
+  const existing = study.issueRegistry.find((issue) => issue.id === input.issueId);
+  if (!existing) throw new MutationRefused(`no issue "${input.issueId}"`, "no-such-issue");
+  if (existing.revision !== input.expectedRevision) {
+    throw new MutationRefused(
+      `issue "${existing.id}" is at revision ${existing.revision}, not ${input.expectedRevision}`,
+      "revision-conflict"
+    );
+  }
+  const evidenceRefs = [...new Set(input.evidenceRefs ?? [])].sort();
+  const knownEvidence = new Set(existing.evidence.map(issueEvidenceRefKey));
+  if (evidenceRefs.some((key) => !knownEvidence.has(key))) {
+    throw new MutationRefused("an issue decision references evidence not attached to the issue", "unknown-issue-evidence");
+  }
+  const evaluationHash = input.evaluationHash ?? "";
+  if (
+    input.outcome === "verified" &&
+    existing.verification.kind !== "manual" &&
+    evidenceRefs.length === 0
+  ) {
+    throw new MutationRefused("verification requires attached evidence", "issue-verification-evidence");
+  }
+  if (
+    input.outcome === "verified" &&
+    input.authority === "check" &&
+    (existing.verification.kind === "correctness" || existing.verification.kind === "performance") &&
+    evaluationHash.length === 0
+  ) {
+    throw new MutationRefused("check verification requires an evaluation hash", "issue-verification-evaluation");
+  }
+  const now = input.now ?? Date.now();
+  const receiptBody = {
+    outcome: input.outcome,
+    authority: input.authority,
+    issueRevision: existing.revision,
+    baselineRevision: existing.baselineRevision,
+    candidateId: input.candidateId ?? existing.candidateId,
+    evaluationHash,
+    evidenceRefs,
+    reason: input.reason ?? "",
+    recordedAt: now,
+  };
+  const receipt = IssueReceiptSchema.parse({ id: `issue-receipt-${contentHash(receiptBody)}`, ...receiptBody });
+  const duplicate = existing.receipts.find((item) => item.id === receipt.id);
+  if (duplicate) return { study, issue: existing };
+  const issue = IssueSchema.parse({ ...existing, receipts: [...existing.receipts, receipt], updatedAt: now });
+  // Assert the trusted projection while still inside the mutation boundary.
+  issueStatus(issue, activeIssueBaseline(study).revision);
+  return {
+    issue,
+    study: StudySchema.parse({
+      ...study,
+      issueRegistry: study.issueRegistry.map((item) => item.id === issue.id ? issue : item),
+      updatedAt: now,
+    }),
+  };
 }
 
 /**

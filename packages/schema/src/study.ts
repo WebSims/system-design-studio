@@ -1193,6 +1193,174 @@ export const PortfolioResultSchema = z
 export type PortfolioResult = z.infer<typeof PortfolioResultSchema>;
 
 // ---------------------------------------------------------------------------
+// evidence-aware issue registry
+// ---------------------------------------------------------------------------
+
+export const IssueSourceSchema = z.enum([
+  "user",
+  "agent",
+  "grounding-gap",
+  "correctness-check",
+  "performance-analysis",
+]);
+export type IssueSource = z.infer<typeof IssueSourceSchema>;
+
+export const IssueSeveritySchema = z.enum(["critical", "warning", "info"]);
+export type IssueSeverity = z.infer<typeof IssueSeveritySchema>;
+
+export const IssueCategorySchema = z.enum([
+  "grounding",
+  "correctness",
+  "reliability",
+  "performance",
+  "scalability",
+  "data-consistency",
+  "security",
+  "operability",
+  "other",
+]);
+export type IssueCategory = z.infer<typeof IssueCategorySchema>;
+
+/** Stable references only: the registry never copies source or analyzer prose into evidence. */
+export const IssueEvidenceRefSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("architecture-evidence"),
+    candidateId: z.string().min(1).max(64),
+    evidenceId: z.string().min(1).max(128),
+  }).strict(),
+  z.object({
+    kind: z.literal("evaluation"),
+    evaluationId: z.string().min(1).max(512),
+    candidateHash: z.string().min(1).max(256),
+  }).strict(),
+  z.object({
+    kind: z.literal("grounding-report"),
+    candidateId: z.string().min(1).max(64),
+    reportHash: z.string().min(1).max(256),
+    gapCode: z.string().min(1).max(128),
+  }).strict(),
+  z.object({
+    kind: z.literal("analysis"),
+    analysisHash: z.string().min(1).max(256),
+    findingId: z.string().min(1).max(256),
+  }).strict(),
+  z.object({
+    kind: z.literal("user-observation"),
+    observationId: z.string().min(1).max(128),
+  }).strict(),
+]);
+export type IssueEvidenceRef = z.infer<typeof IssueEvidenceRefSchema>;
+
+export const IssueVerificationContractSchema = z.object({
+  kind: z.enum(["grounding", "correctness", "performance", "manual"]),
+  summary: z.string().min(1).max(2000),
+  requiredSignals: z.array(z.string().min(1).max(512)).max(32).default([]),
+}).strict();
+export type IssueVerificationContract = z.infer<typeof IssueVerificationContractSchema>;
+
+export const IssueReceiptSchema = z.object({
+  id: z.string().min(1).max(128),
+  outcome: z.enum(["verified", "accepted-risk", "dismissed"]),
+  /** Agents never receive an API that can write this field. */
+  authority: z.enum(["human", "check"]),
+  /** Issue revision this decision evaluated; edits invalidate older decisions. */
+  issueRevision: z.number().int().nonnegative(),
+  baselineRevision: z.string().min(1).max(256),
+  candidateId: z.string().min(1).max(64).nullable().default(null),
+  /** Required for check-backed correctness/performance verification. */
+  evaluationHash: z.string().max(256).default(""),
+  evidenceRefs: z.array(z.string().min(1).max(512)).max(128).default([]),
+  reason: z.string().max(2000).default(""),
+  recordedAt: z.number().int().nonnegative(),
+}).strict();
+export type IssueReceipt = z.infer<typeof IssueReceiptSchema>;
+
+export const IssueStatusSchema = z.enum(["open", "verified", "accepted-risk", "dismissed"]);
+export type IssueStatus = z.infer<typeof IssueStatusSchema>;
+
+export const IssueSchema = z.object({
+  id: z.string().min(1).max(128),
+  /** Derived from source/category/targets/baseline/title; the upsert mutation owns it. */
+  fingerprint: z.string().min(1).max(256),
+  revision: z.number().int().nonnegative().default(0),
+  title: z.string().min(1).max(300),
+  description: z.string().max(4000).default(""),
+  source: IssueSourceSchema,
+  severity: IssueSeveritySchema,
+  category: IssueCategorySchema,
+  candidateId: z.string().min(1).max(64).nullable().default(null),
+  targets: z.array(EvidenceTargetSchema).max(128).default([]),
+  baselineSnapshotId: z.string().min(1).max(128).nullable().default(null),
+  baselineRevision: z.string().min(1).max(256),
+  evidence: z.array(IssueEvidenceRefSchema).max(256).default([]),
+  verification: IssueVerificationContractSchema,
+  receipts: z.array(IssueReceiptSchema).max(256).default([]),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+}).strict().superRefine((issue, ctx) => {
+  if (issue.fingerprint !== issueFingerprint(issue)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["fingerprint"],
+      message: "issue fingerprint does not match its source, category, targets, baseline and title",
+    });
+  }
+});
+export type Issue = z.infer<typeof IssueSchema>;
+
+export function issueEvidenceRefKey(reference: IssueEvidenceRef): string {
+  switch (reference.kind) {
+    case "architecture-evidence":
+      return `architecture:${reference.candidateId}:${reference.evidenceId}`;
+    case "evaluation":
+      return `evaluation:${reference.evaluationId}:${reference.candidateHash}`;
+    case "grounding-report":
+      return `grounding:${reference.candidateId}:${reference.reportHash}:${reference.gapCode}`;
+    case "analysis":
+      return `analysis:${reference.analysisHash}:${reference.findingId}`;
+    case "user-observation":
+      return `user:${reference.observationId}`;
+  }
+}
+
+/** The same finding on the same baseline deterministically resolves to the same registry row. */
+export function issueFingerprint(input: Pick<Issue, "source" | "category" | "targets" | "baselineRevision" | "title">): string {
+  return contentHash({
+    source: input.source,
+    category: input.category,
+    baselineRevision: input.baselineRevision,
+    title: input.title.trim().toLowerCase(),
+    targets: input.targets.map(evidenceTargetKey).sort(),
+  });
+}
+
+/**
+ * Status is a projection of revision-pinned receipts, never a writable issue field.
+ * A receipt from an older baseline is deliberately ignored.
+ */
+export function issueStatus(issue: Issue, activeBaselineRevision: string = issue.baselineRevision): IssueStatus {
+  if (activeBaselineRevision !== issue.baselineRevision) return "open";
+  const evidence = new Set(issue.evidence.map(issueEvidenceRefKey));
+  const valid = issue.receipts
+    .filter((receipt) => {
+      if (receipt.issueRevision !== issue.revision) return false;
+      if (receipt.baselineRevision !== issue.baselineRevision) return false;
+      if (receipt.outcome === "accepted-risk" && receipt.authority !== "human") return false;
+      if (receipt.outcome !== "verified") return true;
+      if (issue.verification.kind === "manual") return receipt.authority === "human";
+      if (receipt.evidenceRefs.length === 0 || !receipt.evidenceRefs.every((key) => evidence.has(key))) return false;
+      if (
+        receipt.authority === "check" &&
+        (issue.verification.kind === "correctness" || issue.verification.kind === "performance") &&
+        receipt.evaluationHash.length === 0
+      ) return false;
+      return true;
+    })
+    .sort((left, right) => left.recordedAt - right.recordedAt || left.id.localeCompare(right.id));
+  return valid.at(-1)?.outcome ?? "open";
+}
+
+// ---------------------------------------------------------------------------
 // the study document
 // ---------------------------------------------------------------------------
 
@@ -1257,6 +1425,8 @@ export const StudySchema = z
      * for a design that has since changed.
      */
     evaluations: z.record(CandidateEvaluationSchema).default({}),
+    /** One persisted registry for human, agent, grounding, correctness and performance problems. */
+    issueRegistry: z.array(IssueSchema).max(4096).default([]),
     /** Candidate currently open in the editor. */
     activeCandidateId: z.string().nullable().default(null),
     /**
@@ -1302,6 +1472,19 @@ export const StudySchema = z
           message: `grounding references missing repository snapshot "${grounding.repositorySnapshotId}"`,
         });
       }
+    }
+    const issueIds = new Set<string>();
+    const issueFingerprints = new Set<string>();
+    for (let index = 0; index < study.issueRegistry.length; index += 1) {
+      const issue = study.issueRegistry[index]!;
+      if (issueIds.has(issue.id)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["issueRegistry", index, "id"], message: `duplicate issue id "${issue.id}"` });
+      }
+      if (issueFingerprints.has(issue.fingerprint)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["issueRegistry", index, "fingerprint"], message: `duplicate issue fingerprint "${issue.fingerprint}"` });
+      }
+      issueIds.add(issue.id);
+      issueFingerprints.add(issue.fingerprint);
     }
   });
 export type Study = z.infer<typeof StudySchema>;

@@ -30,6 +30,7 @@ import {
   promoteCandidate,
   replaceCandidateDraft,
   upsertSourceInventory,
+  upsertIssue,
   type ArchitecturePatchOperation,
 } from "../src/study/mutations";
 import { z } from "zod";
@@ -170,6 +171,12 @@ class TestHost implements ToolHost {
     const result = upsertSourceInventory(this.study, { ...input, by: "agent" });
     this.study = result.study;
     return result.candidate;
+  }
+
+  async upsertIssue(input: Parameters<ToolHost["upsertIssue"]>[0]) {
+    const result = upsertIssue(this.study, { ...input, source: "agent", by: "agent" });
+    this.study = result.study;
+    return result.issue;
   }
 
   async runEvaluation(input: {
@@ -503,6 +510,8 @@ describe("registration", () => {
       "studio_attach_code_evidence",
       "studio_upsert_source_inventory",
       "studio_get_grounding_report",
+      "studio_upsert_issue",
+      "studio_get_issues",
       "studio_validate_draft",
       "studio_create_candidate",
       "studio_replace_candidate_draft",
@@ -542,6 +551,7 @@ describe("registration", () => {
       "studio_get_catalog",
       "studio_get_candidate",
       "studio_get_grounding_report",
+      "studio_get_issues",
       "studio_validate_draft",
       "studio_run_evaluation",
       "studio_run_production_scenarios",
@@ -569,6 +579,8 @@ describe("registration", () => {
       "studio_attach_code_evidence",
       "studio_upsert_source_inventory",
       "studio_get_grounding_report",
+      "studio_upsert_issue",
+      "studio_get_issues",
       "studio_run_production_scenarios",
       "studio_get_evaluation",
       "studio_get_implementation_handoff",
@@ -595,7 +607,7 @@ describe("registration", () => {
       expect(r.state.reason).toContain("remains usable by hand");
     }
     // And the tool definitions still exist, so the UI can list what an agent WOULD be able to do.
-    expect(r.tools.length).toBe(23);
+    expect(r.tools.length).toBe(25);
   });
 
   it("reports unsupported when registerTool is present but not a function", () => {
@@ -775,6 +787,55 @@ describe("reading the study", () => {
     expect(guide.edgeLatency).toContain("Zero is an unknown-value sentinel");
     expect(guide.edgeLatency).toContain("fanoutFactor");
     expect(guide.placeholders.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// unified issue registry
+// ---------------------------------------------------------------------------
+
+describe("agent issue proposals", () => {
+  const proposedIssue = () => ({
+    title: "queue consumers have no visible capacity margin",
+    description: "The current topology does not establish consumer headroom.",
+    severity: "warning",
+    category: "scalability",
+    evidence: [{ kind: "analysis", analysisHash: "analysis-1", findingId: "queue-headroom" }],
+    verification: {
+      kind: "performance",
+      summary: "Run a matching load evaluation with measured consumer headroom.",
+      requiredSignals: ["consumer utilization below target"],
+    },
+  });
+
+  it("deduplicates repeated proposals and exposes only computed status", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const first = await call("studio_upsert_issue", proposedIssue());
+    const retry = await call("studio_upsert_issue", proposedIssue());
+    expect(first.isError).toBeFalsy();
+    const firstIssue = first.content.issue as { id: string };
+    expect(retry.content.issue).toMatchObject({ id: firstIssue.id, revision: 0, status: "open" });
+    expect(host.study.issueRegistry).toHaveLength(1);
+
+    const listed = await call("studio_get_issues", { status: "open", severity: "warning" });
+    const issues = listed.content.issues as Array<Record<string, unknown>>;
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: "agent", status: "open" });
+  });
+
+  it("revision-guards changed proposals and exposes no decision tool", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    await call("studio_upsert_issue", proposedIssue());
+    const stale = await call("studio_upsert_issue", { ...proposedIssue(), severity: "critical" });
+    expect(stale.isError).toBe(true);
+    expect(String(stale.content.error)).toContain("revision 0");
+    const updated = await call("studio_upsert_issue", {
+      ...proposedIssue(),
+      severity: "critical",
+      expectedRevision: 0,
+    });
+    expect(updated.content.issue).toMatchObject({ severity: "critical", revision: 1, status: "open" });
+    expect(buildTools(host).map((tool) => tool.name).join(" ")).not.toMatch(/verify_issue|dismiss_issue|accept_risk/);
   });
 });
 

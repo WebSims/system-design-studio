@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  StudySchema,
   contentHash,
   evaluationKey,
   syncCandidateToStudy,
@@ -54,15 +55,21 @@ import {
   importRepositoryArchitecture,
   promoteCandidate,
   releaseApproval,
+  recordIssueDecision,
   replaceCandidateDraft,
   setActiveCandidate,
+  upsertIssue as upsertRegistryIssue,
   upsertSourceInventory,
   type ApplyArchitecturePatchInput,
   type AttachArchitectureEvidenceInput,
   type ImportRepositoryArchitectureInput,
+  type RecordIssueDecisionInput,
+  type UpsertIssueInput,
   type UpsertSourceInventoryInput,
 } from "./mutations";
 import type { ActivityEntry, CreateStudyInput } from "../webmcp/tools";
+import { readUiDensity, writeUiDensity, type UiDensity } from "../uiDensity";
+import { syncEvaluationIssues, syncGroundingIssues } from "./issueSync";
 
 /**
  * The study store.
@@ -146,6 +153,7 @@ export const AGENT_ATTENTION_MS = 2500;
 export interface StudioState {
   study: Study;
   lens: LensId;
+  uiDensity: UiDensity;
   /** The review drawer (versions, gates, trade-offs, hand off) over the canvas. */
   reviewOpen: boolean;
   /** The agent stream panel. */
@@ -197,6 +205,7 @@ export interface StudioState {
 
   // ---- navigation ----
   setLens(lens: LensId): void;
+  setUiDensity(density: UiDensity): void;
   setReviewOpen(open: boolean): void;
   setAgentOpen(open: boolean): void;
   setHomeOpen(open: boolean): void;
@@ -256,6 +265,8 @@ export interface StudioState {
   patchArchitecture(input: ApplyArchitecturePatchInput): { candidate: Candidate; changed: string[] };
   attachEvidence(input: AttachArchitectureEvidenceInput): Candidate;
   upsertInventory(input: UpsertSourceInventoryInput): Candidate;
+  upsertIssue(input: UpsertIssueInput): import("@sds/schema").Issue;
+  decideIssue(input: RecordIssueDecisionInput): import("@sds/schema").Issue;
   removeCandidate(id: string): void;
   promote(id: string): void;
 
@@ -415,6 +426,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
   return {
     study: initial,
     lens: "behaviour",
+    uiDensity: readUiDensity(),
     reviewOpen: false,
     agentOpen: false,
     homeOpen: false,
@@ -434,6 +446,10 @@ export const useStudyStore = create<StudioState>((set, get) => {
     persistence: { status: "idle", detail: "" },
 
     setLens: (lens) => set({ lens }),
+    setUiDensity: (uiDensity) => {
+      writeUiDensity(uiDensity);
+      set({ uiDensity });
+    },
     setReviewOpen: (reviewOpen) => set({ reviewOpen }),
     setAgentOpen: (agentOpen) => set({ agentOpen }),
     setHomeOpen: (homeOpen) => set({ homeOpen }),
@@ -668,7 +684,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
 
     importArchitecture: (input) => {
       const { study, candidate } = importRepositoryArchitecture(get().study, input);
-      commit(study, true);
+      commit(syncGroundingIssues(study, candidate.id), true);
       set({ portfolio: null, reviewOpen: false });
       void get().refreshPortfolio();
       return candidate;
@@ -684,14 +700,26 @@ export const useStudyStore = create<StudioState>((set, get) => {
 
     attachEvidence: (input) => {
       const { study, candidate } = attachArchitectureEvidence(get().study, input);
-      commit(study, true);
+      commit(candidate.role === "baseline" ? syncGroundingIssues(study, candidate.id) : study, true);
       return candidate;
     },
 
     upsertInventory: (input) => {
       const { study, candidate } = upsertSourceInventory(get().study, input);
-      commit(study, true);
+      commit(syncGroundingIssues(study, candidate.id), true);
       return candidate;
+    },
+
+    upsertIssue: (input) => {
+      const { study, issue } = upsertRegistryIssue(get().study, input);
+      commit(study, true);
+      return issue;
+    },
+
+    decideIssue: (input) => {
+      const { study, issue } = recordIssueDecision(get().study, input);
+      commit(study, true);
+      return issue;
     },
 
     removeCandidate: (id) => {
@@ -758,7 +786,8 @@ export const useStudyStore = create<StudioState>((set, get) => {
         });
         // Immediate: an evaluation is minutes of work, and losing it to a reload would send the
         // user back to the beginning of the slowest thing the product does.
-        commit({ ...study, evaluations: { ...study.evaluations, [key]: merged } }, true);
+        const withEvaluation = StudySchema.parse({ ...study, evaluations: { ...study.evaluations, [key]: merged } });
+        commit(syncEvaluationIssues(withEvaluation, merged), true);
         await get().refreshPortfolio();
         return merged;
       } catch (err) {

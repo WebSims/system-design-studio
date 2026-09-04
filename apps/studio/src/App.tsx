@@ -281,6 +281,8 @@ function useWebmcp() {
       },
       upsertSourceInventory: async (input) =>
         useStudyStore.getState().upsertInventory({ ...input, by: "agent" }),
+      upsertIssue: async (input) =>
+        useStudyStore.getState().upsertIssue({ ...input, source: "agent", by: "agent" }),
       runEvaluation: async (input) => {
         if (input.signal?.aborted) throw new Error("evaluation aborted before it began");
         const abort = () => cancelWorker();
@@ -345,6 +347,7 @@ function useWebmcp() {
 
 export function App() {
   const lens = useStudyStore((s) => s.lens);
+  const uiDensity = useStudyStore((s) => s.uiDensity);
   const error = useStudyStore((s) => s.error);
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
   const homeOpen = useStudyStore((s) => s.homeOpen);
@@ -358,7 +361,7 @@ export function App() {
   }, []);
 
   return (
-    <div className={`shell shell-${lens} ${showWorkbench ? "" : "shell-empty"} ${agentOpen ? "agent-open" : ""}`}>
+    <div className={`shell shell-${lens} density-${uiDensity} ${showWorkbench ? "" : "shell-empty"} ${agentOpen ? "agent-open" : ""}`}>
       <Topbar />
       {showWorkbench ? <CandidateBar /> : null}
       {error && <div className="banner banner-error">{error}</div>}

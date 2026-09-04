@@ -163,6 +163,17 @@ same corner, and the pill brings it back.
 
 ## The left rail
 
+Both lenses begin with the same persisted **issues** registry. Issues from people, agents,
+grounding checks, correctness checks, and load analysis are deduplicated against the current
+baseline. Filter by state or severity, select several rows for a human decision, or focus a
+targeted issue on the canvas. **Open**, **verified**, **accepted risk**, and **dismissed** are
+shown with text and symbols as well as colour. Agent tools may propose issues but cannot verify,
+dismiss, accept risk, or approve them.
+
+The **Guided / Expert** switch in the top bar is stored on this device. Guided is the default;
+Expert reveals stable evidence-reference identifiers and issue revisions without changing the
+underlying project.
+
 In the Behaviour lens the left rail shows what you need now: the result ("does it break?"),
 the **Workload** row, the rules, and what can go wrong. The Workload row is the one place
 the project's arrival is edited; a client node's inspector shows the same value read-only,
