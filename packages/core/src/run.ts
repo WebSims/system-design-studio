@@ -1040,8 +1040,21 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
         ) {
           throw new Error(`${event.kind} must target a capacity-limited component`);
         }
-      } else if (!design.edges.some((edge) => edge.id === event.targetEdgeId)) {
+      } else if ("targetEdgeId" in event && !design.edges.some((edge) => edge.id === event.targetEdgeId)) {
         throw new Error(`failure event targets unknown edge "${event.targetEdgeId}"`);
+      } else if ("replicaGroupId" in event) {
+        const group = design.nodes.find(
+          (node) => node.database?.replicaGroup?.id === event.replicaGroupId
+        )?.database?.replicaGroup;
+        if (!group) {
+          throw new Error(`failure event targets unknown replica group "${event.replicaGroupId}"`);
+        }
+        if (
+          (event.kind === "replica-partition" && event.availableReplicas > group.replicas) ||
+          (event.kind === "replica-divergence" && event.staleReplicas > group.replicas)
+        ) {
+          throw new Error(`failure event names more replicas than group "${group.id}" contains`);
+        }
       }
       failures.add(event);
     },

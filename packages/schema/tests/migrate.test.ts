@@ -19,7 +19,7 @@ import { runSimulation } from "@sds/core";
  *
  * WHAT THIS FILE PROTECTS
  *
- * Saved work. The schema has changed seven times and every change is a chance to corrupt
+ * Saved work. The schema has changed eight times and every change is a chance to corrupt
  * somebody's design silently -- not by throwing, which would be obvious, but by parsing into
  * something that means something slightly different. The v5-to-v6 step is the largest widening
  * the format has taken, and it is the one most likely to do that, because it adds semantics
@@ -145,11 +145,11 @@ function v6Document(): Record<string, unknown> {
   };
 }
 
-describe("design v5 migrates through v6 to v7", () => {
+describe("design v5 migrates through v6, v7 and v8", () => {
   it("parses, and lands on the current version", () => {
     const migrated = migrateAndParse(v5Document());
     expect(migrated.version).toBe(DESIGN_SCHEMA_VERSION);
-    expect(DESIGN_SCHEMA_VERSION).toBe(7);
+    expect(DESIGN_SCHEMA_VERSION).toBe(8);
   });
 
   it("leaves the workflow null, so the design remains a pure load model", () => {
@@ -199,13 +199,13 @@ describe("design v5 migrates through v6 to v7", () => {
     expect(a.business).toBeNull();
   });
 
-  it("a v7 document round-trips through JSON unchanged", () => {
+  it("a current document round-trips through JSON unchanged", () => {
     const original = pizzaStudy().candidates[6]!.design;
     const round = migrateAndParse(JSON.parse(JSON.stringify(original)));
     expect(JSON.stringify(round)).toBe(JSON.stringify(DesignSchema.parse(original)));
   });
 
-  it("still migrates the unversioned legacy shape all the way to v7", () => {
+  it("still migrates the unversioned legacy shape all the way to v8", () => {
     // The oldest path, which now runs through seven steps. Worth keeping because it is the one
     // that does real work rather than adding defaults, so it is the one a new version can break.
     const legacy = {
@@ -295,6 +295,42 @@ describe("design v6 network migration", () => {
     expect(migrateAndParse(old).scenario.failures).toEqual([
       expect.objectContaining({ id: "api-outage", targetNodeId: "api" }),
     ]);
+  });
+});
+
+describe("design v7 distributed-semantics migration", () => {
+  const document = (): Record<string, unknown> => {
+    const current = JSON.parse(JSON.stringify(defaultDesign())) as Record<string, unknown>;
+    current.version = 7;
+    current.edges = (current.edges as Array<Record<string, unknown>>).map(
+      ({ semantics: _semantics, ...edge }) => edge
+    );
+    current.nodes = (current.nodes as Array<Record<string, unknown>>).map((node) => {
+      if (typeof node.database !== "object" || node.database === null) return node;
+      const { isolationLevel: _isolation, replicaGroup: _group, ...database } =
+        node.database as Record<string, unknown>;
+      return { ...node, database };
+    });
+    return current;
+  };
+
+  it("makes every existing link synchronous and every database single-authority", () => {
+    const migrated = migrateAndParse(document());
+    expect(migrated.version).toBe(8);
+    expect(migrated.edges.every((edge) => edge.semantics.kind === "synchronous")).toBe(true);
+    for (const node of migrated.nodes.filter((candidate) => candidate.kind === "database")) {
+      expect(node.database?.isolationLevel).toBe("read-committed");
+      expect(node.database?.replicaGroup).toBeNull();
+    }
+  });
+
+  it("preserves the v7 simulation result byte-for-byte", () => {
+    const old = document();
+    const migrated = migrateAndParse(old);
+    const equivalent = DesignSchema.parse({ ...old, version: DESIGN_SCHEMA_VERSION });
+    const a = runSimulation(migrated, { collectTrace: false });
+    const b = runSimulation(equivalent, { collectTrace: false });
+    expect(JSON.stringify({ ...a, wallMs: 0 })).toBe(JSON.stringify({ ...b, wallMs: 0 }));
   });
 });
 

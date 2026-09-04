@@ -40,6 +40,8 @@ export interface RequestCtx {
   /** Absolute simulated time the client gives up, or null. */
   deadlineAt: number | null;
   traced: boolean;
+  /** Per-edge async traversal counts. This is the executable feedback-loop bound. */
+  asyncHops?: Readonly<Record<string, number>>;
   /**
    * Generated domain fields for this request: user id, claim id, idempotency key.
    *
@@ -582,6 +584,18 @@ function* callThrough(env: ComponentEnv, edge: SdsEdge, ctx: RequestCtx): Proces
   }
 }
 
+/** Build the child context for an async handoff, or null when its budget is spent. */
+function detachedContext(edge: SdsEdge, ctx: RequestCtx): RequestCtx | null {
+  if (edge.semantics.kind !== "asynchronous") return null;
+  const used = ctx.asyncHops?.[edge.id] ?? 0;
+  if (used >= edge.semantics.maxHops) return null;
+  return {
+    ...ctx,
+    deadlineAt: null,
+    asyncHops: { ...ctx.asyncHops, [edge.id]: used + 1 },
+  };
+}
+
 /**
  * Call every eligible dependency, honouring each edge's probability.
  *
@@ -620,10 +634,19 @@ function* callDependencies(
   const calls: Array<() => Process<Outcome>> = [];
   for (const e of chosen) {
     for (let i = 0; i < e.fanoutFactor; i++) {
-      calls.push(() => callThrough(env, e, ctx));
+      if (e.semantics.kind === "asynchronous") {
+        const detached = detachedContext(e, ctx);
+        if (detached) env.sim.spawn(callThrough(env, e, detached));
+      } else {
+        calls.push(() => callThrough(env, e, ctx));
+      }
     }
   }
 
+  // Detached work was scheduled above. Its eventual outcome is deliberately not
+  // part of the caller response; queues and event buses need separate health
+  // signals, not a fictional synchronous error.
+  if (calls.length === 0) return OK;
   if (calls.length === 1) return yield* calls[0]!();
 
   if (fanout === "sequential") {
@@ -1019,8 +1042,18 @@ export class LoadBalancerComponent extends StationComponent {
         this.dispatchTotal++;
       }
 
-      const outcome = yield* callThrough(env, edge, ctx);
-      this.observeBackend(edge.to, outcome.ok);
+      let outcome: Outcome = OK;
+      if (edge.semantics.kind === "asynchronous") {
+        const detached = detachedContext(edge, ctx);
+        if (detached) {
+          env.sim.spawn(callThrough(env, edge, detached), (result) => {
+            this.observeBackend(edge.to, result.ok);
+          });
+        }
+      } else {
+        outcome = yield* callThrough(env, edge, ctx);
+        this.observeBackend(edge.to, outcome.ok);
+      }
       if (ctx.traced) {
         env.trace.visit(
           ctx.requestId,
@@ -1289,6 +1322,9 @@ export class DatabaseComponent extends StationComponent {
   private execWaitCount = 0;
   private lastExecBusy = 0;
   private lastExecSampleT = 0;
+  private minAvailableReplicas = 0;
+  private maxStaleReplicas = 0;
+  private maxClockSkewMs = 0;
 
   constructor(node: SdsNode, env: ComponentEnv) {
     const cfg = node.database!;
@@ -1308,6 +1344,7 @@ export class DatabaseComponent extends StationComponent {
       capacityAt: () => env.failures.effectiveCapacity(node.id, cfg.parallelism),
     });
     this.execSeries = new TimeSeries(`${node.id}.executionUtilization`);
+    this.resetReplicationObservations();
   }
 
   protected serviceMeanMs(): number {
@@ -1335,11 +1372,38 @@ export class DatabaseComponent extends StationComponent {
     this.execWaitCount = 0;
     this.lastExecBusy = 0;
     this.lastExecSampleT = this.env.sim.now;
+    this.resetReplicationObservations();
   }
 
   override failureStateChanged(): void {
     super.failureStateChanged();
     this.execution.refreshCapacity();
+    if (this.env.measuring()) this.observeReplication();
+  }
+
+  private resetReplicationObservations(): void {
+    const group = this.node.database?.replicaGroup;
+    this.minAvailableReplicas = group?.replicas ?? 0;
+    this.maxStaleReplicas = 0;
+    this.maxClockSkewMs = group?.maxClockSkewMs ?? 0;
+    this.observeReplication();
+  }
+
+  private observeReplication(): void {
+    const group = this.node.database?.replicaGroup;
+    if (!group) return;
+    this.minAvailableReplicas = Math.min(
+      this.minAvailableReplicas,
+      this.env.failures.availableReplicas(group.id, group.replicas)
+    );
+    this.maxStaleReplicas = Math.max(
+      this.maxStaleReplicas,
+      this.env.failures.staleReplicas(group.id)
+    );
+    this.maxClockSkewMs = Math.max(
+      this.maxClockSkewMs,
+      this.env.failures.clockSkewMs(group.id, group.maxClockSkewMs)
+    );
   }
 
   override sample(tSec: number): void {
@@ -1357,6 +1421,21 @@ export class DatabaseComponent extends StationComponent {
     const cfg = this.node.database!;
     const env = this.env;
     const enqueuedAt = env.sim.now;
+
+    const group = cfg.replicaGroup;
+    if (group) {
+      if (env.measuring()) this.observeReplication();
+      const available = env.failures.availableReplicas(group.id, group.replicas);
+      // Without a query classifier the model must not guess read vs write. It can
+      // still make this stronger deterministic statement: below both quorums no
+      // operation represented by this logical database can succeed.
+      if (available < Math.min(group.readQuorum, group.writeQuorum)) {
+        if (ctx.traced) {
+          env.trace.visit(ctx.requestId, this.node.id, enqueuedAt, null, env.sim.now, "error");
+        }
+        return { ok: false, reason: "error" };
+      }
+    }
 
     const conn = yield* acquire(this.resource, ctx.deadlineAt);
     if (!conn.granted) {
@@ -1446,6 +1525,18 @@ export class DatabaseComponent extends StationComponent {
       avgPoolWaitMs: pool.admitted > 0 ? pool.totalWaitMs / pool.admitted : 0,
       avgExecutionWaitMs: this.execWaitCount > 0 ? this.execWaitTotal / this.execWaitCount : 0,
       maxThroughputPerSec: (cfg.parallelism * 1000) / distMean(cfg.serviceTime),
+      replication: cfg.replicaGroup
+        ? {
+            groupId: cfg.replicaGroup.id,
+            replicas: cfg.replicaGroup.replicas,
+            readQuorum: cfg.replicaGroup.readQuorum,
+            writeQuorum: cfg.replicaGroup.writeQuorum,
+            isolationLevel: cfg.isolationLevel,
+            minAvailableReplicas: this.minAvailableReplicas,
+            maxStaleReplicas: this.maxStaleReplicas,
+            maxClockSkewMs: this.maxClockSkewMs,
+          }
+        : null,
     };
     return {
       ...base,
@@ -1470,6 +1561,7 @@ interface QueuedMessage {
   serviceMultiplier: number;
   requestId: number;
   traced: boolean;
+  asyncHops?: Readonly<Record<string, number>>;
 }
 
 /**
@@ -1586,6 +1678,7 @@ export class QueueComponent implements Component {
       serviceMultiplier: ctx.serviceMultiplier,
       requestId: ctx.requestId,
       traced: ctx.traced,
+      asyncHops: ctx.asyncHops,
     });
     if (env.measuring()) this.enqueued++;
     if (this.depth > this.maxBacklog) this.maxBacklog = this.depth;
@@ -1656,6 +1749,7 @@ export class QueueComponent implements Component {
           serviceMultiplier: msg.serviceMultiplier,
           deadlineAt: null,
           traced: msg.traced,
+          asyncHops: msg.asyncHops,
         };
         yield* callDependencies(env, self.node.id, ctx, "sequential");
 

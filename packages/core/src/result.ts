@@ -79,6 +79,20 @@ export interface DatabaseMetrics {
   avgExecutionWaitMs: number;
   /** Requests per second the station could serve at most: parallelism / E[S]. */
   maxThroughputPerSec: number;
+  /** Null for the single-authority datastore model. */
+  replication: {
+    groupId: string;
+    replicas: number;
+    readQuorum: number;
+    writeQuorum: number;
+    isolationLevel: string;
+    /** Lowest reachable replica count observed during the measurement window. */
+    minAvailableReplicas: number;
+    /** Largest explicitly divergent replica set observed. */
+    maxStaleReplicas: number;
+    /** Largest configured or injected absolute clock-skew bound observed. */
+    maxClockSkewMs: number;
+  } | null;
 }
 
 /** Queue behaviour. Tracked separately because it is an asynchronous boundary. */
@@ -342,7 +356,7 @@ export interface TraceHop {
   delivered: boolean;
   /** False for the response leg. */
   forward: boolean;
-  /** Present for v7 traces; absent on imported historical run records. */
+  /** Present since v7 traces; absent on imported historical run records. */
   network?: TraceNetworkLeg;
 }
 

@@ -79,6 +79,30 @@ export class FailureController {
     return Math.min(1, Math.max(0, 1 - survival));
   }
 
+  /** Strongest active partition wins; overlapping views are not assumed disjoint. */
+  availableReplicas(replicaGroupId: string, baseline: number): number {
+    return this.matchReplica(replicaGroupId, "replica-partition").reduce(
+      (available, event) => Math.min(available, event.availableReplicas),
+      baseline
+    );
+  }
+
+  /** Largest explicitly stale set visible in the current timeline window. */
+  staleReplicas(replicaGroupId: string): number {
+    return this.matchReplica(replicaGroupId, "replica-divergence").reduce(
+      (stale, event) => Math.max(stale, event.staleReplicas),
+      0
+    );
+  }
+
+  /** Baseline and injected skew compose conservatively as a maximum bound. */
+  clockSkewMs(replicaGroupId: string, baseline = 0): number {
+    return this.matchReplica(replicaGroupId, "clock-skew").reduce(
+      (skew, event) => Math.max(skew, event.maxSkewMs),
+      baseline
+    );
+  }
+
   snapshot(): FailureEvent[] {
     return [...this.active.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -124,6 +148,18 @@ export class FailureController {
     return [...this.active.values()].filter(
       (event): event is Extract<FailureEvent, { kind: K; targetEdgeId: string }> =>
         event.kind === kind && "targetEdgeId" in event && event.targetEdgeId === edgeId
+    );
+  }
+
+  private matchReplica<K extends FailureEvent["kind"]>(
+    replicaGroupId: string,
+    kind: K
+  ): Extract<FailureEvent, { kind: K; replicaGroupId: string }>[] {
+    return [...this.active.values()].filter(
+      (event): event is Extract<FailureEvent, { kind: K; replicaGroupId: string }> =>
+        event.kind === kind &&
+        "replicaGroupId" in event &&
+        event.replicaGroupId === replicaGroupId
     );
   }
 }

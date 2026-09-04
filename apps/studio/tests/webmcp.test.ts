@@ -960,6 +960,10 @@ describe("repository-backed architecture", () => {
       (candidate) => candidate.id === imported.content.candidateId
     )!;
     expect(result.content.topologyIssues).toEqual([]);
+    expect(result.content.distributedSemantics).toMatchObject({
+      hasSynchronousCycle: false,
+      liveness: "out-of-scope",
+    });
     expect(summary.total).toBe(baseline.evidence.length);
     expect(summary.observed).toBeGreaterThanOrEqual(baseline.design.nodes.length);
     expect(summary.inferred).toBe(baseline.design.edges.length);
@@ -1103,7 +1107,7 @@ describe("repository-backed architecture", () => {
     const dangling = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 2,
-      operations: [{ op: "add-edge", edge: { id: "api-db", from: "api", to: "db", latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } }],
+      operations: [{ op: "add-edge", edge: { id: "api-db", from: "api", to: "db", semantics: { kind: "synchronous" }, latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } }],
     });
     expect(dangling.isError).toBe(true);
     expect(host.study.candidates[0]!.revision).toBe(2);
@@ -1111,7 +1115,7 @@ describe("repository-backed architecture", () => {
     const link = await call("studio_apply_architecture_patch", {
       candidateId,
       expectedRevision: 2,
-      operations: [{ op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } }],
+      operations: [{ op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", semantics: { kind: "synchronous" }, latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } }],
     });
     expect(link.isError).toBeFalsy();
     expect((link.content.changed as string[])[0]).toBe("added link browser → api");
@@ -1226,10 +1230,10 @@ describe("repository-backed architecture", () => {
         { op: "add-node", node: { id: "api", kind: "server", label: "api", server } },
         { op: "add-node", node: { id: "worker", kind: "server", label: "worker", server } },
         { op: "add-node", node: { id: "pg", kind: "database", label: "postgres", database: { serviceTime: { kind: "deterministic", value: 0.005 } } } },
-        { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency, fanoutFactor: 1 } },
-        { op: "add-edge", edge: { id: "browser-worker", from: "browser", to: "worker", latency, fanoutFactor: 1 } },
-        { op: "add-edge", edge: { id: "api-pg", from: "api", to: "pg", latency, fanoutFactor: 1 } },
-        { op: "add-edge", edge: { id: "worker-pg", from: "worker", to: "pg", latency, fanoutFactor: 1 } },
+        { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", semantics: { kind: "synchronous" }, latency, fanoutFactor: 1 } },
+        { op: "add-edge", edge: { id: "browser-worker", from: "browser", to: "worker", semantics: { kind: "synchronous" }, latency, fanoutFactor: 1 } },
+        { op: "add-edge", edge: { id: "api-pg", from: "api", to: "pg", semantics: { kind: "synchronous" }, latency, fanoutFactor: 1 } },
+        { op: "add-edge", edge: { id: "worker-pg", from: "worker", to: "pg", semantics: { kind: "synchronous" }, latency, fanoutFactor: 1 } },
       ],
     });
     expect(patched.isError).toBeFalsy();
@@ -1332,11 +1336,12 @@ describe("repository-backed architecture", () => {
     expect(nodes.isError).toBeFalsy();
 
     for (const edge of [
-      { id: "missing", from: "timer", to: "worker", fanoutFactor: 1 },
+      { id: "missing", from: "timer", to: "worker", semantics: { kind: "synchronous" }, fanoutFactor: 1 },
       {
         id: "zero",
         from: "timer",
         to: "worker",
+        semantics: { kind: "synchronous" },
         latency: { kind: "deterministic", value: 0 },
         fanoutFactor: 1,
       },
@@ -1361,6 +1366,7 @@ describe("repository-backed architecture", () => {
             id: "implicit-multiplicity",
             from: "timer",
             to: "worker",
+            semantics: { kind: "synchronous" },
             latency: { kind: "deterministic", value: 0.25 },
           },
         },
@@ -1516,6 +1522,16 @@ describe("validating a draft", () => {
   });
 
   it("reports dangerous inherited defaults before an agent tries to store them", async () => {
+    const implicitSemantics = structuredClone(host.study.candidates[6]!.design) as {
+      edges: Array<Record<string, unknown>>;
+    };
+    delete implicitSemantics.edges[0]!.semantics;
+    const semanticsCheck = await call("studio_validate_draft", { design: implicitSemantics });
+    expect(semanticsCheck.content.valid).toBe(false);
+    expect(semanticsCheck.content.errors).toContainEqual(
+      expect.objectContaining({ layer: "agent-policy", code: "edge-semantics-required" })
+    );
+
     const design = structuredClone(host.study.candidates[6]!.design) as {
       edges: Array<Record<string, unknown>>;
     };

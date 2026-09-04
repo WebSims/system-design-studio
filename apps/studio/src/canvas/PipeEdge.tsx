@@ -76,6 +76,14 @@ export function PipeEdge({
             {latencyLabel(latencyMs, inputState)}
           </span>
           {selected && <span className="edge-selected-marker" aria-hidden="true">✓</span>}
+          {edge?.semantics.kind === "asynchronous" && (
+            <span
+              className="edge-async"
+              title={`Asynchronous ${edge.semantics.channel} handoff; at most ${edge.semantics.maxHops} traversal${edge.semantics.maxHops === 1 ? "" : "s"} per root request`}
+            >
+              ⇢ async · {edge.semantics.maxHops}h
+            </span>
+          )}
           {edge && roundTripMs > latencyMs * 2 && (
             <span className="edge-network-total tnum" title="Mean request + response network cost">
               {roundTripMs.toFixed(1)}ms RTT

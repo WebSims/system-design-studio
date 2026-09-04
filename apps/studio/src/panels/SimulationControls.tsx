@@ -13,10 +13,15 @@ const FAILURE_KINDS: Array<{ value: FailureKind; label: string }> = [
   { value: "edge-latency", label: "Edge latency" },
   { value: "request-loss", label: "Request loss" },
   { value: "gateway-disconnection", label: "Gateway disconnection" },
+  { value: "replica-partition", label: "Replica partition" },
+  { value: "replica-divergence", label: "Replica divergence" },
+  { value: "clock-skew", label: "Replica clock skew" },
 ];
 
 function failureTargetId(event: FailureEvent): string {
-  return "targetNodeId" in event ? event.targetNodeId : event.targetEdgeId;
+  if ("targetNodeId" in event) return event.targetNodeId;
+  if ("targetEdgeId" in event) return event.targetEdgeId;
+  return event.replicaGroupId;
 }
 
 function failureSummary(event: FailureEvent): string {
@@ -32,6 +37,12 @@ function failureSummary(event: FailureEvent): string {
       return `${Math.round(event.lossProbability * 100)}% loss`;
     case "gateway-disconnection":
       return `${Math.round(event.fraction * 100)}% disconnected`;
+    case "replica-partition":
+      return `${event.availableReplicas} reachable`;
+    case "replica-divergence":
+      return `${event.staleReplicas} stale · ${event.versionLag} version lag`;
+    case "clock-skew":
+      return `${event.maxSkewMs.toFixed(0)}ms max skew`;
   }
 }
 
@@ -48,6 +59,12 @@ function failureStrengthLabel(kind: FailureKind, strength: number): string {
       return `connections dropped · ${strength}%`;
     case "node-outage":
       return "outage";
+    case "replica-partition":
+      return `reachable replicas · ${strength}% of group`;
+    case "replica-divergence":
+      return `stale replicas · ${strength}% of group`;
+    case "clock-skew":
+      return `maximum skew · ${strength * 10}ms`;
   }
 }
 
@@ -113,6 +130,16 @@ export function SimulationControls() {
     if (failureKind === "gateway-disconnection") {
       return design.nodes.filter((node) => node.kind === "gateway").map((node) => ({ id: node.id, label: node.label }));
     }
+    if (
+      failureKind === "replica-partition" ||
+      failureKind === "replica-divergence" ||
+      failureKind === "clock-skew"
+    ) {
+      return design.nodes.flatMap((node) => {
+        const group = node.database?.replicaGroup;
+        return group ? [{ id: group.id, label: `${group.id} · ${node.label}` }] : [];
+      });
+    }
     const nodes =
       failureKind === "node-outage"
         ? design.nodes
@@ -129,6 +156,9 @@ export function SimulationControls() {
       startSec: atSec,
       durationSec: Math.max(0.1, durationSec),
     };
+    const selectedReplicaCount =
+      design.nodes.find((node) => node.database?.replicaGroup?.id === resolvedTarget)?.database
+        ?.replicaGroup?.replicas ?? 1;
     switch (failureKind) {
       case "node-outage":
         return { ...base, kind: failureKind, targetNodeId: resolvedTarget };
@@ -147,6 +177,28 @@ export function SimulationControls() {
           targetNodeId: resolvedTarget,
           fraction: strength / 100,
           reconnectOverSec: Math.min(durationSec, 5),
+        };
+      case "replica-partition":
+        return {
+          ...base,
+          kind: failureKind,
+          replicaGroupId: resolvedTarget,
+          availableReplicas: Math.round((selectedReplicaCount * strength) / 100),
+        };
+      case "replica-divergence":
+        return {
+          ...base,
+          kind: failureKind,
+          replicaGroupId: resolvedTarget,
+          staleReplicas: Math.max(1, Math.round((selectedReplicaCount * strength) / 100)),
+          versionLag: 1,
+        };
+      case "clock-skew":
+        return {
+          ...base,
+          kind: failureKind,
+          replicaGroupId: resolvedTarget,
+          maxSkewMs: Math.max(1, strength * 10),
         };
     }
   };

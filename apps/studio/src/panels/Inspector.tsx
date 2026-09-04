@@ -507,6 +507,66 @@ export function Inspector() {
         <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
         <PerformanceCalibrationNote targetKind="edge" targetId={edge.id} />
 
+        <div className="section">interaction</div>
+        <Field label="call semantics" hint="does the source wait?">
+          <Select
+            value={edge.semantics.kind}
+            options={[
+              { value: "synchronous", label: "Synchronous request" },
+              { value: "asynchronous", label: "Asynchronous handoff" },
+            ]}
+            onChange={(kind) =>
+              patch((candidate) => {
+                candidate.semantics =
+                  kind === "synchronous"
+                    ? { kind: "synchronous" }
+                    : { kind: "asynchronous", channel: "event", maxHops: 1 };
+              })
+            }
+          />
+        </Field>
+        {edge.semantics.kind === "asynchronous" && (
+          <>
+            <FieldRow>
+              <Field label="channel" hint="delivery boundary">
+                <Select
+                  value={edge.semantics.channel}
+                  options={[
+                    { value: "event", label: "Event" },
+                    { value: "queue", label: "Queue" },
+                  ]}
+                  onChange={(channel) =>
+                    patch((candidate) => {
+                      if (candidate.semantics.kind === "asynchronous") {
+                        candidate.semantics.channel = channel;
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <Field label="hop budget" hint="per request · this link">
+                <NumberInput
+                  value={edge.semantics.maxHops}
+                  min={1}
+                  max={64}
+                  onChange={(value) =>
+                    patch((candidate) => {
+                      if (candidate.semantics.kind === "asynchronous") {
+                        candidate.semantics.maxHops = clampInt(value, 1, 64);
+                      }
+                    })
+                  }
+                />
+              </Field>
+            </FieldRow>
+            <p className="note">
+              The caller returns after scheduling delivery. Feedback may cross this link at most{" "}
+              <b className="tnum">{edge.semantics.maxHops}</b> time{edge.semantics.maxHops === 1 ? "" : "s"}
+              {" "}per root request. This bounds execution; it does not claim the loop is live.
+            </p>
+          </>
+        )}
+
         <div className="section">protocol &amp; transport</div>
         <FieldRow>
           <Field label="application" hint="executable now">
@@ -1307,6 +1367,137 @@ export function Inspector() {
 
       {node.kind === "database" && node.database && (
         <>
+          <div className="section">consistency contract</div>
+          <Field label="isolation level" hint="requested guarantee">
+            <Select
+              value={node.database.isolationLevel}
+              options={[
+                { value: "eventual", label: "Eventual" },
+                { value: "read-committed", label: "Read committed" },
+                { value: "repeatable-read", label: "Repeatable read" },
+                { value: "snapshot", label: "Snapshot" },
+                { value: "serializable", label: "Serializable" },
+              ]}
+              onChange={(isolationLevel) =>
+                patch((candidate) => {
+                  if (candidate.database) candidate.database.isolationLevel = isolationLevel;
+                })
+              }
+            />
+          </Field>
+          <Toggle
+            label="Replicated datastore"
+            hint="Declare quorum, lag, partitions and clock bounds"
+            on={node.database.replicaGroup !== null}
+            onChange={(enabled) =>
+              patch((candidate) => {
+                if (!candidate.database) return;
+                candidate.database.replicaGroup = enabled
+                  ? {
+                      id: `${candidate.id}-replicas`,
+                      replicas: 3,
+                      readQuorum: 2,
+                      writeQuorum: 2,
+                      replicationLag: { kind: "deterministic", value: 0 },
+                      maxClockSkewMs: 0,
+                    }
+                  : null;
+              })
+            }
+          />
+          {node.database.replicaGroup && (
+            <>
+              <Field label="replica group" hint="unique failure target">
+                <input
+                  className="input"
+                  value={node.database.replicaGroup.id}
+                  onChange={(event) =>
+                    patch((candidate) => {
+                      if (candidate.database?.replicaGroup) {
+                        candidate.database.replicaGroup.id = event.currentTarget.value;
+                      }
+                    })
+                  }
+                />
+              </Field>
+              <FieldRow>
+                <Field label="replicas" hint="N">
+                  <NumberInput
+                    value={node.database.replicaGroup.replicas}
+                    min={1}
+                    max={MAX_REPLICAS}
+                    onChange={(value) =>
+                      patch((candidate) => {
+                        const group = candidate.database?.replicaGroup;
+                        if (!group) return;
+                        group.replicas = clampInt(value, 1, MAX_REPLICAS);
+                        group.readQuorum = Math.min(group.readQuorum, group.replicas);
+                        group.writeQuorum = Math.min(group.writeQuorum, group.replicas);
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="read quorum" hint="R">
+                  <NumberInput
+                    value={node.database.replicaGroup.readQuorum}
+                    min={1}
+                    max={node.database.replicaGroup.replicas}
+                    onChange={(value) =>
+                      patch((candidate) => {
+                        const group = candidate.database?.replicaGroup;
+                        if (group) group.readQuorum = clampInt(value, 1, group.replicas);
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="write quorum" hint="W">
+                  <NumberInput
+                    value={node.database.replicaGroup.writeQuorum}
+                    min={1}
+                    max={node.database.replicaGroup.replicas}
+                    onChange={(value) =>
+                      patch((candidate) => {
+                        const group = candidate.database?.replicaGroup;
+                        if (group) group.writeQuorum = clampInt(value, 1, group.replicas);
+                      })
+                    }
+                  />
+                </Field>
+              </FieldRow>
+              <p className="note">
+                R+W must exceed N for a fresh read to intersect a completed write; 2W must exceed
+                N for any two acknowledged writes to intersect. These checks are deterministic,
+                but quorum arithmetic alone is not a consensus or liveness proof.
+              </p>
+              <DistributionField
+                label="replication lag"
+                hint="ms · healthy state"
+                value={node.database.replicaGroup.replicationLag}
+                allowZero
+                onChange={(replicationLag) =>
+                  patch((candidate) => {
+                    if (candidate.database?.replicaGroup) {
+                      candidate.database.replicaGroup.replicationLag = replicationLag;
+                    }
+                  })
+                }
+              />
+              <Field label="clock skew bound" hint="ms · healthy state">
+                <NumberInput
+                  value={node.database.replicaGroup.maxClockSkewMs}
+                  min={0}
+                  onChange={(value) =>
+                    patch((candidate) => {
+                      if (candidate.database?.replicaGroup) {
+                        candidate.database.replicaGroup.maxClockSkewMs = Math.max(0, value);
+                      }
+                    })
+                  }
+                />
+              </Field>
+            </>
+          )}
+
           <div className="section">connections and execution</div>
           <FieldRow>
             <Field label="pool size" hint="connections">

@@ -72,11 +72,12 @@ export function buildCatalog(): Catalog {
       {
         kind: "database",
         whatItModels:
-          "The authoritative store. TWO nested capacities: a connection pool and an execution parallelism. Raising the pool past parallelism converts pool-wait into execution-wait and does not raise throughput.",
+          "A logical store. TWO nested capacities: a connection pool and an execution parallelism. It may remain a single authority or declare a replica group with isolation, quorum, lag and clock-skew bounds. Raising the pool past parallelism converts pool-wait into execution-wait and does not raise throughput.",
         capabilities: [
           "holds every state collection",
           "serves read, write, conditionalWrite, insertUnique and atomic",
-          "linearizable within one region",
+          "single-authority or explicitly bounded replicated state",
+          "deterministic quorum-intersection and partition-availability checks",
         ],
       },
       {
@@ -273,7 +274,7 @@ export function buildCatalog(): Catalog {
       componentTiming:
         "Set every component timing field explicitly. Zero is an unknown-value sentinel, not free work. When no measurement exists, use a clearly assumed benchmark only as a visible estimate; it cannot unlock load evaluation.",
       edgeLatency:
-        "Every link needs a network profile with explicit positive one-way propagationLatency and fanoutFactor (1 for one-to-one). Zero is an unknown-value sentinel used by old/test documents, never a physical latency default. Pick a benchmark only when its locality matches the available evidence, attach aspect=performance with confidence=assumed, and do not run load evaluation until measured.",
+        "Every link needs explicit semantics, a network profile with positive one-way propagationLatency, and fanoutFactor (1 for one-to-one). Use semantics={kind:'synchronous'} when the caller waits. Async queue/event links require maxHops and are the only links allowed to close a feedback loop. Zero is an unknown-value sentinel used by old/test documents, never a physical latency measurement.",
       networkPhysics: {
         executable: "HTTP/1.1 or HTTP/2 over TCP",
         profile:
@@ -311,6 +312,8 @@ export function buildCatalog(): Catalog {
       "Choose graph granularity from runtime, capacity and failure boundaries. Do not turn every source module, HTTP handler, goroutine, class or cron callback into a server. Keep ordinary responsibilities as workflow handlers on their deployed host; split an in-process subsystem only when an independently bounded resource is important to the question, label it '(in-process)', and cite the shared lifecycle.",
       "A link is executed work: every request reaching its source may traverse it according to classes and probability. Never draw an ownership, startup or shared-process relationship as a link. Give every traffic-bearing external entrypoint a client/work source; give autonomous polling, timers, cron and queue delivery their own source instead of routing them from an HTTP service. Every active component must be reachable from one of those sources.",
       "Define the unit of every source event. Set fanoutFactor=1 for one-to-one calls; for a batch, loop or broadcast, set the number of downstream calls it creates or model a separate bounded/volatile queue. Never collapse one timer tick into one downstream item when it actually expands to many.",
+      "Set link semantics explicitly. Synchronous cycles are invalid because a caller waits on itself. A queue or event feedback path must cross an asynchronous link with maxHops; the budget bounds execution but makes no liveness claim.",
+      "Replica quorum arithmetic can establish intersection or unavailability, not consensus correctness. General liveness, elections, protocol-specific conflict resolution and packet-level partitions remain out of scope and must be stated as such.",
       "For every server with more than one outgoing dependency, read the implementation and set fanout deliberately. Sequential adds dependency time; parallel is fork-join and waits for the slowest. Never inherit parallel merely because it is the schema default.",
       "A codebase may support mutually exclusive providers. Draw the provider selected by checked-in deployment configuration; if no deployed choice is known, use the documented default and record alternatives as an evidence gap rather than drawing every option as active at once.",
       "Repository structure can establish topology but cannot establish production traffic, replica count, service time or dependency latency. Any schema-required placeholder for an unknown value is performance evidence with confidence assumed, and is not a basis for running or reporting performance results.",

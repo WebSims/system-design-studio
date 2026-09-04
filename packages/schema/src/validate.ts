@@ -40,6 +40,7 @@ export interface DesignIssue {
   message: string;
   nodeId?: string;
   edgeId?: string;
+  replicaGroupId?: string;
   /** Set when the issue concerns the workflow rather than the topology. */
   handlerId?: string;
   opId?: string;
@@ -57,18 +58,14 @@ const CONFIG_KEY: Record<NodeKind, keyof SdsNode> = {
   lock: "lock",
 };
 
-/**
- * Detect a directed cycle.
- *
- * Cycles are rejected rather than truncated. The legacy engine tolerated them by
- * carrying an `ancestors` set and a hard depth cap of 8 (engine.jsx:186,193),
- * which silently produced a different topology from the one drawn. A cycle in a
- * request graph means a retry or a feedback path, and neither exists until Phase 3
- * -- so the honest response is to say so, not to quietly cut the graph.
- */
-function findCycle(design: Design): string[] | null {
+/** Detect a directed cycle using only edges accepted by `include`. */
+function findCycle(
+  design: Design,
+  include: (edge: Design["edges"][number]) => boolean = () => true
+): string[] | null {
   const adjacency = new Map<string, string[]>();
   for (const e of design.edges) {
+    if (!include(e)) continue;
     const list = adjacency.get(e.from) ?? [];
     list.push(e.to);
     adjacency.set(e.from, list);
@@ -141,6 +138,66 @@ export function validateDesign(design: Design): DesignIssue[] {
     }
   }
 
+  // ---- replicated datastores ----
+  const replicaGroups = new Map<string, SdsNode>();
+  for (const node of design.nodes) {
+    const group = node.database?.replicaGroup;
+    if (!group) continue;
+
+    const previous = replicaGroups.get(group.id);
+    if (previous) {
+      issues.push({
+        severity: "error",
+        code: "duplicate-replica-group-id",
+        message:
+          `replica group "${group.id}" is declared by both "${previous.label}" and "${node.label}"; ` +
+          "one database node represents the whole logical replica group",
+        nodeId: node.id,
+        replicaGroupId: group.id,
+      });
+    } else {
+      replicaGroups.set(group.id, node);
+    }
+
+    if (group.readQuorum > group.replicas || group.writeQuorum > group.replicas) {
+      issues.push({
+        severity: "error",
+        code: "quorum-exceeds-replicas",
+        message:
+          `replica group "${group.id}" has ${group.replicas} replicas but requires ` +
+          `R=${group.readQuorum}, W=${group.writeQuorum}; a quorum cannot exceed the group`,
+        nodeId: node.id,
+        replicaGroupId: group.id,
+      });
+      continue;
+    }
+
+    const readWriteOverlap = group.readQuorum + group.writeQuorum > group.replicas;
+    const writeOverlap = group.writeQuorum * 2 > group.replicas;
+    if (!readWriteOverlap) {
+      issues.push({
+        severity: node.database?.isolationLevel === "serializable" ? "error" : "warning",
+        code: "read-write-quorum-no-overlap",
+        message:
+          `replica group "${group.id}" has R+W=${group.readQuorum + group.writeQuorum} ≤ N=${group.replicas}. ` +
+          "A completed write and a later read can use disjoint replicas, so fresh reads are not guaranteed.",
+        nodeId: node.id,
+        replicaGroupId: group.id,
+      });
+    }
+    if (!writeOverlap) {
+      issues.push({
+        severity: node.database?.isolationLevel === "serializable" ? "error" : "warning",
+        code: "write-quorum-no-overlap",
+        message:
+          `replica group "${group.id}" has 2W=${group.writeQuorum * 2} ≤ N=${group.replicas}. ` +
+          "Two disjoint partitions can acknowledge conflicting writes, so divergence is possible.",
+        nodeId: node.id,
+        replicaGroupId: group.id,
+      });
+    }
+  }
+
   // ---- edges ----
   const seenEdge = new Set<string>();
   const classIds = new Set(classesOf(design).map((c) => c.id));
@@ -208,6 +265,21 @@ export function validateDesign(design: Design): DesignIssue[] {
       });
     }
 
+    if (
+      e.semantics.kind === "asynchronous" &&
+      e.semantics.channel === "queue" &&
+      byId.get(e.from)?.kind !== "queue" &&
+      byId.get(e.to)?.kind !== "queue"
+    ) {
+      issues.push({
+        severity: "error",
+        code: "async-queue-without-queue",
+        message:
+          "an asynchronous queue link must start or end at a queue component; use an event link for brokerless asynchronous delivery",
+        edgeId: e.id,
+      });
+    }
+
     for (const c of e.classes) {
       if (!classIds.has(c)) {
         issues.push({
@@ -247,6 +319,72 @@ export function validateDesign(design: Design): DesignIssue[] {
         message: `failure "${failure.id}" targets an edge that does not exist`,
         edgeId: failure.targetEdgeId,
       });
+    }
+    if ("replicaGroupId" in failure) {
+      const owner = replicaGroups.get(failure.replicaGroupId);
+      const group = owner?.database?.replicaGroup;
+      if (!owner || !group) {
+        issues.push({
+          severity: "error",
+          code: "failure-target-missing",
+          message: `failure "${failure.id}" targets replica group "${failure.replicaGroupId}", which does not exist`,
+          replicaGroupId: failure.replicaGroupId,
+        });
+      } else if (
+        (failure.kind === "replica-partition" && failure.availableReplicas > group.replicas) ||
+        (failure.kind === "replica-divergence" && failure.staleReplicas > group.replicas)
+      ) {
+        issues.push({
+          severity: "error",
+          code: "replica-failure-count-exceeds-group",
+          message:
+            `failure "${failure.id}" names more replicas than group "${group.id}" contains (${group.replicas})`,
+          nodeId: owner.id,
+          replicaGroupId: group.id,
+        });
+      } else if (failure.kind === "replica-partition") {
+        if (failure.availableReplicas < group.readQuorum) {
+          issues.push({
+            severity: "warning",
+            code: "partition-blocks-reads",
+            message:
+              `partition "${failure.id}" leaves ${failure.availableReplicas} replicas reachable, below read quorum ${group.readQuorum}; reads are unavailable during the window`,
+            nodeId: owner.id,
+            replicaGroupId: group.id,
+          });
+        }
+        if (failure.availableReplicas < group.writeQuorum) {
+          issues.push({
+            severity: "warning",
+            code: "partition-blocks-writes",
+            message:
+              `partition "${failure.id}" leaves ${failure.availableReplicas} replicas reachable, below write quorum ${group.writeQuorum}; writes are unavailable during the window`,
+            nodeId: owner.id,
+            replicaGroupId: group.id,
+          });
+        }
+      } else if (
+        failure.kind === "replica-divergence" &&
+        failure.staleReplicas >= group.readQuorum
+      ) {
+        issues.push({
+          severity: "warning",
+          code: "divergent-read-quorum-possible",
+          message:
+            `divergence "${failure.id}" leaves ${failure.staleReplicas} stale replicas, enough to form read quorum ${group.readQuorum}; a stale read is possible unless the real protocol adds a stronger freshness rule`,
+          nodeId: owner.id,
+          replicaGroupId: group.id,
+        });
+      } else if (failure.kind === "clock-skew") {
+        issues.push({
+          severity: "warning",
+          code: "clock-skew-outside-workflow-search",
+          message:
+            `clock-skew window "${failure.id}" permits up to ${failure.maxSkewMs}ms of skew. The timeline records this bound, but the logical workflow explorer does not claim clock- or lease-liveness verification.`,
+          nodeId: owner.id,
+          replicaGroupId: group.id,
+        });
+      }
     }
     if (
       failure.kind === "gateway-disconnection" &&
@@ -417,15 +555,35 @@ export function validateDesign(design: Design): DesignIssue[] {
     });
   }
 
-  // ---- cycles ----
-  const cycle = findCycle(design);
-  if (cycle) {
-    const labels = cycle.map((id) => byId.get(id)?.label ?? id).join(" \u2192 ");
+  // ---- bounded cycles ----
+  // Only an asynchronous handoff may close a loop. Synchronous recursion keeps a
+  // caller waiting on itself forever and therefore remains invalid. Async loops are
+  // finite because every async edge carries an explicit per-request hop budget.
+  const synchronousCycle = findCycle(
+    design,
+    (edge) => edge.semantics.kind === "synchronous"
+  );
+  if (synchronousCycle) {
+    const labels = synchronousCycle.map((id) => byId.get(id)?.label ?? id).join(" \u2192 ");
     issues.push({
       severity: "error",
-      code: "cycle",
-      message: `request path loops: ${labels}. Loops require retry semantics, which arrive in Phase 3.`,
+      code: "synchronous-cycle",
+      message:
+        `synchronous request path loops: ${labels}. A caller would wait on itself; ` +
+        "make the feedback handoff asynchronous and give it an explicit hop budget.",
     });
+  } else {
+    const boundedCycle = findCycle(design);
+    if (boundedCycle) {
+      const labels = boundedCycle.map((id) => byId.get(id)?.label ?? id).join(" \u2192 ");
+      issues.push({
+        severity: "warning",
+        code: "bounded-asynchronous-cycle",
+        message:
+          `feedback path ${labels} is executable only within its asynchronous edge hop budgets. ` +
+          "The simulator can evaluate finite traces; general liveness is explicitly not claimed.",
+      });
+    }
   }
 
   // ---- connections and gateways ----
@@ -605,6 +763,81 @@ export function validateDesign(design: Design): DesignIssue[] {
 
 export function isRunnable(design: Design): boolean {
   return !validateDesign(design).some((i) => i.severity === "error");
+}
+
+export interface ReplicaGroupAssessment {
+  nodeId: string;
+  groupId: string;
+  replicas: number;
+  readQuorum: number;
+  writeQuorum: number;
+  readWriteIntersect: boolean;
+  writeQuorumsIntersect: boolean;
+  isolationLevel: NonNullable<SdsNode["database"]>["isolationLevel"];
+}
+
+/**
+ * Machine-readable boundary for the distributed claims this build can make.
+ *
+ * Quorum intersection and finite traversal are arithmetic and therefore
+ * deterministic. Consensus progress and general liveness depend on protocols,
+ * election rules and timing assumptions the design does not contain, so the
+ * report names them as out of scope instead of manufacturing a verdict.
+ */
+export interface DistributedSemanticsReport {
+  synchronousEdges: number;
+  asynchronousEdges: number;
+  hasBoundedFeedback: boolean;
+  hasSynchronousCycle: boolean;
+  replicaGroups: ReplicaGroupAssessment[];
+  findings: DesignIssue[];
+  liveness: "out-of-scope";
+}
+
+export function analyzeDistributedSemantics(design: Design): DistributedSemanticsReport {
+  const distributedCodes = new Set([
+    "async-queue-without-queue",
+    "synchronous-cycle",
+    "bounded-asynchronous-cycle",
+    "duplicate-replica-group-id",
+    "quorum-exceeds-replicas",
+    "read-write-quorum-no-overlap",
+    "write-quorum-no-overlap",
+    "replica-failure-count-exceeds-group",
+    "partition-blocks-reads",
+    "partition-blocks-writes",
+    "divergent-read-quorum-possible",
+    "clock-skew-outside-workflow-search",
+  ]);
+  const replicaGroups = design.nodes.flatMap((node): ReplicaGroupAssessment[] => {
+    const group = node.database?.replicaGroup;
+    if (!group || !node.database) return [];
+    return [
+      {
+        nodeId: node.id,
+        groupId: group.id,
+        replicas: group.replicas,
+        readQuorum: group.readQuorum,
+        writeQuorum: group.writeQuorum,
+        readWriteIntersect: group.readQuorum + group.writeQuorum > group.replicas,
+        writeQuorumsIntersect: group.writeQuorum * 2 > group.replicas,
+        isolationLevel: node.database.isolationLevel,
+      },
+    ];
+  });
+
+  return {
+    synchronousEdges: design.edges.filter((edge) => edge.semantics.kind === "synchronous").length,
+    asynchronousEdges: design.edges.filter((edge) => edge.semantics.kind === "asynchronous").length,
+    hasBoundedFeedback: findCycle(design) !== null,
+    hasSynchronousCycle:
+      findCycle(design, (edge) => edge.semantics.kind === "synchronous") !== null,
+    replicaGroups,
+    findings: validateDesign(design).filter(
+      (issue) => distributedCodes.has(issue.code) || issue.replicaGroupId !== undefined
+    ),
+    liveness: "out-of-scope",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1760,6 +1993,24 @@ const MIGRATIONS: Record<number, Migration> = {
               : [],
           }
         : { failures: [] },
+  }),
+
+  // 7 -> 8: explicit call semantics and bounded distributed-system metadata.
+  // Every existing link remains synchronous, which is exactly how the v7 engine
+  // treated it (queues themselves remain asynchronous components). Databases stay
+  // single-authority through their null replicaGroup default, so both latency and
+  // correctness results are preserved.
+  7: (doc) => ({
+    ...doc,
+    version: 8,
+    edges: (Array.isArray(doc.edges) ? doc.edges : []).map((value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+      const edge = value as Record<string, unknown>;
+      return {
+        ...edge,
+        semantics: edge.semantics ?? { kind: "synchronous" },
+      };
+    }),
   }),
 };
 

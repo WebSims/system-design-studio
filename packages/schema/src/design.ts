@@ -564,6 +564,42 @@ export const CacheConfigSchema = z.object({
 export type CacheConfig = z.infer<typeof CacheConfigSchema>;
 
 /**
+ * The transaction visibility contract exposed by a logical datastore.
+ *
+ * These names deliberately describe guarantees, not vendor modes. In particular,
+ * `eventual` makes no ordering promise and `serializable` is only a requested
+ * isolation level; replica quorum checks below can disprove a configuration, but
+ * cannot prove that an unspecified replication protocol implements it correctly.
+ */
+export const IsolationLevelSchema = z.enum([
+  "eventual",
+  "read-committed",
+  "repeatable-read",
+  "snapshot",
+  "serializable",
+]);
+export type IsolationLevel = z.infer<typeof IsolationLevelSchema>;
+
+/**
+ * One logical database represented by several replicas.
+ *
+ * A database node remains the capacity/failure boundary on the canvas. This
+ * profile describes the replicas behind that boundary, which gives partitions a
+ * stable target and lets the trusted validator reason about quorum intersection.
+ */
+export const ReplicaGroupSchema = z.object({
+  id: z.string().min(1),
+  replicas: z.number().int().positive().max(MAX_REPLICAS),
+  readQuorum: z.number().int().positive().max(MAX_REPLICAS),
+  writeQuorum: z.number().int().positive().max(MAX_REPLICAS),
+  /** Healthy-state propagation delay. It is descriptive unless the workflow check says otherwise. */
+  replicationLag: DistributionSchema.default({ kind: "deterministic", value: 0 }),
+  /** Maximum absolute difference between replica clocks in milliseconds. */
+  maxClockSkewMs: z.number().nonnegative().default(0),
+});
+export type ReplicaGroup = z.infer<typeof ReplicaGroupSchema>;
+
+/**
  * A database, modelled as TWO nested resources.
  *
  * A connection pool caps concurrent connections; inside it, the engine can only
@@ -588,6 +624,10 @@ export const DatabaseConfigSchema = z.object({
   failureProbability: z.number().min(0).max(1).default(0),
   /** Failure probability at full execution utilization. See `ServerConfig`. */
   failureAtSaturation: z.number().min(0).max(1).nullable().default(null),
+  /** Visibility contract requested by operations using this logical store. */
+  isolationLevel: IsolationLevelSchema.default("read-committed"),
+  /** Null keeps the pre-v8 single-authority datastore semantics. */
+  replicaGroup: ReplicaGroupSchema.nullable().default(null),
   citation: CitationSchema.optional(),
 });
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
@@ -1026,7 +1066,7 @@ export type CallPolicy = z.infer<typeof CallPolicySchema>;
 /**
  * The application contract carried by an edge.
  *
- * HTTP is the only executable protocol in v7. The other variants are deliberately
+ * HTTP is the only executable application protocol in v8. The other variants are deliberately
  * typed now so saved designs and provider contracts do not need another structural
  * rewrite when their semantics arrive; `validateDesign` refuses to execute them until
  * that happens.
@@ -1129,10 +1169,29 @@ export function legacyNetworkProfile(
  * Keeping the per-edge data uniform and the dispatch rule per-kind avoids a
  * routing DSL while still expressing every case Phase 2 needs.
  */
+export const EdgeSemanticsSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("synchronous") }),
+  z.object({
+    kind: z.literal("asynchronous"),
+    channel: z.enum(["queue", "event"]),
+    maxHops: z.number().int().positive().max(64),
+  }),
+]);
+export type EdgeSemantics = z.infer<typeof EdgeSemanticsSchema>;
+
 const CanonicalEdgeSchema = z.object({
   id: z.string().min(1),
   from: z.string().min(1),
   to: z.string().min(1),
+  /**
+   * Whether the source waits for this dependency.
+   *
+   * Every asynchronous traversal carries its own explicit budget. A request
+   * remembers how many times it used each asynchronous edge, so a feedback loop
+   * terminates for a reason visible in the design instead of at a hidden engine
+   * depth limit.
+   */
+  semantics: EdgeSemanticsSchema.default({ kind: "synchronous" }),
   network: NetworkProfileSchema.default({}),
   /** Request classes that use this edge. Empty = all classes. */
   classes: z.array(z.string()).default([]),
@@ -1173,7 +1232,7 @@ const CanonicalEdgeSchema = z.object({
 });
 
 /**
- * Accept the v6 edge spelling at construction boundaries, but always emit the v7
+ * Accept the v6 edge spelling at construction boundaries, but always emit the current
  * canonical shape. Persisted v6 documents still take the audited migration path in
  * `migrateAndParse`; this adapter is for callers and fixtures that build current
  * designs with the former convenience fields.
@@ -1237,6 +1296,25 @@ export const FailureEventSchema = z.discriminatedUnion("kind", [
     fraction: z.number().min(0).max(1),
     reconnectOverSec: z.number().nonnegative().default(0),
   }),
+  FailureWindowSchema.extend({
+    kind: z.literal("replica-partition"),
+    replicaGroupId: z.string().min(1),
+    /** Replicas reachable from the coordinator while this partition is active. */
+    availableReplicas: z.number().int().nonnegative().max(MAX_REPLICAS),
+  }),
+  FailureWindowSchema.extend({
+    kind: z.literal("replica-divergence"),
+    replicaGroupId: z.string().min(1),
+    /** Replicas known to be behind the authoritative version. */
+    staleReplicas: z.number().int().positive().max(MAX_REPLICAS),
+    versionLag: z.number().int().positive().default(1),
+  }),
+  FailureWindowSchema.extend({
+    kind: z.literal("clock-skew"),
+    replicaGroupId: z.string().min(1),
+    /** Maximum absolute skew during the window. */
+    maxSkewMs: z.number().positive(),
+  }),
 ]);
 export type FailureEvent = z.infer<typeof FailureEventSchema>;
 
@@ -1280,7 +1358,7 @@ export const SloSchema = z.object({
 });
 export type Slo = z.infer<typeof SloSchema>;
 
-export const DESIGN_SCHEMA_VERSION = 7 as const;
+export const DESIGN_SCHEMA_VERSION = 8 as const;
 
 export const DesignSchema = z.object({
   version: z.literal(DESIGN_SCHEMA_VERSION),

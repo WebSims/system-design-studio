@@ -699,7 +699,7 @@ export function ResultsRail() {
           {advisories.slice(0, 4).map((issue, index) => (
             <div
               className="verdict-body"
-              key={`${issue.code}:${issue.nodeId ?? issue.edgeId ?? "design"}:${index}`}
+              key={`${issue.code}:${issue.nodeId ?? issue.edgeId ?? issue.replicaGroupId ?? "design"}:${index}`}
             >
               {issue.message}
             </div>

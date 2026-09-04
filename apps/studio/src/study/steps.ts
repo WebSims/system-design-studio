@@ -75,7 +75,7 @@ export const AGENT_STEPS: readonly AgentStep[] = [
     hint: ({ drawing }) =>
       `${patchCall(drawing)}: one add-node per component with x/y from studio_get_catalog.layoutGuide (or include an ` +
       "auto-layout operation and omit them); set fanout and positive timing fields explicitly; then add-edge once both " +
-      "ends exist, with network.propagationLatency set to a positive one-way value and fanoutFactor (1 for one-to-one). Each accepted patch is drawn at once.",
+      "ends exist, with explicit semantics, network.propagationLatency set to a positive one-way value, and fanoutFactor (1 for one-to-one). Async queue/event links also require maxHops. Each accepted patch is drawn at once.",
   },
   {
     id: "workflow",

@@ -45,8 +45,8 @@ const drawn = () => {
           database: { serviceTime: { kind: "deterministic", value: 0.002 } },
         },
       },
-      { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } },
-      { op: "add-edge", edge: { id: "api-db", from: "api", to: "db", latency: { kind: "deterministic", value: 0.001 }, fanoutFactor: 1 } },
+      { op: "add-edge", edge: { id: "browser-api", from: "browser", to: "api", semantics: { kind: "synchronous" }, latency: { kind: "deterministic", value: 0.25 }, fanoutFactor: 1 } },
+      { op: "add-edge", edge: { id: "api-db", from: "api", to: "db", semantics: { kind: "synchronous" }, latency: { kind: "deterministic", value: 0.001 }, fanoutFactor: 1 } },
     ],
   })
 }

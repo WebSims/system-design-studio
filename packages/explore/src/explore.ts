@@ -110,7 +110,7 @@ export interface ExploreInput {
 }
 
 /** Engine version, part of every evaluation cache key. Bump on any semantic change. */
-export const EXPLORER_VERSION = "explore-1";
+export const EXPLORER_VERSION = "explore-2";
 
 interface SearchNode {
   id: number;
@@ -748,12 +748,30 @@ function emptyStats(wallMs: number): CorrectnessResult["stats"] {
  * supports.
  */
 export function assumptionsFor(design: Design, faults: FaultModel): string[] {
-  const out: string[] = [
-    "one logical region with a linearizable authoritative datastore",
-    "no network partitions, no replica divergence, no quorum or consensus behaviour",
-    "no clock skew between components; expiry is modelled as a chosen transition rather than a clock reading",
-    "vendor-neutral semantics; no vendor's specific SQL isolation behaviour is reproduced",
-  ];
+  const groups = design.nodes.flatMap((node) =>
+    node.database?.replicaGroup
+      ? [{ node, group: node.database.replicaGroup, isolation: node.database.isolationLevel }]
+      : []
+  );
+  const out: string[] = groups.length === 0
+    ? [
+        "one logical region with a linearizable authoritative datastore",
+        "no network partitions, no replica divergence, no quorum or consensus behaviour",
+        "no clock skew between components; expiry is modelled as a chosen transition rather than a clock reading",
+        "vendor-neutral semantics; no vendor's specific SQL isolation behaviour is reproduced",
+      ]
+    : [
+        "workflow interleavings execute against one logical state per database; replica protocol steps are not added to the state search",
+        "quorum intersection, impossible quorums, configured partition availability, divergence counts and clock-skew bounds are checked arithmetically by the design validator",
+        "replica propagation, leader election, consensus progress and general liveness are out of scope; NO_VIOLATION_WITHIN_BOUNDS applies only to the logical workflow explored",
+        "vendor-neutral semantics; no vendor's specific transaction or replication protocol is reproduced",
+        ...groups.map(
+          ({ node, group, isolation }) =>
+            `"${node.label}" requests ${isolation} isolation from replica group "${group.id}" ` +
+            `(N=${group.replicas}, R=${group.readQuorum}, W=${group.writeQuorum}, ` +
+            `clock skew ≤ ${group.maxClockSkewMs}ms)`
+        ),
+      ];
 
   const off: string[] = [];
   if (!faults.duplicateRequest) off.push("duplicate submissions");

@@ -113,7 +113,10 @@ function summaryOf(node: SdsNode): string {
     }
     case "database": {
       const d = node.database!;
-      return `pool ${d.poolSize} / exec ${d.parallelism} \u00b7 ${describe(d.serviceTime)}`;
+      const group = d.replicaGroup;
+      return group
+        ? `${group.replicas} replicas · R${group.readQuorum}/W${group.writeQuorum} · ${d.isolationLevel}`
+        : `pool ${d.poolSize} / exec ${d.parallelism} \u00b7 ${describe(d.serviceTime)}`;
     }
     case "queue": {
       const q = node.queue!;

@@ -172,11 +172,16 @@ export interface DesignPreview {
   notes: string[];
 }
 
-/** Kahn topological order. Cycles are rejected upstream by the schema validator. */
-function topoOrder(design: Design): string[] {
+/** Kahn topological order for a selected set of links. */
+function topoOrderFor(
+  design: Design,
+  include: (edge: SdsEdge) => boolean
+): { order: string[]; cyclic: boolean } {
   const indegree = new Map<string, number>();
   for (const n of design.nodes) indegree.set(n.id, 0);
-  for (const e of design.edges) indegree.set(e.to, (indegree.get(e.to) ?? 0) + 1);
+  for (const e of design.edges) {
+    if (include(e)) indegree.set(e.to, (indegree.get(e.to) ?? 0) + 1);
+  }
 
   const queue = [...indegree.entries()].filter(([, d]) => d === 0).map(([id]) => id);
   const order: string[] = [];
@@ -184,15 +189,30 @@ function topoOrder(design: Design): string[] {
     const id = queue.shift()!;
     order.push(id);
     for (const e of design.edges) {
-      if (e.from !== id) continue;
+      if (e.from !== id || !include(e)) continue;
       const d = (indegree.get(e.to) ?? 1) - 1;
       indegree.set(e.to, d);
       if (d === 0) queue.push(e.to);
     }
   }
-  // Any node left out sits on a cycle; the validator reports that separately.
-  for (const n of design.nodes) if (!order.includes(n.id)) order.push(n.id);
-  return order;
+  return { order, cyclic: order.length !== design.nodes.length };
+}
+
+/**
+ * A full DAG keeps its historical order. A bounded feedback topology instead
+ * orders only synchronous links; validation guarantees that subgraph is a DAG.
+ */
+function topoOrder(design: Design): { order: string[]; boundedFeedback: boolean } {
+  const full = topoOrderFor(design, () => true);
+  if (!full.cyclic) return { order: full.order, boundedFeedback: false };
+  const sync = topoOrderFor(design, (edge) => edge.semantics.kind === "synchronous");
+  return {
+    order: [
+      ...sync.order,
+      ...design.nodes.map((node) => node.id).filter((id) => !sync.order.includes(id)),
+    ],
+    boundedFeedback: true,
+  };
 }
 
 function isExponential(scv: number): boolean {
@@ -230,6 +250,80 @@ function routeShares(
   }
 
   return eligible.map((e) => ({ edge: e, share: e.probability }));
+}
+
+/**
+ * Propagate expected load through a feedback graph by expanding only the state
+ * that makes it finite: how many times each asynchronous edge has been crossed.
+ * Synchronous cycles are rejected before preview, so every path either terminates
+ * or consumes a visible hop budget.
+ */
+function boundedArrivalRates(
+  design: Design,
+  classes: readonly RequestClass[],
+  totalWeight: number,
+  durationMs: number,
+  attemptMultiplier: ReadonlyMap<string, number>
+): { lambdaIn: Map<string, number>; truncated: boolean } {
+  interface Pending {
+    nodeId: string;
+    classId: string;
+    rate: number;
+    hops: Readonly<Record<string, number>>;
+  }
+
+  const byId = new Map(design.nodes.map((node) => [node.id, node]));
+  const lambdaIn = new Map<string, number>();
+  const pending: Pending[] = [];
+  const MAX_PATH_STATES = 100_000;
+  let expanded = 0;
+
+  const dispatch = (item: Pending): void => {
+    const node = byId.get(item.nodeId);
+    if (!node || item.rate <= 0) return;
+    let outbound = item.rate;
+    if (node.kind === "cache") outbound *= 1 - analyticHitRatio(node);
+    if (outbound <= 0) return;
+
+    for (const { edge, share } of routeShares(design, node, item.classId)) {
+      let hops = item.hops;
+      if (edge.semantics.kind === "asynchronous") {
+        const used = item.hops[edge.id] ?? 0;
+        if (used >= edge.semantics.maxHops) continue;
+        hops = { ...item.hops, [edge.id]: used + 1 };
+      }
+      const multiplier = attemptMultiplier.get(edge.id) ?? 1;
+      const rate =
+        outbound *
+        share *
+        multiplier *
+        edge.fanoutFactor *
+        (1 - edge.network.lossProbability);
+      if (rate <= 0) continue;
+      const targetKey = key(edge.to, item.classId);
+      lambdaIn.set(targetKey, (lambdaIn.get(targetKey) ?? 0) + rate);
+      pending.push({ nodeId: edge.to, classId: item.classId, rate, hops });
+    }
+  };
+
+  for (const client of design.nodes.filter((node) => node.kind === "client")) {
+    for (const cls of classes) {
+      const rate = client.client ? meanRate(client.client.arrival, durationMs) : 0;
+      dispatch({
+        nodeId: client.id,
+        classId: cls.id,
+        rate: rate * (totalWeight > 0 ? cls.weight / totalWeight : 0),
+        hops: {},
+      });
+    }
+  }
+
+  let head = 0;
+  while (head < pending.length && expanded < MAX_PATH_STATES) {
+    dispatch(pending[head++]!);
+    expanded++;
+  }
+  return { lambdaIn, truncated: head < pending.length };
 }
 
 /**
@@ -373,13 +467,19 @@ function analyticHitRatio(node: SdsNode): number {
 export function previewDesign(design: Design): DesignPreview {
   const byId = new Map(design.nodes.map((n) => [n.id, n]));
   const durationMs = design.scenario.durationSec * 1000;
-  const order = topoOrder(design);
+  const topologyOrder = topoOrder(design);
+  const order = topologyOrder.order;
   const classes = classesOf(design);
   const totalWeight = classes.reduce((s, c) => s + c.weight, 0);
   const notes: string[] = [];
   if (design.scenario.failures.length > 0) {
     notes.push(
       "the closed-form preview represents the healthy baseline and does not average failure-timeline windows; run the deterministic simulation to measure them"
+    );
+  }
+  if (topologyOrder.boundedFeedback) {
+    notes.push(
+      "expected load through asynchronous feedback is expanded only to each link's explicit hop budget; general liveness is out of scope"
     );
   }
 
@@ -413,6 +513,7 @@ export function previewDesign(design: Design): DesignPreview {
   let asyncBacklogWarning: string | null = null;
   let converged = false;
   let iterations = 0;
+  let boundedPropagationTruncated = false;
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     iterations = iteration;
@@ -425,36 +526,48 @@ export function previewDesign(design: Design): DesignPreview {
       lambdaIn.set(k, (lambdaIn.get(k) ?? 0) + amount);
     };
 
-    for (const id of order) {
-      const node = byId.get(id);
-      if (!node) continue;
+    if (topologyOrder.boundedFeedback) {
+      const bounded = boundedArrivalRates(
+        design,
+        classes,
+        totalWeight,
+        durationMs,
+        attemptMultiplier
+      );
+      lambdaIn = bounded.lambdaIn;
+      boundedPropagationTruncated ||= bounded.truncated;
+    } else {
+      for (const id of order) {
+        const node = byId.get(id);
+        if (!node) continue;
 
-      for (const cls of classes) {
-        let outbound: number;
-        if (node.kind === "client") {
-          // Time-average rate: for a ramp or a spike the closed form can only speak
-          // about the average regime, which is stated in the notes below.
-          const rate = node.client ? meanRate(node.client.arrival, durationMs) : 0;
-          outbound = rate * (totalWeight > 0 ? cls.weight / totalWeight : 0);
-        } else {
-          outbound = lambdaIn.get(key(id, cls.id)) ?? 0;
-          // Only cache MISSES continue to the origin.
-          if (node.kind === "cache") outbound *= 1 - analyticHitRatio(node);
-        }
-        if (outbound <= 0) continue;
+        for (const cls of classes) {
+          let outbound: number;
+          if (node.kind === "client") {
+            // Time-average rate: for a ramp or a spike the closed form can only speak
+            // about the average regime, which is stated in the notes below.
+            const rate = node.client ? meanRate(node.client.arrival, durationMs) : 0;
+            outbound = rate * (totalWeight > 0 ? cls.weight / totalWeight : 0);
+          } else {
+            outbound = lambdaIn.get(key(id, cls.id)) ?? 0;
+            // Only cache MISSES continue to the origin.
+            if (node.kind === "cache") outbound *= 1 - analyticHitRatio(node);
+          }
+          if (outbound <= 0) continue;
 
-        for (const { edge, share } of routeShares(design, node, cls.id)) {
-          // Retries multiply the load the dependency actually sees. This is the term
-          // that closes the feedback loop, and the reason a single pass is not enough.
-          const multiplier = attemptMultiplier.get(edge.id) ?? 1;
-          // Fan-out multiplies the load a dependency sees, and by far the larger factor
-          // in a realtime design: a room of twenty turns one message into twenty
-          // deliveries. Omitting it would understate delivery load by the room size.
-          bump(
-            edge.to,
-            cls.id,
-            outbound * share * multiplier * edge.fanoutFactor * (1 - edge.network.lossProbability)
-          );
+          for (const { edge, share } of routeShares(design, node, cls.id)) {
+            // Retries multiply the load the dependency actually sees. This is the term
+            // that closes the feedback loop, and the reason a single pass is not enough.
+            const multiplier = attemptMultiplier.get(edge.id) ?? 1;
+            // Fan-out multiplies the load a dependency sees, and by far the larger factor
+            // in a realtime design: a room of twenty turns one message into twenty
+            // deliveries. Omitting it would understate delivery load by the room size.
+            bump(
+              edge.to,
+              cls.id,
+              outbound * share * multiplier * edge.fanoutFactor * (1 - edge.network.lossProbability)
+            );
+          }
         }
       }
     }
@@ -479,7 +592,9 @@ export function previewDesign(design: Design): DesignPreview {
       /** Expected time this node spends waiting on dependencies, per class. */
       const dependencyMs = new Map<string, number>();
       for (const cls of classes) {
-        const routes = routeShares(design, node, cls.id);
+        const routes = routeShares(design, node, cls.id).filter(
+          ({ edge }) => edge.semantics.kind === "synchronous"
+        );
         if (routes.length === 0) {
           dependencyMs.set(cls.id, 0);
           continue;
@@ -572,6 +687,7 @@ export function previewDesign(design: Design): DesignPreview {
           downstreamSurvival = 1;
         } else if (node.kind === "loadbalancer") {
           downstreamSurvival = routes.reduce((s, r) => {
+            if (r.edge.semantics.kind === "asynchronous") return s + r.share;
             const raw =
               (1 - r.edge.network.lossProbability) *
               (successProb.get(key(r.edge.to, cls.id)) ?? 1);
@@ -580,6 +696,7 @@ export function previewDesign(design: Design): DesignPreview {
         } else if (node.kind === "cache") {
           const h = analyticHitRatio(node);
           const originSurvival = routes.reduce((s, r) => {
+            if (r.edge.semantics.kind === "asynchronous") return s;
             const raw =
               (1 - r.edge.network.lossProbability) *
               (successProb.get(key(r.edge.to, cls.id)) ?? 1);
@@ -589,6 +706,7 @@ export function previewDesign(design: Design): DesignPreview {
         } else {
           // Every branch that is taken must succeed; a branch not taken cannot fail.
           downstreamSurvival = routes.reduce((s, r) => {
+            if (r.edge.semantics.kind === "asynchronous") return s;
             const raw =
               (1 - r.edge.network.lossProbability) *
               (successProb.get(key(r.edge.to, cls.id)) ?? 1);
@@ -636,6 +754,13 @@ export function previewDesign(design: Design): DesignPreview {
       converged = true;
       break;
     }
+  }
+
+  if (boundedPropagationTruncated) {
+    converged = false;
+    notes.push(
+      "bounded feedback expanded beyond 100,000 path states; the closed-form preview is incomplete, so use deterministic simulation for this topology"
+    );
   }
 
   const nodes = design.nodes
@@ -693,7 +818,9 @@ export function previewDesign(design: Design): DesignPreview {
       const rate = client.client ? meanRate(client.client.arrival, durationMs) : 0;
       const share = totalWeight > 0 ? cls.weight / totalWeight : 0;
       offered += rate * share;
-      for (const { edge } of routeShares(design, client, cls.id)) {
+      for (const { edge } of routeShares(design, client, cls.id).filter(
+        ({ edge }) => edge.semantics.kind === "synchronous"
+      )) {
         const target = previews.get(edge.to);
         survival *=
           (1 - edge.network.lossProbability) * (successProb.get(key(edge.to, cls.id)) ?? 1);
@@ -875,7 +1002,9 @@ function clientP99(
   previews: Map<string, NodePreview>
 ): number | null {
   for (const client of design.nodes.filter((n) => n.kind === "client")) {
-    for (const { edge } of routeShares(design, client, cls.id)) {
+    for (const { edge } of routeShares(design, client, cls.id).filter(
+      ({ edge }) => edge.semantics.kind === "synchronous"
+    )) {
       const target = previews.get(edge.to);
       if (!target || target.p99Ms === null) return null;
       return target.p99Ms + meanNetworkRoundTripMs(edge.network);

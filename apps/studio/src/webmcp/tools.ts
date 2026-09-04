@@ -10,6 +10,7 @@ import {
   IssueVerificationContractSchema,
   SourceInventoryItemSchema,
   activeRepositorySnapshot,
+  analyzeDistributedSemantics,
   candidateIssueVerificationStatus,
   contentHash,
   groundingReport,
@@ -992,7 +993,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "Code/config citations carry a SHA-256 hash of the normalized cited slice. Documentation may orient the scan but never " +
           "qualifies as grounding evidence. Mark numeric measurements aspect=performance; code proving that a call " +
           "exists is architecture evidence, not timing calibration. Every component timing and link network.propagationLatency must be positive; " +
-          "every link must set fanoutFactor (1 for one-to-one). Missing inventory, evidence, workflow or source-state details seal " +
+          "every link must set semantics and fanoutFactor (1 for one-to-one). Async links require a queue/event channel and maxHops. Missing inventory, evidence, workflow or source-state details seal " +
           "the baseline as PROVISIONAL: it can be evaluated, but cannot be approved or handed off until the grounding report is clear. " +
           "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
           "step by step on the canvas (the version studio_create_study opened, patched with studio_apply_architecture_patch per component and link). " +
@@ -1061,7 +1062,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_get_architecture",
         description:
           "Read the active or named architecture as a repository-linked model: role, ancestry, revision, full design, topology " +
-          "validation issues and per-node/per-link evidence. Use this before proposing or patching an experiment. Contains repository paths and " +
+          "validation issues, bounded distributed-semantics report, and per-node/per-link evidence. Use this before proposing or patching an experiment. Contains repository paths and " +
           "user- or agent-authored claims.",
         input: GetArchitectureInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
@@ -1151,8 +1152,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "shared dependencies centered): either choose x/y per node from studio_get_catalog.layoutGuide, or include an " +
           "auto-layout operation and the studio computes that layout from the links. Overlapping nodes and missing " +
           "coordinates are otherwise refused, never silently repositioned. Agent-authored servers must set fanout explicitly; " +
-          "agent-authored service components must set positive timing fields explicitly, and links must include a network profile with positive one-way " +
-          "propagationLatency plus fanoutFactor (1 for one-to-one; use a catalog benchmark marked assumed when timing is unmeasured). Requires the revision read from " +
+          "agent-authored service components must set positive timing fields explicitly, and links must include explicit synchronous/asynchronous semantics, a network profile with positive one-way " +
+          "propagationLatency plus fanoutFactor (1 for one-to-one; asynchronous queue/event links also require maxHops). Requires the revision read from " +
           "studio_get_architecture or returned by the previous call, and refuses baselines, promoted versions, stale " +
           "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,
@@ -1824,6 +1825,7 @@ function architecturePayload(study: Study, candidate: Candidate) {
     },
     design: candidate.design,
     topologyIssues: validateDesign(candidate.design),
+    distributedSemantics: analyzeDistributedSemantics(candidate.design),
     evidence: candidate.evidence,
     performanceCalibration: performanceCalibration(study, candidate),
     evidenceSummary: {
@@ -2035,7 +2037,13 @@ export function validateDraft(design: unknown): {
       layer: "topology",
       code: issue.code,
       message: issue.message,
-      ...(issue.nodeId ? { where: issue.nodeId } : issue.edgeId ? { where: issue.edgeId } : {}),
+      ...(issue.nodeId
+        ? { where: issue.nodeId }
+        : issue.edgeId
+          ? { where: issue.edgeId }
+          : issue.replicaGroupId
+            ? { where: issue.replicaGroupId }
+            : {}),
     };
     (issue.severity === "error" ? errors : warnings).push(entry);
   }

@@ -365,6 +365,13 @@ const assertAgentNodeFields = (raw: Record<string, unknown>): void => {
 };
 
 const assertAgentEdgeFields = (raw: Record<string, unknown>): void => {
+  if (!("semantics" in raw)) {
+    throw new MutationRefused(
+      `link "${String(raw.id ?? "unknown")}" must set semantics explicitly. ` +
+        'Use { kind: "synchronous" } when the caller waits, or an asynchronous queue/event handoff with maxHops.',
+      "edge-semantics-required"
+    );
+  }
   if (!("fanoutFactor" in raw)) {
     throw new MutationRefused(
       `link "${String(raw.id ?? "unknown")}" must set fanoutFactor explicitly (use 1 for one-to-one). ` +
