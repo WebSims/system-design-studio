@@ -128,20 +128,49 @@ export class Sim {
    * makes the simulation exact: there is no accumulated floating-point drift and
    * no notion of a "tick" that could straddle two events.
    */
-  run(untilMs: number): void {
-    for (;;) {
-      if (this.stopped) return;
-      const next = this.queue.pop();
-      if (!next) return;
-      if (next.time > untilMs) {
-        // Put it back; the run window ended before this event.
-        this.queue.push(next.time, next.run);
+  run(untilMs: number): number {
+    return this.runEvents(Number.POSITIVE_INFINITY, untilMs);
+  }
+
+  /**
+   * Execute at most `count` events without crossing `untilMs`.
+   *
+   * This is the primitive behind interactive sessions. Looking at the next time
+   * before popping is important: pop-and-reinsert gives the event a new sequence
+   * number and can change the order of simultaneous events, making a stepped run
+   * disagree with a one-shot run.
+   */
+  runEvents(count: number, untilMs = Number.POSITIVE_INFINITY): number {
+    if (!Number.isFinite(count) && count !== Number.POSITIVE_INFINITY) {
+      throw new Error("event count must be finite or Infinity");
+    }
+    if (count < 0) throw new Error("event count must be non-negative");
+    if (untilMs < this._now) throw new Error("simulation time cannot move backwards");
+
+    let executed = 0;
+    while (executed < count) {
+      if (this.stopped) return executed;
+      const nextTime = this.queue.peekTime();
+      if (nextTime === null) return executed;
+      if (nextTime > untilMs) {
         this._now = untilMs;
-        return;
+        return executed;
       }
+      const next = this.queue.pop();
+      if (!next) continue;
       this._now = next.time;
       next.run();
+      executed++;
     }
+    return executed;
+  }
+
+  get nextEventTime(): number | null {
+    return this.queue.peekTime();
+  }
+
+  get pendingEvents(): number {
+    return this.queue.size;
   }
 
   stop(): void {
@@ -278,4 +307,3 @@ export class Sim {
     })();
   }
 }
-

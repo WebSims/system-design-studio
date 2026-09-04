@@ -1,7 +1,12 @@
 import { create } from "zustand";
 import { produce } from "immer";
 import { previewDesign, type DesignPreview } from "@sds/analytic";
-import type { RunResult } from "@sds/core";
+import type {
+  RunResult,
+  SimulationMode,
+  SimulationSessionSnapshot,
+  SimulationSessionUpdate,
+} from "@sds/core";
 import {
   blankDesign,
   contentHash,
@@ -15,11 +20,21 @@ import {
 } from "@sds/schema";
 import { useStudyStore } from "./study/store";
 import { syncAnalysisIssues } from "./study/issueSync";
+import { executableDesignChanged } from "./engine/executableDesign";
 import {
   analyzeInWorker,
+  advanceSimulationEventsInWorker,
+  advanceSimulationTimeInWorker,
   compareInWorker,
+  createSimulationSessionInWorker,
+  finalizeSimulationSessionInWorker,
+  injectSimulationRequestInWorker,
+  invalidateSimulationSessionInWorker,
   replicateInWorker,
-  runInWorker,
+  replaySimulationSessionInWorker,
+  setSimulationPausedInWorker,
+  setSimulationSourceInWorker,
+  setSimulationSpeedInWorker,
   type ComparisonSummary,
   type FullAnalysis,
   type ReplicationSummary,
@@ -78,12 +93,28 @@ interface StudioState {
   comparison: ComparisonSummary | null;
   comparing: boolean;
   selection: Selection;
+  /** Incremental simulation state. The completed result is also copied into `run`. */
+  sessionMode: SimulationMode;
+  sessionId: string | null;
+  session: SimulationSessionSnapshot | null;
+  sessionBusy: boolean;
+  enabledSourceIds: string[];
 
   select: (s: Selection) => void;
   edit: (fn: (d: Design) => void) => void;
   moveNode: (id: string, x: number, y: number) => void;
   loadDesign: (design: Design) => void;
   execute: () => Promise<void>;
+  startSession: (mode?: SimulationMode) => Promise<void>;
+  setSessionMode: (mode: SimulationMode) => void;
+  setSourceEnabled: (sourceNodeId: string, enabled: boolean) => Promise<void>;
+  injectRequest: (sourceNodeId: string) => Promise<void>;
+  advanceSessionBy: (deltaMs: number) => Promise<void>;
+  advanceSessionEvents: (count: number) => Promise<void>;
+  setSessionPaused: (paused: boolean) => Promise<void>;
+  setSessionSpeed: (speed: number) => Promise<void>;
+  finishSession: () => Promise<void>;
+  replaySession: () => Promise<void>;
   analyze: () => Promise<void>;
   runReplications: (replications: number) => Promise<void>;
   saveBaseline: () => void;
@@ -163,6 +194,47 @@ function forwardEdit(fn: (d: Design) => void): void {
   useStudyStore.getState().editActive((design) => produce(design, fn));
 }
 
+function clientSourceIds(design: Design): string[] {
+  return design.nodes
+    .filter((node) => node.kind === "client" && node.client)
+    .map((node) => node.id);
+}
+
+let sessionEpoch = 0;
+
+function invalidateActiveSession(reason: string): void {
+  const state = useStudio.getState();
+  const active =
+    state.sessionId &&
+    state.session &&
+    state.session.status !== "completed" &&
+    state.session.status !== "invalidated";
+  if (!active && !state.sessionBusy && !state.running) return;
+
+  sessionEpoch++;
+  if (active) {
+    void invalidateSimulationSessionInWorker(state.sessionId!, reason).catch(() => undefined);
+  }
+  useStudio.setState({
+    ...(active
+      ? {
+          session: {
+            ...state.session!,
+            status: "invalidated" as const,
+            paused: true,
+            invalidationReason: reason,
+          },
+        }
+      : {}),
+    sessionBusy: false,
+    running: false,
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 const initial = activeDesign();
 
 export const useStudio = create<StudioState>((set, get) => ({
@@ -181,6 +253,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   comparison: null,
   comparing: false,
   selection: null,
+  sessionMode: "full",
+  sessionId: null,
+  session: null,
+  sessionBusy: false,
+  enabledSourceIds: clientSourceIds(initial),
 
   select: (selection) => set({ selection }),
 
@@ -223,26 +300,224 @@ export const useStudio = create<StudioState>((set, get) => ({
       analysisStale: false,
       error: null,
       selection: null,
+      sessionId: null,
+      session: null,
+      sessionBusy: false,
+      enabledSourceIds: clientSourceIds(d),
     });
   },
 
   execute: async () => {
+    await get().startSession("full");
+  },
+
+  startSession: async (requestedMode) => {
     const { design } = get();
+    const mode = requestedMode ?? get().sessionMode;
     const calibrationError = performanceCalibrationError();
     if (calibrationError) {
-      set({ running: false, run: null, error: calibrationError });
+      set({ running: false, sessionBusy: false, run: null, error: calibrationError });
       return;
     }
-    set({ running: true, error: null });
+    invalidateActiveSession("replaced by a new simulation session");
+    const epoch = ++sessionEpoch;
+    set({
+      sessionMode: mode,
+      sessionId: null,
+      session: null,
+      sessionBusy: true,
+      running: true,
+      run: null,
+      runStale: false,
+      error: null,
+    });
     try {
-      const result = await runInWorker(design);
-      set({ run: result, running: false, runStale: false, error: null });
+      const created = await createSimulationSessionInWorker(design, {
+        mode,
+        enabledSourceIds: get().enabledSourceIds,
+        paused: mode === "manual",
+      });
+      if (epoch !== sessionEpoch) return;
+      set({
+        sessionId: created.sessionId,
+        session: created.snapshot,
+        sessionBusy: false,
+        running: false,
+        error: null,
+      });
     } catch (e) {
+      if (epoch !== sessionEpoch) return;
       set({
         running: false,
+        sessionBusy: false,
+        sessionId: null,
+        session: null,
         run: null,
-        error: e instanceof Error ? e.message : String(e),
+        error: errorMessage(e),
       });
+    }
+  },
+
+  setSessionMode: (mode) => {
+    if (mode === get().sessionMode) return;
+    invalidateActiveSession("simulation mode changed");
+    set({ sessionMode: mode, sessionId: null, session: null, sessionBusy: false });
+  },
+
+  setSourceEnabled: async (sourceNodeId, enabled) => {
+    const available = clientSourceIds(get().design);
+    if (!available.includes(sourceNodeId)) return;
+    const enabledSourceIds = enabled
+      ? [...new Set([...get().enabledSourceIds, sourceNodeId])]
+      : get().enabledSourceIds.filter((id) => id !== sourceNodeId);
+    set({ enabledSourceIds, error: null });
+
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session || session.status !== "ready" || sessionBusy) return;
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true });
+    try {
+      const update = await setSimulationSourceInWorker(sessionId, sourceNodeId, enabled);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ session: update.snapshot, sessionBusy: false, error: null });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
+    }
+  },
+
+  injectRequest: async (sourceNodeId) => {
+    let state = get();
+    const needsSession =
+      state.sessionMode !== "manual" ||
+      !state.sessionId ||
+      !state.session ||
+      state.session.status === "completed" ||
+      state.session.status === "invalidated";
+    if (needsSession) {
+      await get().startSession("manual");
+      state = get();
+    }
+    if (!state.sessionId || !state.session || state.sessionBusy) return;
+
+    const sessionId = state.sessionId;
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true, error: null });
+    try {
+      const update = await injectSimulationRequestInWorker(sessionId, sourceNodeId);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ session: update.snapshot, sessionBusy: false, error: null });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
+    }
+  },
+
+  advanceSessionBy: async (deltaMs) => {
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session || sessionBusy || session.status === "completed") return;
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true });
+    try {
+      const update = await advanceSimulationTimeInWorker(sessionId, deltaMs);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({
+        session: update.snapshot,
+        sessionBusy: false,
+        ...(update.result ? { run: update.result, runStale: false } : {}),
+      });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
+    }
+  },
+
+  advanceSessionEvents: async (count) => {
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session || sessionBusy || session.status === "completed") return;
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true });
+    try {
+      const update = await advanceSimulationEventsInWorker(sessionId, count);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({
+        session: update.snapshot,
+        sessionBusy: false,
+        ...(update.result ? { run: update.result, runStale: false } : {}),
+      });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
+    }
+  },
+
+  setSessionPaused: async (paused) => {
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session || sessionBusy || session.status === "completed") return;
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true });
+    try {
+      const update = await setSimulationPausedInWorker(sessionId, paused);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ session: update.snapshot, sessionBusy: false });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
+    }
+  },
+
+  setSessionSpeed: async (speed) => {
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session || sessionBusy || session.status === "completed") return;
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true });
+    try {
+      const update = await setSimulationSpeedInWorker(sessionId, speed);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ session: update.snapshot, sessionBusy: false });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
+    }
+  },
+
+  finishSession: async () => {
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session || sessionBusy) return;
+    if (session.status === "completed") {
+      await get().replaySession();
+      return;
+    }
+    const epoch = sessionEpoch;
+    set({ sessionBusy: true, running: true });
+    try {
+      const update: SimulationSessionUpdate = await finalizeSimulationSessionInWorker(sessionId);
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({
+        session: update.snapshot,
+        sessionBusy: false,
+        running: false,
+        run: update.result ?? null,
+        runStale: false,
+        error: null,
+      });
+    } catch (e) {
+      if (epoch !== sessionEpoch || get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, running: false, error: errorMessage(e) });
+    }
+  },
+
+  replaySession: async () => {
+    const { sessionId, session, sessionBusy } = get();
+    if (!sessionId || !session?.replayAvailable || sessionBusy) return;
+    set({ sessionBusy: true });
+    try {
+      const result = await replaySimulationSessionInWorker(sessionId);
+      if (get().sessionId !== sessionId) return;
+      set({ run: result, runStale: false, sessionBusy: false, error: null });
+    } catch (e) {
+      if (get().sessionId !== sessionId) return;
+      set({ sessionBusy: false, error: errorMessage(e) });
     }
   },
 
@@ -321,6 +596,10 @@ export const useStudio = create<StudioState>((set, get) => ({
       analysisStale: false,
       error: null,
       selection: null,
+      sessionId: null,
+      session: null,
+      sessionBusy: false,
+      enabledSourceIds: clientSourceIds(d),
     });
   },
 
@@ -347,14 +626,44 @@ useStudyStore.subscribe((state, previous) => {
   if (previousActive && previousActive.design === active.design) return;
 
   const switchedCandidate = previousActive?.id !== active.id;
+  const executableChanged =
+    switchedCandidate ||
+    !previousActive ||
+    executableDesignChanged(previousActive.design, active.design);
+  if (executableChanged) {
+    invalidateActiveSession(
+      switchedCandidate ? "active candidate changed" : "executable design changed"
+    );
+  }
+
+  const availableSources = clientSourceIds(active.design);
+  const previousSources = previousActive ? clientSourceIds(previousActive.design) : [];
+  const currentlyEnabled = new Set(useStudio.getState().enabledSourceIds);
+  const enabledSourceIds = switchedCandidate
+    ? availableSources
+    : availableSources.filter(
+        (id) => currentlyEnabled.has(id) || !previousSources.includes(id)
+      );
   useStudio.setState({
     design: active.design,
     ...recompute(active.design),
+    enabledSourceIds,
     // Switching candidate is not an edit; it is a different subject. Carrying the previous
     // candidate's run forward and labelling it stale would be worse than clearing it, because a
     // greyed-out number still anchors a reader.
     ...(switchedCandidate
-      ? { run: null, runStale: false, analysis: null, analysisStale: false, replication: null, comparison: null, selection: null }
+      ? {
+          run: null,
+          runStale: false,
+          analysis: null,
+          analysisStale: false,
+          replication: null,
+          comparison: null,
+          selection: null,
+          sessionId: null,
+          session: null,
+          sessionBusy: false,
+        }
       : {}),
   });
 });

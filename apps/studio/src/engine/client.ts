@@ -1,5 +1,11 @@
 import * as Comlink from "comlink";
-import type { RunOptions, RunResult } from "@sds/core";
+import type {
+  RunOptions,
+  RunResult,
+  SimulationSessionOptions,
+  SimulationSessionSnapshot,
+  SimulationSessionUpdate,
+} from "@sds/core";
 import type {
   CandidateEvaluation,
   CorrectnessResult,
@@ -13,6 +19,7 @@ import type {
   ReplicationSummary,
   SimWorkerApi,
 } from "./worker";
+import type { CreatedWorkerSession } from "./sessions";
 
 /**
  * Main-thread handle to the simulation worker.
@@ -34,6 +41,83 @@ function ensure(): Comlink.Remote<SimWorkerApi> {
 
 export async function runInWorker(design: Design, opts?: RunOptions): Promise<RunResult> {
   return ensure().run(design, opts);
+}
+
+export async function createSimulationSessionInWorker(
+  design: Design,
+  opts?: SimulationSessionOptions
+): Promise<CreatedWorkerSession> {
+  return ensure().createSession(design, opts);
+}
+
+export async function simulationSessionSnapshotInWorker(
+  sessionId: string
+): Promise<SimulationSessionSnapshot> {
+  return ensure().sessionSnapshot(sessionId);
+}
+
+export async function setSimulationSourceInWorker(
+  sessionId: string,
+  sourceNodeId: string,
+  enabled: boolean
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionSetSource(sessionId, sourceNodeId, enabled);
+}
+
+export async function injectSimulationRequestInWorker(
+  sessionId: string,
+  sourceNodeId: string
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionInject(sessionId, sourceNodeId);
+}
+
+export async function advanceSimulationTimeInWorker(
+  sessionId: string,
+  deltaMs: number
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionAdvanceBy(sessionId, deltaMs);
+}
+
+export async function advanceSimulationEventsInWorker(
+  sessionId: string,
+  count: number
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionAdvanceEvents(sessionId, count);
+}
+
+export async function setSimulationPausedInWorker(
+  sessionId: string,
+  paused: boolean
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionSetPaused(sessionId, paused);
+}
+
+export async function setSimulationSpeedInWorker(
+  sessionId: string,
+  speed: number
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionSetSpeed(sessionId, speed);
+}
+
+export async function finalizeSimulationSessionInWorker(
+  sessionId: string
+): Promise<SimulationSessionUpdate> {
+  return ensure().sessionFinalize(sessionId);
+}
+
+export async function replaySimulationSessionInWorker(sessionId: string): Promise<RunResult> {
+  return ensure().sessionReplay(sessionId);
+}
+
+export async function invalidateSimulationSessionInWorker(
+  sessionId: string,
+  reason?: string
+): Promise<SimulationSessionSnapshot> {
+  return ensure().sessionInvalidate(sessionId, reason);
+}
+
+export async function disposeSimulationSessionInWorker(sessionId: string): Promise<boolean> {
+  return ensure().sessionDispose(sessionId);
 }
 
 export async function analyzeInWorker(design: Design): Promise<FullAnalysis> {

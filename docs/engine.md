@@ -20,6 +20,26 @@ Plus **request classes** (traffic mix, per-class routing, cost multipliers), so
 and fan-out is either fork-join (`max`) or sequential (`sum`) — explicitly, not
 by assumption.
 
+## Interactive sessions
+
+`SimulationSession` and the one-shot `runSimulation` API share the same event-queue
+runtime. A session can advance to an absolute virtual time, advance a bounded number
+of kernel events, inject one request from a client/work source in Manual mode, and
+return trace and instantaneous occupancy deltas after every batch. Finishing a
+session returns the ordinary `RunResult`; stepping it in any batch size produces the
+same simulated result as the compatibility wrapper for the same design and seed.
+
+Full mode starts the configured deterministic arrival generators for enabled sources.
+Manual mode starts none: each canvas click injects exactly one root request and normal
+routing takes over from there. Source selection is locked after the first event so a
+run cannot silently change workloads halfway through.
+
+Pause and presentation speed are session metadata. They never enter the event queue,
+model options, or random streams. The worker owns active and completed sessions,
+streams plain-data updates to the UI, and retains completed runs for trace replay.
+Changing any executable design field invalidates an active session; moving a node does
+not, because geometry is not model input.
+
 
 ## Realtime: connections and fan-out
 

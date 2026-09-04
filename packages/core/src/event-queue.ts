@@ -79,9 +79,7 @@ export class EventQueue {
   }
 
   peekTime(): number | null {
-    for (const ev of this.heap) {
-      if (!ev.cancelled) break;
-    }
+    this.discardCancelledHead();
     return this.heap.length > 0 ? this.heap[0]!.time : null;
   }
 
@@ -93,6 +91,26 @@ export class EventQueue {
   private less(a: ScheduledEvent, b: ScheduledEvent): boolean {
     if (a.time !== b.time) return a.time < b.time;
     return a.seq < b.seq;
+  }
+
+  /**
+   * Remove cancelled events only while they are at the root.
+   *
+   * Session stepping must inspect the next timestamp before popping it. A cancelled
+   * timeout can sit at the root after the request that owned it completed; returning
+   * that stale timestamp would let a bounded step pop a later, live event past its
+   * requested time. Cleaning only the head keeps cancellation O(1) and preserves the
+   * heap's deterministic sequence ordering.
+   */
+  private discardCancelledHead(): void {
+    while (this.heap[0]?.cancelled) {
+      const last = this.heap.pop()!;
+      if (this.heap.length > 0) {
+        this.heap[0] = last;
+        this.siftDown(0);
+      }
+      // liveCount was already decremented by cancel().
+    }
   }
 
   private siftUp(i: number): void {

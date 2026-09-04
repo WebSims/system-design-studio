@@ -1,5 +1,10 @@
 import * as Comlink from "comlink";
-import { runSimulation, type RunOptions, type RunResult } from "@sds/core";
+import {
+  runSimulation,
+  type RunOptions,
+  type RunResult,
+  type SimulationSessionOptions,
+} from "@sds/core";
 import {
   analyse,
   checkErrorModel,
@@ -25,6 +30,7 @@ import type {
 } from "@sds/schema";
 import { checkCandidate } from "@sds/explore";
 import { assemblePortfolio, cachedEvaluation, evaluateCandidate } from "@sds/study";
+import { SimulationSessionRegistry } from "./sessions";
 
 /**
  * The simulation worker.
@@ -79,9 +85,59 @@ export interface ComparisonSummary {
   candidateName: string;
 }
 
+const simulationSessions = new SimulationSessionRegistry();
+
 const api = {
   run(design: Design, opts?: RunOptions): RunResult {
     return runSimulation(design, opts);
+  },
+
+  createSession(design: Design, opts?: SimulationSessionOptions) {
+    return simulationSessions.create(design, opts);
+  },
+
+  sessionSnapshot(sessionId: string) {
+    return simulationSessions.snapshot(sessionId);
+  },
+
+  sessionSetSource(sessionId: string, sourceNodeId: string, enabled: boolean) {
+    return simulationSessions.setSourceEnabled(sessionId, sourceNodeId, enabled);
+  },
+
+  sessionInject(sessionId: string, sourceNodeId: string) {
+    return simulationSessions.injectRequest(sessionId, sourceNodeId);
+  },
+
+  sessionAdvanceBy(sessionId: string, deltaMs: number) {
+    return simulationSessions.advanceBy(sessionId, deltaMs);
+  },
+
+  sessionAdvanceEvents(sessionId: string, count: number) {
+    return simulationSessions.advanceEvents(sessionId, count);
+  },
+
+  sessionSetPaused(sessionId: string, paused: boolean) {
+    return simulationSessions.setPaused(sessionId, paused);
+  },
+
+  sessionSetSpeed(sessionId: string, speed: number) {
+    return simulationSessions.setPresentationSpeed(sessionId, speed);
+  },
+
+  sessionFinalize(sessionId: string) {
+    return simulationSessions.finalize(sessionId);
+  },
+
+  sessionReplay(sessionId: string) {
+    return simulationSessions.replay(sessionId);
+  },
+
+  sessionInvalidate(sessionId: string, reason?: string) {
+    return simulationSessions.invalidate(sessionId, reason);
+  },
+
+  sessionDispose(sessionId: string) {
+    return simulationSessions.dispose(sessionId);
   },
 
   replicate(design: Design, replications: number): ReplicationSummary {

@@ -12,3 +12,4 @@ export * from "./result";
 export * from "./components";
 export * from "./workflow";
 export * from "./run";
+export * from "./session";

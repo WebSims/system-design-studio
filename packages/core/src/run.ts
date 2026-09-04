@@ -237,6 +237,15 @@ export interface RunOptions {
   durationSec?: number;
   /** Set false to skip trace collection entirely (sweeps do not need it). */
   collectTrace?: boolean;
+  /** Override warm-up for interactive or diagnostic runs. */
+  warmupSec?: number;
+  /** Only these client/work-source nodes generate load. Omit to enable every source. */
+  enabledSourceIds?: string[];
+  /**
+   * When present, automatic arrivals are disabled and exactly these requests are injected.
+   * Interactive sessions normally begin with an empty list and inject into the live runtime.
+   */
+  manualRequests?: ManualRequest[];
   /**
    * What the workflow's outcome labels MEAN, supplied by the study's product contract.
    *
@@ -249,14 +258,46 @@ export interface RunOptions {
   outcomes?: OutcomeMeaning;
 }
 
+export interface ManualRequest {
+  sourceNodeId: string;
+  /** Absolute virtual time in milliseconds. Defaults to zero for compatibility calls. */
+  atMs?: number;
+}
+
+export interface RuntimeOccupancy {
+  queued: number;
+  inService: number;
+  total: number;
+}
+
+/** Internal execution boundary shared by one-shot and interactive simulation APIs. */
+export interface SimulationRuntime {
+  readonly durationMs: number;
+  readonly now: number;
+  readonly complete: boolean;
+  readonly pendingEvents: number;
+  /** Execute all events through an absolute virtual timestamp. */
+  advanceTo(untilMs: number): number;
+  /** Execute at most this many kernel events, never beyond the configured duration. */
+  advanceEvents(count: number): number;
+  /** Add exactly one root request at the current virtual time in manual mode. */
+  injectRequest(sourceNodeId: string): void;
+  /** Trace accumulated so far. Arrays are copied so callers cannot mutate engine state. */
+  trace(): Trace;
+  /** Instantaneous per-node queue/service occupancy. */
+  occupancy(): Record<string, RuntimeOccupancy>;
+  /** Available only after the runtime reaches its configured duration. */
+  result(): RunResult;
+}
+
 /**
- * Run a discrete-event simulation of a design and return measured results.
+ * Build a discrete-event runtime without advancing its virtual clock.
  *
  * Fully deterministic: identical (design, seed) produces an identical result,
  * byte for byte. Nothing here reads a clock, touches the DOM, or depends on
  * frame timing.
  */
-export function runSimulation(design: Design, opts: RunOptions = {}): RunResult {
+export function createSimulationRuntime(design: Design, opts: RunOptions = {}): SimulationRuntime {
   const wallStart = Date.now();
 
   if (!isRunnable(design)) {
@@ -269,7 +310,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
 
   const seed = opts.seed ?? design.scenario.seed;
   const durationSec = opts.durationSec ?? design.scenario.durationSec;
-  const warmupSec = Math.min(design.scenario.warmupSec, durationSec * 0.9);
+  const warmupSec = Math.min(opts.warmupSec ?? design.scenario.warmupSec, durationSec * 0.9);
   const durationMs = durationSec * 1000;
   const warmupMs = warmupSec * 1000;
   const observedSec = durationSec - warmupSec;
@@ -362,10 +403,14 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     if (component) components.set(node.id, component);
   }
 
-  const clients = design.nodes.filter((n) => n.kind === "client" && n.client);
+  const allClients = design.nodes.filter((n) => n.kind === "client" && n.client);
+  const enabledSourceIds = new Set(opts.enabledSourceIds ?? allClients.map((node) => node.id));
+  const clients = allClients.filter((node) => enabledSourceIds.has(node.id));
+  const manualMode = opts.manualRequests !== undefined;
+  const manualRequestTimes: number[] = [];
   // Time-average offered rate: for a stationary process this is just the rate, and
   // for a ramp or a spike it is the mean over the run.
-  const offeredRatePerSec = clients.reduce(
+  const configuredOfferedRatePerSec = clients.reduce(
     (sum, c) => sum + (c.client ? meanRate(c.client.arrival, durationMs) : 0),
     0
   );
@@ -377,10 +422,13 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
    * taken at one load and part at another. The result says so rather than printing a
    * number whose meaning depends on the shape of the ramp.
    */
-  const steadyState = clients.every((c) => c.client && !isTimeVarying(c.client.arrival));
+  const steadyState =
+    !manualMode && clients.every((c) => c.client && !isTimeVarying(c.client.arrival));
 
   // ---- trace sampling ----
-  const expectedRequests = Math.max(1, offeredRatePerSec * observedSec);
+  const expectedRequests = manualMode
+    ? Math.max(1, opts.manualRequests?.length ?? 1)
+    : Math.max(1, configuredOfferedRatePerSec * observedSec);
   const estimatedEventsPerRequest = Math.max(2, design.edges.length * 3);
   const maxSampledRequests = Math.max(1, Math.floor(traceCapacity / estimatedEventsPerRequest));
   const sampleEvery = Math.max(1, Math.ceil(expectedRequests / maxSampledRequests));
@@ -490,6 +538,24 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       }
     }
   }
+
+  /** Schedule one and only one root request without starting an arrival generator. */
+  const scheduleManualRequest = (sourceNodeId: string, atMs: number): void => {
+    if (!manualMode) throw new Error("requests can only be injected into a manual session");
+    const client = allClients.find((node) => node.id === sourceNodeId);
+    if (!client) throw new Error(`node "${sourceNodeId}" is not a client/work source`);
+    if (!enabledSourceIds.has(sourceNodeId)) {
+      throw new Error(`client/work source "${sourceNodeId}" is disabled`);
+    }
+    if (!Number.isFinite(atMs) || atMs < sim.now || atMs > durationMs) {
+      throw new Error(
+        `manual request time must be between the current time (${sim.now}ms) and ${durationMs}ms`
+      );
+    }
+    manualRequestTimes.push(atMs);
+    if (atMs === sim.now) sim.spawn(requestProcess(client));
+    else sim.at(atMs, () => sim.spawn(requestProcess(client)));
+  };
 
   /**
    * Arrival generation, stationary and otherwise.
@@ -629,7 +695,7 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   }
 
   /** Establish the initial population, spread over `establishOverSec`. */
-  for (const client of clients) {
+  for (const client of manualMode ? [] : clients) {
     const pop = client.client?.connections;
     if (!pop) continue;
     const spreadMs = pop.establishOverSec * 1000;
@@ -663,7 +729,13 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
     }
   }
 
-  for (const c of clients) sim.spawn(clientProcess(c));
+  if (manualMode) {
+    for (const request of opts.manualRequests ?? []) {
+      scheduleManualRequest(request.sourceNodeId, request.atMs ?? 0);
+    }
+  } else {
+    for (const c of clients) sim.spawn(clientProcess(c));
+  }
   // Long-running component processes (queue consumers).
   for (const component of components.values()) {
     for (const p of component.processes?.() ?? []) sim.spawn(p);
@@ -702,10 +774,16 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
       const windowP99 = rec.windowLatency.count > 0 ? rec.windowLatency.quantile(0.99) : 0;
       latencyP99Series.push(tSec, windowP99);
 
-      const rateNow = clients.reduce(
-        (sum, c) => sum + (c.client ? rateAt(c.client.arrival, sim.now, durationMs) : 0),
-        0
-      );
+      const rateNow = manualMode
+        ? (manualRequestTimes.filter(
+            (atMs) => atMs <= sim.now && atMs > sim.now - samplePeriodMs
+          ).length *
+            1000) /
+          samplePeriodMs
+        : clients.reduce(
+            (sum, c) => sum + (c.client ? rateAt(c.client.arrival, sim.now, durationMs) : 0),
+            0
+          );
       offeredRateSeries.push(tSec, rateNow);
 
       recentLatency.push(rec.windowLatency);
@@ -740,145 +818,231 @@ export function runSimulation(design: Design, opts: RunOptions = {}): RunResult 
   };
   sim.after(samplePeriodMs, sampleTick);
 
-  // ---- go ----
-  sim.run(durationMs);
+  // ---- assemble (only after the virtual run is complete) ----
+  const assemble = (): RunResult => {
+    const rootRequests = rec.overall.succeeded + rec.overall.failed;
+    const totalTraversals = [...edgeTraversals.values()].reduce((a, b) => a + b, 0);
+    const offeredRatePerSec = manualMode
+      ? manualRequestTimes.filter((atMs) => atMs >= warmupMs && atMs <= durationMs).length /
+        observedSec
+      : configuredOfferedRatePerSec;
+    const nodeResults: NodeResult[] = design.nodes.map((node) => {
+      const component = components.get(node.id);
+      if (!component) return clientResult(node);
+      const r = component.result(observedSec);
+      // Visits per request, so a station called on every request is distinguishable
+      // from one called on 5% of them -- which is what turns a per-visit self time
+      // into a share of end-to-end latency.
+      return {
+        ...r,
+        visitsPerRequest: rootRequests > 0 ? r.arrivals / rootRequests : 0,
+      };
+    });
 
-  // ---- assemble ----
-  const rootRequests = rec.overall.succeeded + rec.overall.failed;
-  const totalTraversals = [...edgeTraversals.values()].reduce((a, b) => a + b, 0);
-  const nodeResults: NodeResult[] = design.nodes.map((node) => {
-    const component = components.get(node.id);
-    if (!component) return clientResult(node);
-    const r = component.result(observedSec);
-    // Visits per request, so a station called on every request is distinguishable
-    // from one called on 5% of them -- which is what turns a per-visit self time
-    // into a share of end-to-end latency.
-    return {
-      ...r,
-      visitsPerRequest: rootRequests > 0 ? r.arrivals / rootRequests : 0,
+    const labelOf = (id: string) => design.nodes.find((n) => n.id === id)?.label ?? id;
+    const edgeResults: EdgeResult[] = design.edges.map((e) => {
+      const site = callSites.get(e.id);
+      const m = site?.metrics();
+      return {
+        edgeId: e.id,
+        from: e.from,
+        to: e.to,
+        fromLabel: labelOf(e.from),
+        toLabel: labelOf(e.to),
+        traversals: edgeTraversals.get(e.id) ?? 0,
+        calls: m?.calls ?? 0,
+        attempts: m?.attempts ?? 0,
+        retries: m?.retries ?? 0,
+        amplification: m?.amplification ?? 1,
+        successes: m?.successes ?? 0,
+        failures: m?.failures ?? 0,
+        budgetRejections: m?.budgetRejections ?? 0,
+        circuitRejections: m?.circuitRejections ?? 0,
+        bulkheadRejections: m?.bulkheadRejections ?? 0,
+        breakerTrips: m?.breakerTrips ?? 0,
+        breakerOpenFraction: m?.breakerOpenFraction ?? 0,
+        breakerState: m?.breakerState ?? "closed",
+        avgConcurrency: m?.avgConcurrency ?? 0,
+        maxConcurrency: m?.maxConcurrency ?? 0,
+        bulkheadUtilization: m?.bulkheadUtilization ?? null,
+        bulkheadMaxInUse: m?.bulkheadMaxInUse ?? null,
+        hasPolicy: site !== undefined,
+      };
+    });
+
+    const totalCalls = edgeResults.reduce((sum, edge) => sum + edge.calls, 0);
+    const totalAttempts = edgeResults.reduce((sum, edge) => sum + edge.attempts, 0);
+    const retryAmplification = totalCalls > 0 ? totalAttempts / totalCalls : 1;
+    const businessMetrics = workflow ? summariseWorkflow(workflow) : null;
+
+    const stability = checkStability(nodeResults, edgeResults, observedSec);
+    const componentInvariants: InvariantReport[] = [];
+    for (const component of components.values()) {
+      componentInvariants.push(...component.invariants());
+    }
+    for (const site of callSites.values()) {
+      componentInvariants.push(...site.invariants());
+    }
+    const invariants = [
+      ...checkFlowConservation(rec, inSystem),
+      ...componentInvariants,
+      checkLittlesLaw(rec, inSystem, observedSec, stability.stable),
+    ];
+
+    const maxUtilization = nodeResults.reduce(
+      (maximum, node) =>
+        node.kind === "client" ? maximum : Math.max(maximum, node.utilization),
+      0
+    );
+    const departures = rec.overall.succeeded + rec.overall.failed;
+    const confidence = assessConfidence(departures, maxUtilization, observedSec);
+    const endToEnd = summarize(rec.overall.latency);
+    const errors = rec.overall.errors();
+
+    const classResults: ClassResult[] = classes.map((requestClass) => {
+      const recorder = rec.byClass.get(requestClass.id)!;
+      return {
+        classId: requestClass.id,
+        label: requestClass.label,
+        share: totalWeight > 0 ? requestClass.weight / totalWeight : 0,
+        throughputPerSec: observedSec > 0 ? recorder.succeeded / observedSec : 0,
+        latency: summarize(recorder.latency),
+        errors: recorder.errors(),
+      };
+    });
+
+    const traceResult: Trace = {
+      hops,
+      visits,
+      sampleEvery,
+      truncated: collectTrace && hops.length + visits.length >= traceCapacity,
     };
-  });
+    const sloPassed = evaluateSlo(design, endToEnd, errors.ratePct, stability.stable);
 
-  const labelOf = (id: string) => design.nodes.find((n) => n.id === id)?.label ?? id;
-  const edgeResults: EdgeResult[] = design.edges.map((e) => {
-    const site = callSites.get(e.id);
-    const m = site?.metrics();
     return {
-      edgeId: e.id,
-      from: e.from,
-      to: e.to,
-      fromLabel: labelOf(e.from),
-      toLabel: labelOf(e.to),
-      traversals: edgeTraversals.get(e.id) ?? 0,
-      calls: m?.calls ?? 0,
-      attempts: m?.attempts ?? 0,
-      retries: m?.retries ?? 0,
-      amplification: m?.amplification ?? 1,
-      successes: m?.successes ?? 0,
-      failures: m?.failures ?? 0,
-      budgetRejections: m?.budgetRejections ?? 0,
-      circuitRejections: m?.circuitRejections ?? 0,
-      bulkheadRejections: m?.bulkheadRejections ?? 0,
-      breakerTrips: m?.breakerTrips ?? 0,
-      breakerOpenFraction: m?.breakerOpenFraction ?? 0,
-      breakerState: m?.breakerState ?? "closed",
-      avgConcurrency: m?.avgConcurrency ?? 0,
-      maxConcurrency: m?.maxConcurrency ?? 0,
-      bulkheadUtilization: m?.bulkheadUtilization ?? null,
-      bulkheadMaxInUse: m?.bulkheadMaxInUse ?? null,
-      hasPolicy: site !== undefined,
+      design,
+      observedSec,
+      steadyState,
+      aggregateCaveat: steadyState
+        ? null
+        : manualMode
+          ? "Requests were injected manually, so aggregate figures describe this finite session, not a steady-state workload."
+          : `offered load varies over the run, so there is no steady state. The percentiles below ` +
+            `average across regimes that never coexisted \u2014 read the time series and the first-breach ` +
+            `figure instead.`,
+      firstBreach,
+      offeredRateSeries: series(offeredRateSeries),
+      // Total downstream work per message, and the largest single fan-out. Different
+      // numbers: a three-hop path with a 20x fan-out on the last edge gives 23 and 20.
+      callsPerMessage: rootRequests > 0 ? totalTraversals / rootRequests : 1,
+      largestFanout: design.edges.reduce(
+        (maximum, edge) => Math.max(maximum, edge.fanoutFactor),
+        1
+      ),
+      connectionsHeld: nodeResults.reduce(
+        (sum, node) => sum + (node.connections?.avgHeld ?? 0),
+        0
+      ),
+      connectionsRefused:
+        connectionsRefused +
+        nodeResults.reduce((sum, node) => sum + (node.connections?.refused ?? 0), 0),
+      throughputPerSec: observedSec > 0 ? rec.overall.succeeded / observedSec : 0,
+      offeredRatePerSec,
+      endToEnd,
+      errors,
+      avgInSystem: inSystem.timeAverage(),
+      nodes: nodeResults,
+      edges: edgeResults,
+      classes: classResults,
+      retryAmplification,
+      invariants,
+      stability,
+      confidence,
+      sloPassed,
+      business: businessMetrics,
+      trace: traceResult,
+      throughputSeries: series(throughputSeries),
+      latencyP99Series: series(latencyP99Series),
+      wallMs: 0,
     };
-  });
-
-  const totalCalls = edgeResults.reduce((s2, e) => s2 + e.calls, 0);
-  const totalAttempts = edgeResults.reduce((s2, e) => s2 + e.attempts, 0);
-  const retryAmplification = totalCalls > 0 ? totalAttempts / totalCalls : 1;
-
-  const businessMetrics = workflow ? summariseWorkflow(workflow) : null;
-
-  const stability = checkStability(nodeResults, edgeResults, observedSec);
-  const componentInvariants: InvariantReport[] = [];
-  for (const component of components.values()) {
-    componentInvariants.push(...component.invariants());
-  }
-  for (const site of callSites.values()) {
-    componentInvariants.push(...site.invariants());
-  }
-  const invariants = [
-    ...checkFlowConservation(rec, inSystem),
-    ...componentInvariants,
-    checkLittlesLaw(rec, inSystem, observedSec, stability.stable),
-  ];
-
-  const maxUtilization = nodeResults.reduce(
-    (m, n) => (n.kind === "client" ? m : Math.max(m, n.utilization)),
-    0
-  );
-  const departures = rec.overall.succeeded + rec.overall.failed;
-  const confidence = assessConfidence(departures, maxUtilization, observedSec);
-
-  const endToEnd = summarize(rec.overall.latency);
-  const errors = rec.overall.errors();
-
-  const classResults: ClassResult[] = classes.map((c) => {
-    const r = rec.byClass.get(c.id)!;
-    return {
-      classId: c.id,
-      label: c.label,
-      share: totalWeight > 0 ? c.weight / totalWeight : 0,
-      throughputPerSec: observedSec > 0 ? r.succeeded / observedSec : 0,
-      latency: summarize(r.latency),
-      errors: r.errors(),
-    };
-  });
-
-  const traceResult: Trace = {
-    hops,
-    visits,
-    sampleEvery,
-    truncated: collectTrace && hops.length + visits.length >= traceCapacity,
   };
 
-  const sloPassed = evaluateSlo(design, endToEnd, errors.ratePct, stability.stable);
+  let engineWallMs = Date.now() - wallStart;
+  let cachedResult: RunResult | null = null;
+
+  const timed = (work: () => number): number => {
+    const started = Date.now();
+    const count = work();
+    engineWallMs += Date.now() - started;
+    return count;
+  };
 
   return {
-    design,
-    observedSec,
-    steadyState,
-    aggregateCaveat: steadyState
-      ? null
-      : `offered load varies over the run, so there is no steady state. The percentiles below ` +
-        `average across regimes that never coexisted \u2014 read the time series and the first-breach ` +
-        `figure instead.`,
-    firstBreach,
-    offeredRateSeries: series(offeredRateSeries),
-    // Total downstream work per message, and the largest single fan-out. Different
-    // numbers: a three-hop path with a 20x fan-out on the last edge gives 23 and 20.
-    callsPerMessage: rootRequests > 0 ? totalTraversals / rootRequests : 1,
-    largestFanout: design.edges.reduce((m, e) => Math.max(m, e.fanoutFactor), 1),
-    connectionsHeld: nodeResults.reduce((s2, n) => s2 + (n.connections?.avgHeld ?? 0), 0),
-    connectionsRefused:
-      connectionsRefused +
-      nodeResults.reduce((s2, n) => s2 + (n.connections?.refused ?? 0), 0),
-    throughputPerSec: observedSec > 0 ? rec.overall.succeeded / observedSec : 0,
-    offeredRatePerSec,
-    endToEnd,
-    errors,
-    avgInSystem: inSystem.timeAverage(),
-    nodes: nodeResults,
-    edges: edgeResults,
-    classes: classResults,
-    retryAmplification,
-    invariants,
-    stability,
-    confidence,
-    sloPassed,
-    business: businessMetrics,
-    trace: traceResult,
-    throughputSeries: series(throughputSeries),
-    latencyP99Series: series(latencyP99Series),
-    wallMs: Date.now() - wallStart,
+    durationMs,
+    get now() {
+      return sim.now;
+    },
+    get complete() {
+      return sim.now >= durationMs || sim.pendingEvents === 0;
+    },
+    get pendingEvents() {
+      return sim.pendingEvents;
+    },
+    advanceTo(untilMs) {
+      if (!Number.isFinite(untilMs)) throw new Error("virtual time must be finite");
+      if (untilMs < sim.now) throw new Error("simulation time cannot move backwards");
+      return timed(() => sim.run(Math.min(untilMs, durationMs)));
+    },
+    advanceEvents(count) {
+      if (!Number.isInteger(count) || count < 0) {
+        throw new Error("event count must be a non-negative integer");
+      }
+      return timed(() => sim.runEvents(count, durationMs));
+    },
+    injectRequest(sourceNodeId) {
+      if (sim.now >= durationMs) throw new Error("the simulation session has completed");
+      scheduleManualRequest(sourceNodeId, sim.now);
+    },
+    trace() {
+      return {
+        hops: hops.map((hop) => ({ ...hop })),
+        visits: visits.map((visit) => ({ ...visit })),
+        sampleEvery,
+        truncated: collectTrace && hops.length + visits.length >= traceCapacity,
+      };
+    },
+    occupancy() {
+      return Object.fromEntries(
+        design.nodes.map((node) => {
+          const occupancy = components.get(node.id)?.occupancy() ?? {
+            queued: 0,
+            inService: 0,
+            total: 0,
+          };
+          return [node.id, occupancy];
+        })
+      );
+    },
+    result() {
+      if (sim.now < durationMs && sim.pendingEvents > 0) {
+        throw new Error(`simulation is incomplete at ${sim.now}ms of ${durationMs}ms`);
+      }
+      if (!cachedResult) {
+        const started = Date.now();
+        cachedResult = assemble();
+        engineWallMs += Date.now() - started;
+        cachedResult.wallMs = engineWallMs;
+      }
+      return cachedResult;
+    },
   };
+}
+
+/** Compatibility wrapper: execute the shared session runtime in one batch. */
+export function runSimulation(design: Design, opts: RunOptions = {}): RunResult {
+  const runtime = createSimulationRuntime(design, opts);
+  runtime.advanceTo(runtime.durationMs);
+  return runtime.result();
 }
 
 const EMPTY_LATENCY: LatencySummary = {

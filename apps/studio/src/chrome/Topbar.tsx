@@ -76,6 +76,9 @@ const HeroPlay = () => {
   const toggle = useRacePlayback((s) => s.toggle)
   const execute = useStudio((s) => s.execute)
   const simRunning = useStudio((s) => s.running)
+  const simBusy = useStudio((s) => s.sessionBusy)
+  const simSession = useStudio((s) => s.session)
+  const setSessionPaused = useStudio((s) => s.setSessionPaused)
   const blocking = useStudio((s) => s.issues.filter((i) => i.severity === "error").length)
 
   if (!active) return null
@@ -87,15 +90,33 @@ const HeroPlay = () => {
       : blocking > 0
         ? "The design has errors; see the analysis rail."
         : null
+    const live =
+      simSession !== null &&
+      simSession.mode === "full" &&
+      simSession.status !== "completed" &&
+      simSession.status !== "invalidated"
+    const busy = simRunning || simBusy
     return (
       <button
         className="btn primary hero-play"
-        onClick={execute}
-        disabled={simRunning || disabledReason !== null}
+        onClick={() => (live ? void setSessionPaused(!simSession.paused) : void execute())}
+        disabled={busy || disabledReason !== null}
         title={disabledReason ?? "Simulate the workload against this version."}
       >
-        {simRunning ? <span className="spinner" aria-hidden="true" /> : <PlayIcon size={13} />}
-        {simRunning ? "Running\u2026" : "Run under load"}
+        {busy ? (
+          <span className="spinner" aria-hidden="true" />
+        ) : live && !simSession.paused ? (
+          <PauseIcon size={13} />
+        ) : (
+          <PlayIcon size={13} />
+        )}
+        {busy
+          ? "Updating\u2026"
+          : live
+            ? simSession.paused
+              ? "Resume load"
+              : "Pause load"
+            : "Run under load"}
       </button>
     )
   }

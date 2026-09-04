@@ -7,6 +7,7 @@ import { AnalyzerPanel } from "./AnalyzerPanel";
 import { IssueRegistry } from "./IssueRegistry";
 import { Chart } from "./Chart";
 import { Transport } from "./Transport";
+import { SimulationControls } from "./SimulationControls";
 
 const ms = (v: number | null | undefined): string =>
   v == null || !isFinite(v) ? "—" : v >= 1000 ? `${(v / 1000).toFixed(2)}s` : `${v.toFixed(1)}ms`;
@@ -663,10 +664,8 @@ export function ResultsRail() {
   const preview = useStudio((s) => s.preview);
   const run = useStudio((s) => s.run);
   const runStale = useStudio((s) => s.runStale);
-  const running = useStudio((s) => s.running);
   const error = useStudio((s) => s.error);
   const issues = useStudio((s) => s.issues);
-  const execute = useStudio((s) => s.execute);
   const study = useStudyStore((s) => s.study);
   const active =
     study.candidates.find((candidate) => candidate.id === study.activeCandidateId) ??
@@ -726,10 +725,7 @@ export function ResultsRail() {
       ) : (
         <>
           <PreviewPanel preview={preview} />
-
-          <button className="btn primary run" onClick={execute} disabled={running || blocking.length > 0}>
-            {running ? "Running…" : "Run simulation"}
-          </button>
+          <SimulationControls />
 
           {error && (
             <div className="verdict bad">

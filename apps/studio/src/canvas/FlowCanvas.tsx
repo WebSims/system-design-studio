@@ -148,7 +148,11 @@ function useFocusRequests(design: Design) {
 function Canvas() {
   const design = useStudio((s) => s.design);
   const selection = useStudio((s) => s.selection);
-  const trace = useStudio((s) => (s.runStale ? null : (s.run?.trace ?? null)));
+  const trace = useStudio((s) =>
+    s.runStale ? null : (s.session?.trace ?? s.run?.trace ?? null)
+  );
+  const sessionMode = useStudio((s) => s.sessionMode);
+  const injectRequest = useStudio((s) => s.injectRequest);
   const moveNode = useStudio((s) => s.moveNode);
   const select = useStudio((s) => s.select);
   const edit = useStudio((s) => s.edit);
@@ -425,6 +429,9 @@ function Canvas() {
       if (node.type === "ghost") return;
       if (!linking) {
         select({ kind: "node", id: node.id });
+        if (lens === "load" && sessionMode === "manual" && node.type === "client") {
+          void injectRequest(node.id);
+        }
         return;
       }
       if (!linkFrom) {
@@ -436,7 +443,7 @@ function Canvas() {
       setLinkFrom(null);
       setLinking(false);
     },
-    [edit, linkFrom, linking, select]
+    [edit, injectRequest, lens, linkFrom, linking, select, sessionMode]
   );
 
   const toggleLinking = useCallback(() => {

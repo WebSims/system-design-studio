@@ -156,6 +156,8 @@ export interface Component {
   dropConnections?(count: number): number;
   /** Requests currently queued or in service. Used by load-balancer algorithms. */
   load(): number;
+  /** Instantaneous state for session snapshots; unlike metrics, this is not averaged. */
+  occupancy(): ComponentOccupancy;
   resetStats(): void;
   sample(tSec: number): void;
   result(observedSec: number): NodeResult;
@@ -171,6 +173,12 @@ export interface Component {
   invariants(): InvariantReport[];
   /** Long-running processes this component needs (queue consumers). */
   processes?(): Process<void>[];
+}
+
+export interface ComponentOccupancy {
+  queued: number;
+  inService: number;
+  total: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +259,12 @@ abstract class StationComponent implements Component {
 
   load(): number {
     return this.resource.inServiceCount + this.resource.queueLength;
+  }
+
+  occupancy(): ComponentOccupancy {
+    const queued = this.resource.queueLength;
+    const inService = this.resource.inServiceCount;
+    return { queued, inService, total: queued + inService };
   }
 
   resetStats(): void {
@@ -1280,6 +1294,12 @@ export class DatabaseComponent extends StationComponent {
     return this.execution.inServiceCount + this.execution.queueLength;
   }
 
+  override occupancy(): ComponentOccupancy {
+    const queued = this.execution.queueLength;
+    const inService = this.execution.inServiceCount;
+    return { queued, inService, total: queued + inService };
+  }
+
   override resetStats(): void {
     super.resetStats();
     this.execution.resetStats();
@@ -1480,6 +1500,10 @@ export class QueueComponent implements Component {
 
   load(): number {
     return this.depth + this.inFlight;
+  }
+
+  occupancy(): ComponentOccupancy {
+    return { queued: this.depth, inService: this.inFlight, total: this.depth + this.inFlight };
   }
 
   resetStats(): void {
@@ -1768,6 +1792,12 @@ export class GatewayComponent implements Component {
 
   load(): number {
     return this.work.inServiceCount + this.work.queueLength;
+  }
+
+  occupancy(): ComponentOccupancy {
+    const queued = this.work.queueLength;
+    const inService = this.work.inServiceCount;
+    return { queued, inService, total: queued + inService };
   }
 
   resetStats(): void {
