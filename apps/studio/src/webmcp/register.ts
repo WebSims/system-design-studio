@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolHost } from "./tools";
 import { buildTools } from "./tools";
+import { enforceAgentToolPolicy } from "../agent/policy";
 
 /**
  * Registration against `document.modelContext`, with feature detection.
@@ -50,7 +51,7 @@ export interface Registration {
 }
 
 export function registerWebmcpTools(opts: RegisterOptions): Registration {
-  const tools = buildTools(opts.host);
+  const tools = enforceAgentToolPolicy(buildTools(opts.host));
   const target = opts.target ?? (typeof document === "undefined" ? undefined : document);
 
   if (!target) {

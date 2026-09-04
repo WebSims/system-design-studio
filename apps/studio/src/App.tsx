@@ -13,7 +13,8 @@ import { CompareView } from "./views/CompareView";
 import { CandidateBar } from "./panels/CandidateBar";
 import { registerWebmcpTools } from "./webmcp/register";
 import { buildCatalog } from "./webmcp/catalog";
-import type { ToolHost } from "./webmcp/tools";
+import { buildTools, type ToolHost } from "./webmcp/tools";
+import { createAgentProviders } from "./agent/providers";
 import { cancelWorker, portfolioInWorker } from "./engine/client";
 import { useRaceModel } from "./raceModel";
 import { changedPaths, touchedByOperations, type ElementRef } from "./agentAttention";
@@ -149,17 +150,15 @@ function Workbench() {
 }
 
 /**
- * Register the agent tool surface once, against the live store.
+ * The single trusted adapter used by every agent provider.
  *
- * The host is an adapter over commands the manual UI already issues -- there is no capability here
- * that a person does not have, and there are two the agent does not: promotion and deletion have no
- * tool at all.
+ * WebMCP and the optional in-browser provider both receive tools built over this host. Keeping the
+ * authority boundary here means adding a provider cannot accidentally invent a second mutation
+ * path: agent authorship, revision checks, evaluation receipts and human-only decisions continue to
+ * be enforced by the same store commands.
  */
-function useWebmcp() {
-  const setWebmcp = useStudyStore((s) => s.setWebmcp);
-
-  useEffect(() => {
-    const host: ToolHost = {
+function createStudioToolHost(): ToolHost {
+  return {
       getStudy: () => useStudyStore.getState().study,
       getCatalog: () => buildCatalog(),
       createStudy: async (input) => {
@@ -342,7 +341,14 @@ function useWebmcp() {
       },
       log: (entry) => useStudyStore.getState().logActivity(entry),
       busy: (_tool, inFlight) => useStudyStore.getState().setAgentBusy(inFlight ? 1 : -1),
-    };
+  };
+}
+
+/** Register the primary WebMCP tool surface once, against the shared live host. */
+function useWebmcp(host: ToolHost) {
+  const setWebmcp = useStudyStore((s) => s.setWebmcp);
+
+  useEffect(() => {
 
     const registration = registerWebmcpTools({ host });
     setWebmcp(
@@ -352,10 +358,12 @@ function useWebmcp() {
         : registration.state.reason
     );
     return () => registration.unregister();
-  }, [setWebmcp]);
+  }, [host, setWebmcp]);
 }
 
 export function App() {
+  const [agentHost] = useState(createStudioToolHost);
+  const [agentProviders] = useState(() => createAgentProviders(buildTools(agentHost)));
   const lens = useStudyStore((s) => s.lens);
   const uiDensity = useStudyStore((s) => s.uiDensity);
   const error = useStudyStore((s) => s.error);
@@ -364,7 +372,7 @@ export function App() {
   const reviewOpen = useStudyStore((s) => s.reviewOpen);
   const agentOpen = useStudyStore((s) => s.agentOpen);
   const showWorkbench = hasCandidates && !homeOpen;
-  useWebmcp();
+  useWebmcp(agentHost);
 
   useEffect(() => {
     void restoreStudy();
@@ -376,7 +384,7 @@ export function App() {
       {showWorkbench ? <CandidateBar /> : null}
       {error && <div className="banner banner-error">{error}</div>}
       <Workbench />
-      {agentOpen && <AgentPanel />}
+      {agentOpen && <AgentPanel providers={agentProviders} />}
       {reviewOpen && showWorkbench && <ReviewDrawer />}
     </div>
   );
