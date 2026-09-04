@@ -6,6 +6,7 @@ import { hopIcon, iconSprite } from "./identicon";
 import { CHIP_SIZE } from "./geometry";
 import {
   buildFocusWarp,
+  latestRenderableRequest,
   linearWarp,
   prepareTrace,
   sampleOccupancy,
@@ -14,15 +15,18 @@ import {
   type TimeWarp,
 } from "./choreography";
 import { usePlayback } from "../playback";
+import { useStudio } from "../store";
+import { usePrefersReducedMotion } from "../reducedMotion";
 
 /**
  * THE TRACE PLAYER.
  *
  * The animation is a pure observer of a recorded trace. It cannot influence the
- * simulation, because the simulation already finished -- in a worker, before this
- * component saw anything. That inversion is the point of the rewrite: in the original
- * design the animation *was* the model, so the model could not run faster than 60fps,
- * could not exceed 150 concurrent packets, and could not run at all without a DOM.
+ * simulation: the worker publishes immutable trace snapshots while a session is live,
+ * then the same renderer replays the completed result. That inversion is the point of
+ * the rewrite: in the original design the animation *was* the model, so the model could
+ * not run faster than 60fps, could not exceed 150 concurrent packets, and could not run
+ * at all without a DOM.
  *
  * Consequences worth naming:
  *  - Playback speed and position are free. Scrub, pause, replay, follow one request.
@@ -35,6 +39,9 @@ import { usePlayback } from "../playback";
 
 const SPRITE_PX = 22;
 const PUBLISH_INTERVAL_MS = 90;
+/** One traced request gets enough wall time for its network and station phases to read. */
+const LIVE_REQUEST_WALL_MS = 2400;
+const PAUSED_FRACTION = 0.55;
 
 export function PacketLayer({ design, trace }: { design: Design; trace: Trace | null }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -43,6 +50,17 @@ export function PacketLayer({ design, trace }: { design: Design; trace: Trace | 
   const transform = useStore((s) => s.transform);
   const width = useStore((s) => s.width);
   const height = useStore((s) => s.height);
+  const sessionId = useStudio((s) => s.sessionId);
+  const sessionStatus = useStudio((s) => s.session?.status ?? null);
+  const sessionPaused = useStudio((s) => s.session?.paused ?? true);
+  const sessionSpeed = useStudio((s) => s.session?.presentationSpeed ?? 1);
+  const focusRequestId = usePlayback((s) => s.focusRequestId);
+  const playbackPlaying = usePlayback((s) => s.playing);
+  const reducedMotion = usePrefersReducedMotion();
+
+  const liveSession =
+    sessionId !== null &&
+    (sessionStatus === "ready" || sessionStatus === "running" || sessionStatus === "paused");
 
   const prepared = useMemo(
     () => (trace ? prepareTrace(design, trace) : null),
@@ -56,17 +74,68 @@ export function PacketLayer({ design, trace }: { design: Design; trace: Trace | 
   const lastWallRef = useRef(0);
   const lastPublishRef = useRef(0);
   const inFlightRef = useRef(0);
+  const hasRenderableTraceRef = useRef(false);
+  const liveFocusRef = useRef<number | null>(null);
+  const previousSessionIdRef = useRef(sessionId);
   const transformRef = useRef(transform);
   transformRef.current = transform;
   const preparedRef = useRef(prepared);
   preparedRef.current = prepared;
+  const liveRef = useRef({ active: liveSession, paused: sessionPaused, speed: sessionSpeed });
+  liveRef.current = { active: liveSession, paused: sessionPaused, speed: sessionSpeed };
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
 
-  // Reset the playhead whenever a new trace arrives.
+  // A session publishes a larger immutable trace every batch. Reset only when the logical
+  // session changes; resetting for every append pins the playhead to the first frame forever.
   useEffect(() => {
-    if (!prepared) return;
-    tRef.current = prepared.spanStartMs;
-    usePlayback.getState().seek(prepared.spanStartMs);
-  }, [prepared]);
+    if (previousSessionIdRef.current === sessionId) return;
+    previousSessionIdRef.current = sessionId;
+    hasRenderableTraceRef.current = false;
+    liveFocusRef.current = null;
+    tRef.current = 0;
+    fRef.current = 0;
+    usePlayback.getState().reset();
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!prepared) {
+      hasRenderableTraceRef.current = false;
+      liveFocusRef.current = null;
+      usePlayback.getState().publish(0, {}, 0);
+      return;
+    }
+    if (prepared.requests.length === 0) return;
+
+    const playback = usePlayback.getState();
+    if (!hasRenderableTraceRef.current) {
+      hasRenderableTraceRef.current = true;
+      tRef.current = prepared.spanStartMs;
+      fRef.current = 0;
+      playback.seek(prepared.spanStartMs);
+    }
+
+    if (!liveSession) return;
+    const current = prepared.requests.find(
+      (request) => request.requestId === liveFocusRef.current
+    );
+    const request = current ?? latestRenderableRequest(prepared);
+    if (!request) return;
+
+    if (request.requestId !== liveFocusRef.current) {
+      liveFocusRef.current = request.requestId;
+      fRef.current = sessionPaused || reducedMotion ? PAUSED_FRACTION : 0;
+      tRef.current = buildFocusWarp(prepared, request).simAt(fRef.current);
+      usePlayback.setState({ focusRequestId: request.requestId, mode: "focus" });
+    }
+
+    const shouldPlay = !sessionPaused && !reducedMotion;
+    if (playback.playing !== shouldPlay) usePlayback.setState({ playing: shouldPlay });
+  }, [liveSession, prepared, reducedMotion, sessionPaused]);
+
+  useEffect(() => {
+    if (reducedMotion && playbackPlaying) usePlayback.getState().pause();
+  }, [playbackPlaying, reducedMotion]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -84,33 +153,68 @@ export function PacketLayer({ design, trace }: { design: Design; trace: Trace | 
 
       const state = usePlayback.getState();
       const p = preparedRef.current;
+      let filterRequestId = state.mode === "focus" ? state.focusRequestId : null;
 
       if (p) {
-        const warp = warpFor(p, state.mode, state.focusRequestId);
+        const live = liveRef.current;
+        if (live.active) {
+          let request = p.requests.find(
+            (candidate) => candidate.requestId === liveFocusRef.current
+          );
+          request ??= latestRenderableRequest(p) ?? undefined;
 
-        if (state.playing) {
-          if (state.mode === "focus") {
-            /**
-             * Focus mode advances through the WARPED timeline at a constant rate, so the
-             * whole journey fills `focusDurationSec` of wall time and each phase of it
-             * gets a visible share. See `buildFocusWarp` for why this is defensible:
-             * following one request makes no claim about simultaneity, and the true
-             * durations stay on screen in the waterfall.
-             */
-            fRef.current += dtWall / (state.focusDurationSec * 1000);
-            if (fRef.current > 1) fRef.current = 0;
+          if (request) {
+            if (request.requestId !== liveFocusRef.current) {
+              liveFocusRef.current = request.requestId;
+              fRef.current = live.paused || reducedMotionRef.current ? PAUSED_FRACTION : 0;
+              usePlayback.setState({ focusRequestId: request.requestId, mode: "focus" });
+            }
+
+            let warp = buildFocusWarp(p, request);
+            if (!live.paused && !reducedMotionRef.current) {
+              fRef.current +=
+                dtWall / (LIVE_REQUEST_WALL_MS / Math.max(0.1, live.speed));
+              if (fRef.current > 1) {
+                const next = latestRenderableRequest(p) ?? request;
+                request = next;
+                liveFocusRef.current = next.requestId;
+                fRef.current %= 1;
+                warp = buildFocusWarp(p, next);
+                if (state.focusRequestId !== next.requestId || state.mode !== "focus") {
+                  usePlayback.setState({ focusRequestId: next.requestId, mode: "focus" });
+                }
+              }
+            }
             tRef.current = warp.simAt(fRef.current);
-          } else {
-            // Ambient mode is never warped: it shows many requests at once, so its
-            // claim about simultaneity is real and must not be distorted.
-            tRef.current += dtWall * state.speed;
-            if (tRef.current > p.spanEndMs) tRef.current = p.spanStartMs;
-            fRef.current = warp.fractionAt(tRef.current);
+            filterRequestId = request.requestId;
           }
         } else {
-          // Honour an external scrub while paused.
-          tRef.current = state.tMs;
-          fRef.current = warp.fractionAt(state.tMs);
+          const warp = warpFor(p, state.mode, state.focusRequestId);
+
+          if (state.playing && !reducedMotionRef.current) {
+            if (state.mode === "focus") {
+              /**
+               * Focus mode advances through the WARPED timeline at a constant rate, so the
+               * whole journey fills `focusDurationSec` of wall time and each phase of it
+               * gets a visible share. See `buildFocusWarp` for why this is defensible:
+               * following one request makes no claim about simultaneity, and the true
+               * durations stay on screen in the waterfall.
+               */
+              fRef.current += dtWall / (state.focusDurationSec * 1000);
+              if (fRef.current > 1) fRef.current = 0;
+              tRef.current = warp.simAt(fRef.current);
+            } else {
+              // Ambient mode is never warped: it shows many requests at once, so its
+              // claim about simultaneity is real and must not be distorted.
+              tRef.current += dtWall * state.speed;
+              if (tRef.current > p.spanEndMs) tRef.current = p.spanStartMs;
+              fRef.current = warp.fractionAt(tRef.current);
+            }
+          } else {
+            // Honour an external scrub while paused.
+            tRef.current = state.tMs;
+            fRef.current = warp.fractionAt(state.tMs);
+          }
         }
       }
 
@@ -119,7 +223,7 @@ export function PacketLayer({ design, trace }: { design: Design; trace: Trace | 
         canvas,
         p,
         tRef.current,
-        state.mode === "focus" ? state.focusRequestId : null,
+        filterRequestId,
         transformRef.current,
         width,
         height
@@ -133,11 +237,7 @@ export function PacketLayer({ design, trace }: { design: Design; trace: Trace | 
           .publish(
             tRef.current,
             p
-              ? sampleOccupancy(
-                  p,
-                  tRef.current,
-                  state.mode === "focus" ? state.focusRequestId : null
-                )
+              ? sampleOccupancy(p, tRef.current, filterRequestId)
               : {},
             inFlightRef.current
           );
@@ -146,7 +246,7 @@ export function PacketLayer({ design, trace }: { design: Design; trace: Trace | 
 
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [prepared, width, height]);
+  }, [width, height]);
 
   return (
     <canvas
@@ -155,6 +255,14 @@ export function PacketLayer({ design, trace }: { design: Design; trace: Trace | 
       // Pointer events off: the animation is decoration over an interactive graph and
       // must never intercept a drag.
       style={{ pointerEvents: "none" }}
+      role="img"
+      aria-label={
+        liveSession
+          ? focusRequestId === null
+            ? "Live simulation request flow; waiting for the first sampled request"
+            : `Live simulation following request ${focusRequestId + 1}`
+          : "Recorded request flow on the architecture canvas"
+      }
     />
   );
 }

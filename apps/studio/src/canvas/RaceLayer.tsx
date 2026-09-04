@@ -2,6 +2,7 @@ import { useStore } from "@xyflow/react"
 import { useEffect, useRef } from "react"
 import { useRaceModel } from "../raceModel"
 import { useRacePlayback } from "../racePlayback"
+import { usePrefersReducedMotion } from "../reducedMotion"
 import { laneColour, sampleRace, type RacePlan } from "./race"
 
 /**
@@ -27,6 +28,9 @@ export function RaceLayer() {
   const width = useStore((s) => s.width)
   const height = useStore((s) => s.height)
   const plan = useRaceModel((s) => s.plan)
+  const cursor = useRacePlayback((s) => s.cursor)
+  const playing = useRacePlayback((s) => s.playing)
+  const reducedMotion = usePrefersReducedMotion()
 
   const progressRef = useRef(0)
   const lastWallRef = useRef(0)
@@ -34,6 +38,18 @@ export function RaceLayer() {
   transformRef.current = transform
   const planRef = useRef<RacePlan | null>(plan)
   planRef.current = plan
+  const reducedMotionRef = useRef(reducedMotion)
+  reducedMotionRef.current = reducedMotion
+
+  // A scrub, step, or newly loaded counterexample starts at a stable phase instead of
+  // inheriting a fraction from the previously viewed step.
+  useEffect(() => {
+    progressRef.current = 0
+  }, [cursor, plan])
+
+  useEffect(() => {
+    if (reducedMotion && playing) useRacePlayback.getState().pause()
+  }, [playing, reducedMotion])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -52,7 +68,7 @@ export function RaceLayer() {
       const playback = useRacePlayback.getState()
       const current = planRef.current
 
-      if (current && playback.playing) {
+      if (current && playback.playing && !reducedMotionRef.current) {
         progressRef.current += dt / playback.stepMs
         if (progressRef.current >= 1) {
           progressRef.current = 0
@@ -75,7 +91,15 @@ export function RaceLayer() {
     return () => cancelAnimationFrame(raf)
   }, [width, height])
 
-  return <canvas ref={canvasRef} className="packet-layer race-layer" style={{ pointerEvents: "none" }} />
+  return (
+    <canvas
+      ref={canvasRef}
+      className="packet-layer race-layer"
+      style={{ pointerEvents: "none" }}
+      role="img"
+      aria-label="Counterexample request flow on the architecture canvas"
+    />
+  )
 }
 
 function draw(

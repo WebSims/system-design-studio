@@ -23,6 +23,7 @@ import {
 import { useStudyStore } from "./study/store";
 import { syncAnalysisIssues } from "./study/issueSync";
 import { executableDesignChanged } from "./engine/executableDesign";
+import { usePlayback } from "./playback";
 import {
   analyzeInWorker,
   advanceSimulationEventsInWorker,
@@ -923,6 +924,9 @@ export const useStudio = create<StudioState>((set, get) => ({
     try {
       const result = await replaySimulationSessionInWorker(sessionId);
       if (get().sessionId !== sessionId) return;
+      // Replay is an explicit request to start the visual story again, not merely to
+      // copy the same immutable result into the store a second time.
+      usePlayback.getState().reset();
       set({ run: result, runStale: false, sessionBusy: false, error: null });
     } catch (e) {
       if (get().sessionId !== sessionId) return;

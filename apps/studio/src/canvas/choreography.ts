@@ -63,6 +63,22 @@ export interface PreparedTrace {
   requests: RequestSpan[];
 }
 
+/** Most recently completed or extended request available to the live presentation. */
+export function latestRenderableRequest(prepared: PreparedTrace): RequestSpan | null {
+  let latest: RequestSpan | null = null;
+  for (const request of prepared.requests) {
+    if (request.hops.length === 0 && request.visits.length === 0) continue;
+    if (
+      !latest ||
+      request.endMs > latest.endMs ||
+      (request.endMs === latest.endMs && request.requestId > latest.requestId)
+    ) {
+      latest = request;
+    }
+  }
+  return latest;
+}
+
 /**
  * Assign each visit a chip slot, and resolve where every hop starts and ends.
  *

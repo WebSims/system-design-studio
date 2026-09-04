@@ -4,6 +4,7 @@ import { cachedReadPath } from "@sds/models";
 import type { Design } from "@sds/schema";
 import {
   buildFocusWarp,
+  latestRenderableRequest,
   linearWarp,
   prepareTrace,
   sampleOccupancy,
@@ -172,6 +173,25 @@ describe("slot assignment", () => {
       const chip = occ[visit!.nodeId]?.chips.find((c) => c.requestId === visit!.requestId);
       expect(chip?.slot).toBe(slot);
     }
+  });
+});
+
+describe("live trace selection", () => {
+  it("follows the newest renderable request instead of the longest historical one", () => {
+    const trace = traceOf();
+    const prepared = prepareTrace(design, trace);
+    const latest = latestRenderableRequest(prepared);
+    const renderable = prepared.requests.filter(
+      (request) => request.hops.length > 0 || request.visits.length > 0
+    );
+    const expected = renderable.reduce((current, request) =>
+      request.endMs > current.endMs ||
+      (request.endMs === current.endMs && request.requestId > current.requestId)
+        ? request
+        : current
+    );
+
+    expect(latest?.requestId).toBe(expected.requestId);
   });
 });
 

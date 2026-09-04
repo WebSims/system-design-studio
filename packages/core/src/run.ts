@@ -279,6 +279,8 @@ export interface SimulationRuntime {
   readonly now: number;
   readonly complete: boolean;
   readonly pendingEvents: number;
+  /** Root requests whose process has started, including warm-up traffic. */
+  readonly requestsStarted: number;
   /** Execute all events through an absolute virtual timestamp. */
   advanceTo(untilMs: number): number;
   /** Execute at most this many kernel events, never beyond the configured duration. */
@@ -452,7 +454,7 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
   // ---- trace sampling ----
   const expectedRequests = manualMode
     ? Math.max(1, opts.manualRequests?.length ?? 1)
-    : Math.max(1, configuredOfferedRatePerSec * observedSec);
+    : Math.max(1, configuredOfferedRatePerSec * durationSec);
   const estimatedEventsPerRequest = Math.max(2, design.edges.length * 3);
   const maxSampledRequests = Math.max(1, Math.floor(traceCapacity / estimatedEventsPerRequest));
   const sampleEvery = Math.max(1, Math.ceil(expectedRequests / maxSampledRequests));
@@ -505,7 +507,11 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
     const requestId = nextRequestId++;
     const entryT = sim.now;
     const cls = pickClass();
-    const traced = measuring && collectTrace && trace.canTrace() && requestId % sampleEvery === 0;
+    // Trace the whole experiment, including warm-up. Warm-up excludes observations from
+    // aggregate metrics; it must not make the live canvas look idle for the first minutes of
+    // virtual time. Sampling is budgeted over the full run above, so early traffic cannot consume
+    // the trace limit before the measurement window begins.
+    const traced = collectTrace && trace.canTrace() && requestId % sampleEvery === 0;
     const timeoutMs = client.client?.timeoutMs ?? null;
 
     const ctx: RequestCtx = {
@@ -1010,6 +1016,9 @@ export function createSimulationRuntime(design: Design, opts: RunOptions = {}): 
     },
     get pendingEvents() {
       return sim.pendingEvents;
+    },
+    get requestsStarted() {
+      return nextRequestId;
     },
     advanceTo(untilMs) {
       if (!Number.isFinite(untilMs)) throw new Error("virtual time must be finite");

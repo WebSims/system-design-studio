@@ -118,6 +118,19 @@ describe("SimulationSession", () => {
     expect(result.offeredRatePerSec).toBe(0);
   });
 
+  it("streams requests and trace events during warm-up", () => {
+    const design = sessionDesign(2);
+    design.scenario.warmupSec = 1;
+    const session = new SimulationSession(design, { mode: "full" });
+
+    const update = session.advanceBy(500);
+
+    expect(update.snapshot.virtualTimeMs).toBe(500);
+    expect(update.snapshot.requestsStarted).toBeGreaterThan(0);
+    expect(update.snapshot.injectedRequests).toBe(0);
+    expect(update.delta.trace.hops.length + update.delta.trace.visits.length).toBeGreaterThan(0);
+  });
+
   it("rejects work after executable state invalidation", () => {
     const session = new SimulationSession(sessionDesign(), { mode: "manual" });
     const snapshot = session.invalidate("candidate revision changed");

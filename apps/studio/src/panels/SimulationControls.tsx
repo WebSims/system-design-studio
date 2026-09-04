@@ -287,9 +287,13 @@ export function SimulationControls() {
           </div>
 
           <div className="session-readout" aria-live="polite">
-            <span>{session.injectedRequests} injected</span>
+            <span>
+              {session.mode === "manual"
+                ? `${session.injectedRequests.toLocaleString()} injected`
+                : `${session.requestsStarted.toLocaleString()} generated`}
+            </span>
             <span>{session.eventsExecuted.toLocaleString()} events</span>
-            <span>{occupied} active</span>
+            <span>{occupied} active now</span>
           </div>
 
           <div className="session-actions wrap">

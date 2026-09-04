@@ -47,6 +47,9 @@ export interface SimulationSessionSnapshot {
   paused: boolean;
   presentationSpeed: number;
   enabledSourceIds: string[];
+  /** Root requests started by either automatic sources or manual injection. */
+  requestsStarted: number;
+  /** Manual injection actions only; zero in full-stream mode. */
   injectedRequests: number;
   eventsExecuted: number;
   pendingEvents: number;
@@ -271,6 +274,7 @@ export class SimulationSession {
       paused: this.paused,
       presentationSpeed: this.presentationSpeed,
       enabledSourceIds: this.sourceIds.filter((id) => this.enabledSources.has(id)),
+      requestsStarted: this.runtime.requestsStarted,
       injectedRequests: this.injectedRequests,
       eventsExecuted: this.eventsExecuted,
       pendingEvents: this.runtime.pendingEvents,
