@@ -19,6 +19,7 @@ export function IssueRegistry() {
   const density = useStudyStore((state) => state.uiDensity);
   const upsert = useStudyStore((state) => state.upsertIssue);
   const decide = useStudyStore((state) => state.decideIssue);
+  const removeIssue = useStudyStore((state) => state.removeIssue);
   const addCandidate = useStudyStore((state) => state.addCandidate);
   const selectCandidate = useStudyStore((state) => state.selectCandidate);
   const requestFocus = useStudyStore((state) => state.requestFocus);
@@ -29,6 +30,8 @@ export function IssueRegistry() {
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
   const [severity, setSeverity] = useState<IssueSeverity>("warning");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [announcement, setAnnouncement] = useState("");
   const baselineRevision = activeIssueBaseline(study).revision;
   const rows = useMemo(
     () => study.issueRegistry.map((issue) => ({ issue, status: issueStatus(issue, baselineRevision) })),
@@ -39,12 +42,24 @@ export function IssueRegistry() {
     (severityFilter === "all" || issue.severity === severityFilter)
   );
   const selectedIssues = rows.filter(({ issue }) => selected.has(issue.id));
+  const derivedSelection = selectedIssues.find(({ issue }) => issue.source !== "user")?.issue;
+  const referencedSelection = selectedIssues.find(({ issue }) =>
+    study.candidates.some((candidate) => candidate.issuePlans.some((plan) => plan.issueId === issue.id))
+  )?.issue;
+  const deleteBlocker = derivedSelection
+    ? `“${derivedSelection.title}” is a derived finding. Dismiss it to retain its audit trail.`
+    : referencedSelection
+      ? `“${referencedSelection.title}” is used by a solution version. Remove that version first, or dismiss the issue.`
+      : null;
 
-  const toggle = (id: string) => setSelected((current) => {
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
+  const toggle = (id: string) => {
+    setConfirmingDelete(false);
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const decideSelected = (outcome: "verified" | "accepted-risk" | "dismissed") => {
     for (const { issue } of selectedIssues) {
@@ -123,6 +138,25 @@ export function IssueRegistry() {
     });
     setSelected(new Set());
     selectCandidate(candidate.id);
+  };
+
+  const deleteSelected = () => {
+    if (deleteBlocker) return;
+    let removed = 0;
+    const remaining = new Set(selected);
+    for (const { issue } of selectedIssues) {
+      if (removeIssue({
+        issueId: issue.id,
+        expectedRevision: issue.revision,
+        authority: "human",
+      })) {
+        remaining.delete(issue.id);
+        removed += 1;
+      }
+    }
+    setSelected(remaining);
+    setConfirmingDelete(false);
+    if (removed > 0) setAnnouncement(`Deleted ${removed} issue${removed === 1 ? "" : "s"}.`);
   };
 
   return (
@@ -220,20 +254,48 @@ export function IssueRegistry() {
       )}
 
       {selected.size > 0 && (
-        <div className="registry-batch" role="group" aria-label={`Actions for ${selected.size} selected issues`}>
-          <button
-            className="btn primary small"
-            type="button"
-            onClick={createSolution}
-            disabled={selectedIssues.some(({ issue }) => issue.baselineRevision !== baselineRevision)}
-          >
-            new solution
-          </button>
-          <button className="btn small" type="button" onClick={() => decideSelected("verified")}>verify</button>
-          <button className="btn small" type="button" onClick={() => decideSelected("accepted-risk")}>accept risk</button>
-          <button className="btn small" type="button" onClick={() => decideSelected("dismissed")}>dismiss</button>
-        </div>
+        <>
+          <div className="registry-batch" role="group" aria-label={`Actions for ${selected.size} selected issues`}>
+            <button
+              className="btn primary small"
+              type="button"
+              onClick={createSolution}
+              disabled={selectedIssues.some(({ issue }) => issue.baselineRevision !== baselineRevision)}
+            >
+              new solution
+            </button>
+            <button className="btn small" type="button" onClick={() => decideSelected("verified")}>verify</button>
+            <button className="btn small" type="button" onClick={() => decideSelected("accepted-risk")}>accept risk</button>
+            <button className="btn small" type="button" onClick={() => decideSelected("dismissed")}>dismiss</button>
+            <button className="btn small danger" type="button" onClick={() => setConfirmingDelete(true)}>delete…</button>
+          </div>
+          {confirmingDelete && (
+            <div className="confirm-row" role="group" aria-label="Confirm permanent issue deletion">
+              <span className="small">
+                {deleteBlocker ?? `Permanently delete ${selectedIssues.length} manually added issue${selectedIssues.length === 1 ? "" : "s"}? This cannot be undone.`}
+              </span>
+              <button
+                className="btn small danger"
+                type="button"
+                onClick={deleteSelected}
+                disabled={deleteBlocker !== null}
+                autoFocus={deleteBlocker === null}
+              >
+                Delete
+              </button>
+              <button
+                className="btn small"
+                type="button"
+                onClick={() => setConfirmingDelete(false)}
+                autoFocus={deleteBlocker !== null}
+              >
+                Keep
+              </button>
+            </div>
+          )}
+        </>
       )}
+      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
     </section>
   );
 }

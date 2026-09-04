@@ -23,6 +23,7 @@ export function PipeEdge({
   sourcePosition,
   targetPosition,
   selected,
+  interactionWidth,
   data,
 }: EdgeProps) {
   const [path, labelX, labelY] = getBezierPath({
@@ -56,8 +57,13 @@ export function PipeEdge({
 
   return (
     <>
-      <BaseEdge id={`${id}-casing`} path={path} className="pipe-casing" />
-      <BaseEdge id={id} path={path} className={`pipe-core ${selected ? "selected" : ""}`} />
+      <BaseEdge id={`${id}-casing`} path={path} className="pipe-casing" interactionWidth={0} />
+      <BaseEdge
+        id={id}
+        path={path}
+        className={`pipe-core ${selected ? "selected" : ""}`}
+        interactionWidth={Math.max(interactionWidth ?? 0, 32)}
+      />
       <EdgeLabelRenderer>
         <div
           className={`edge-chip edge-latency-${inputState} ${selected ? "selected" : ""} ${topology ? `topology-${topology}` : ""}`}

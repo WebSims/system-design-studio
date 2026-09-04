@@ -157,7 +157,7 @@ const statusLabel = (status: CorrectnessResult["status"]): string => {
  */
 function InvariantEditor({ study }: { study: Study }) {
   const updateContract = useStudyStore((s) => s.updateContract)
-  const [mode, setMode] = useState<"guided" | "expert">("guided")
+  const uiDensity = useStudyStore((s) => s.uiDensity)
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState<InvariantDraft>({
     templateId: invariantTemplates[0]!.id,
@@ -202,14 +202,7 @@ function InvariantEditor({ study }: { study: Study }) {
     <section className={sectionClass(touched)}>
       <header className="section-head">
         <h2>rules</h2>
-        <div className="tabs tabs-small">
-          <button className={mode === "guided" ? "active" : ""} onClick={() => setMode("guided")}>
-            plain
-          </button>
-          <button className={mode === "expert" ? "active" : ""} onClick={() => setMode("expert")}>
-            raw
-          </button>
-        </div>
+        <span className="section-tag">{uiDensity === "expert" ? "plain + raw" : "plain language"}</span>
       </header>
 
       {study.correctness.invariants.length === 0 && (
@@ -229,7 +222,7 @@ function InvariantEditor({ study }: { study: Study }) {
               </button>
             </div>
             <p className="muted">{describeInvariant(inv)}</p>
-            {mode === "expert" && <ExpertExpression invariant={inv} />}
+            {uiDensity === "expert" && <ExpertExpression invariant={inv} />}
           </li>
         ))}
       </ul>
@@ -323,7 +316,7 @@ function InvariantEditor({ study }: { study: Study }) {
           </label>
 
           {built.ok ? (
-            mode === "expert" && <pre className="expr-preview">{JSON.stringify(built.invariant.expr, null, 1)}</pre>
+            uiDensity === "expert" && <pre className="expr-preview">{JSON.stringify(built.invariant.expr, null, 1)}</pre>
           ) : (
             <p className="issue-error">{built.reason}</p>
           )}

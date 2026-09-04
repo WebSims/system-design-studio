@@ -94,6 +94,13 @@ export interface RecordIssueDecisionInput {
   now?: number;
 }
 
+export interface RemoveIssueInput {
+  issueId: string;
+  expectedRevision: number;
+  authority: "human" | "agent" | "check";
+  now?: number;
+}
+
 /** The source revision every issue/receipt is pinned to, including deterministic freehand work. */
 export function activeIssueBaseline(study: Study): { snapshotId: string | null; revision: string } {
   const snapshot = activeRepositorySnapshot(study);
@@ -183,6 +190,47 @@ export function upsertIssue(study: Study, input: UpsertIssueInput, now = Date.no
     issue,
     study: StudySchema.parse({ ...study, issueRegistry, updatedAt: now }),
   };
+}
+
+/**
+ * Permanently remove a manually entered issue.
+ *
+ * Check- and agent-derived findings stay auditable and use dismissal instead. An issue that is
+ * already part of a solution plan also stays put: silently deleting that relationship would make
+ * the candidate's claim and its verification history mean something different.
+ */
+export function removeIssue(study: Study, input: RemoveIssueInput): Study {
+  if (input.authority !== "human") {
+    throw new MutationRefused("only a human may permanently delete an issue", "issue-delete-authority");
+  }
+  const existing = study.issueRegistry.find((issue) => issue.id === input.issueId);
+  if (!existing) throw new MutationRefused(`no issue "${input.issueId}"`, "no-such-issue");
+  if (existing.revision !== input.expectedRevision) {
+    throw new MutationRefused(
+      `issue "${existing.id}" is at revision ${existing.revision}, not ${input.expectedRevision}`,
+      "revision-conflict"
+    );
+  }
+  if (existing.source !== "user") {
+    throw new MutationRefused(
+      "only manually added issues can be permanently deleted. Dismiss derived findings to keep their audit trail.",
+      "derived-issue-delete"
+    );
+  }
+  const referencedBy = study.candidates.filter((candidate) =>
+    candidate.issuePlans.some((plan) => plan.issueId === existing.id)
+  );
+  if (referencedBy.length > 0) {
+    throw new MutationRefused(
+      `issue "${existing.title}" is used by ${referencedBy.map((candidate) => `"${candidate.label}"`).join(", ")}. Remove those solution versions first, or dismiss the issue instead.`,
+      "issue-in-use"
+    );
+  }
+  return StudySchema.parse({
+    ...study,
+    issueRegistry: study.issueRegistry.filter((issue) => issue.id !== existing.id),
+    updatedAt: input.now ?? Date.now(),
+  });
 }
 
 /** Append a human/check decision. No agent-callable surface reaches this mutation. */

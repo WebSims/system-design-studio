@@ -15,11 +15,24 @@ import { useStudyStore } from "../study/store";
 import { CursorIcon, KindIcon, LinkIcon, TrashIcon } from "../ui/icons";
 import { BehaviourEditor, LockEditor, StateEditor } from "./BehaviourEditor";
 import { Field, FieldRow, IconButton, NumberInput, Select, Toggle } from "./controls";
+import { DensitySection } from "./DensitySection";
 import { describeArrival } from "./WorkloadEditor";
 
 /** Round to an integer and hold it inside the schema's bounds. */
 const clampInt = (v: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(v)));
+
+const NODE_CONTROL_SUMMARY: Record<string, string> = {
+  client: "deadline and long-lived connection population",
+  loadbalancer: "algorithm, proxy capacity and health checking",
+  server: "replicas, service distribution, queueing and failure",
+  gateway: "socket capacity, delivery workers and reconnect behavior",
+  external: "dependency concurrency, latency and failure",
+  cache: "hit ratio, capacity, eviction and miss behavior",
+  database: "pool, parallelism, isolation and replica semantics",
+  queue: "consumer capacity, publish latency and backlog bound",
+  lock: "lease service time and waiter bounds",
+};
 
 /**
  * Provenance for a preset's numbers.
@@ -363,6 +376,7 @@ export function Inspector() {
   const editCanvas = useStudio((s) => s.editCanvas);
   const deleteSelection = useStudio((s) => s.deleteSelection);
   const lens = useStudyStore((s) => s.lens);
+  const uiDensity = useStudyStore((s) => s.uiDensity);
   const agentTouch = useAgentTouch(selection?.kind === "canvas" ? null : selection);
   const railClass = `rail right ${agentTouch ? "agent-touched" : ""}`;
   const selectedCount =
@@ -504,6 +518,12 @@ export function Inspector() {
           onDelete={deleteSelection}
         />
         <AgentTouchStrip kind="edge" id={edge.id} />
+        <p className="density-mode-note" role="status">
+          <b>{uiDensity === "guided" ? "Guided" : "Expert"}</b>
+          {uiDensity === "guided"
+            ? " shows the interaction first; expand either advanced group to edit every value."
+            : " keeps every network and resilience control expanded."}
+        </p>
         <ArchitectureEvidence targetKind="edge" targetId={edge.id} />
         <PerformanceCalibrationNote targetKind="edge" targetId={edge.id} />
 
@@ -567,8 +587,12 @@ export function Inspector() {
           </>
         )}
 
-        <div className="section">protocol &amp; transport</div>
-        <FieldRow>
+        <DensitySection
+          title="network physics"
+          summary={`${edge.network.application.kind === "http" ? `HTTP/${edge.network.application.version}` : edge.network.application.kind} over ${edge.network.transport.kind.toUpperCase()} · payload, bandwidth, serialization and setup`}
+        >
+          <div className="section">protocol &amp; transport</div>
+          <FieldRow>
           <Field label="application" hint="executable now">
             <Select
               value={edge.network.application.kind === "http" ? edge.network.application.version : "1.1"}
@@ -591,14 +615,14 @@ export function Inspector() {
               onChange={() => undefined}
             />
           </Field>
-        </FieldRow>
-        <p className="note">
+          </FieldRow>
+          <p className="note">
           HTTP over TCP is executable. gRPC, GraphQL, WebSocket, UDP and custom contracts are
           typed for future versions, but validation blocks them until their semantics exist.
-        </p>
+          </p>
 
-        <div className="section">network physics</div>
-        <DistributionField
+          <div className="section">latency &amp; payload</div>
+          <DistributionField
           label="propagation latency"
           hint="one way · ms"
           value={edge.network.propagationLatency}
@@ -608,13 +632,13 @@ export function Inspector() {
               e.network.propagationLatency = latency;
             })
           }
-        />
-        <p className="note">
+          />
+          <p className="note">
           <b>Propagation is one way.</b> Request and response each pay it; serialization,
           bandwidth and connection setup are added separately.
-        </p>
+          </p>
 
-        <FieldRow>
+          <FieldRow>
           <Field label="request" hint="bytes">
             <NumberInput
               value={edge.network.requestBytes}
@@ -629,33 +653,33 @@ export function Inspector() {
               onChange={(value) => patch((e) => { e.network.responseBytes = Math.round(value); })}
             />
           </Field>
-        </FieldRow>
-        <Field label="bandwidth" hint="Mbps · 0 = unconstrained">
+          </FieldRow>
+          <Field label="bandwidth" hint="Mbps · 0 = unconstrained">
           <NumberInput
             value={edge.network.bandwidthMbps ?? 0}
             min={0}
             step={0.1}
             onChange={(value) => patch((e) => { e.network.bandwidthMbps = value > 0 ? value : null; })}
           />
-        </Field>
+          </Field>
 
-        <DistributionField
+          <DistributionField
           label="request serialization"
           hint="ms"
           value={edge.network.requestSerialization}
           allowZero
           onChange={(value) => patch((e) => { e.network.requestSerialization = value; })}
-        />
-        <DistributionField
+          />
+          <DistributionField
           label="response serialization"
           hint="ms"
           value={edge.network.responseSerialization}
           allowZero
           onChange={(value) => patch((e) => { e.network.responseSerialization = value; })}
-        />
+          />
 
-        {edge.network.transport.kind === "tcp" && (
-          <>
+          {edge.network.transport.kind === "tcp" && (
+            <>
             <div className="section">connection</div>
             <DistributionField
               label="TCP setup"
@@ -708,11 +732,16 @@ export function Inspector() {
                 }
               />
             )}
-          </>
-        )}
+            </>
+          )}
+        </DensitySection>
 
-        <div className="section">routing</div>
-        <FieldRow>
+        <DensitySection
+          title="routing, loss &amp; resilience"
+          summary={`${(edge.probability * 100).toFixed(0)}% route · ${edge.fanoutFactor}× fan-out · ${(edge.network.lossProbability * 100).toFixed(1)}% loss · ${edge.policy.retry ? `${edge.policy.retry.maxAttempts} attempts` : "no retries"}`}
+        >
+          <div className="section">routing</div>
+          <FieldRow>
           <Field label="probability" hint="% of requests">
             <NumberInput
               value={Math.round(edge.probability * 1000) / 10}
@@ -729,8 +758,8 @@ export function Inspector() {
               onChange={(v) => patch((e) => { e.fanoutFactor = Math.max(1, Math.round(v)); })}
             />
           </Field>
-        </FieldRow>
-        {edge.fanoutFactor > 1 && (
+          </FieldRow>
+          {edge.fanoutFactor > 1 && (
           <p className="note warn">
             One call becomes <b className="tnum">{edge.fanoutFactor}</b> downstream calls. In a
             realtime design this is the largest capacity decision there is &mdash; a chat message
@@ -739,18 +768,18 @@ export function Inspector() {
             <b className="tnum">{edge.fanoutFactor}&times;</b>. Room size is a product decision
             that rarely appears in a capacity estimate.
           </p>
-        )}
+          )}
 
-        <Field label="lb weight" hint="relative share">
+          <Field label="lb weight" hint="relative share">
           <NumberInput
             value={edge.weight}
             min={0.1}
             step={0.1}
             onChange={(v) => patch((e) => { e.weight = Math.max(0.1, v); })}
           />
-        </Field>
-        {design.classes.length > 0 && (
-          <>
+          </Field>
+          {design.classes.length > 0 && (
+            <>
             <Field label="request classes" hint="none = all">
               <div className="chip-row">
                 {design.classes.map((c) => {
@@ -777,11 +806,11 @@ export function Inspector() {
               Restricting a connection to a class is how "reads go through the cache, writes
               go straight to the database" is expressed.
             </p>
-          </>
-        )}
+            </>
+          )}
 
-        <div className="section">loss</div>
-        <Field label="drop probability" hint="% per traversal">
+          <div className="section">loss</div>
+          <Field label="drop probability" hint="% per traversal">
           <NumberInput
             value={Math.round(edge.network.lossProbability * 1000) / 10}
             min={0}
@@ -793,14 +822,15 @@ export function Inspector() {
               })
             }
           />
-        </Field>
-        <p className="note">
+          </Field>
+          <p className="note">
           Applied once to each request-level message, so a call loses
           1&minus;(1&minus;p)&sup2; across request and response. This intentionally does not
           simulate packets, MTU, congestion control or reordering.
-        </p>
+          </p>
 
-        <PolicyEditor edgeId={selection.id} />
+          <PolicyEditor edgeId={selection.id} />
+        </DensitySection>
         <FreehandNote />
       </aside>
     );
@@ -845,14 +875,25 @@ export function Inspector() {
         onDelete={deleteSelection}
       />
       <AgentTouchStrip kind="node" id={node.id} />
+      <p className="density-mode-note" role="status">
+        <b>{uiDensity === "guided" ? "Guided" : "Expert"}</b>
+        {uiDensity === "guided"
+          ? " keeps request behavior in front and folds detailed simulation controls."
+          : " keeps behavior and every component simulation control expanded."}
+      </p>
       <ArchitectureEvidence targetKind="node" targetId={node.id} />
       <PerformanceCalibrationNote targetKind="node" targetId={node.id} />
 
+      {node.kind === "client" && node.client && <ArrivalSummary nodeId={node.id} />}
+
       {lens === "behaviour" && behaviour}
 
-      {node.kind === "client" && node.client && (
-        <>
-          <ArrivalSummary nodeId={node.id} />
+      <DensitySection
+        title="component simulation controls"
+        summary={NODE_CONTROL_SUMMARY[node.kind] ?? "timing, capacity and failure settings"}
+      >
+        {node.kind === "client" && node.client && (
+          <>
 
           <div className="section">client timeout</div>
           <Field label="deadline" hint="ms, 0 = none">
@@ -1656,15 +1697,16 @@ export function Inspector() {
         </>
       )}
 
-      {lens === "load" && behaviour}
+        {lens === "load" && behaviour}
 
-      {nodePreview && (
-        <div className="model-badge">
-          solved as <b>{nodePreview.model}</b>
-          {nodePreview.approximate && <span className="approx">approximate</span>}
-          {nodePreview.caveat && <div className="model-caveat">{nodePreview.caveat}</div>}
-        </div>
-      )}
+        {nodePreview && (
+          <div className="model-badge">
+            solved as <b>{nodePreview.model}</b>
+            {nodePreview.approximate && <span className="approx">approximate</span>}
+            {nodePreview.caveat && <div className="model-caveat">{nodePreview.caveat}</div>}
+          </div>
+        )}
+      </DensitySection>
 
       <FreehandNote />
     </aside>

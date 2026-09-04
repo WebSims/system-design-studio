@@ -11,6 +11,7 @@ import {
   useReactFlow,
   useStore,
   type Edge,
+  type EdgeChange,
   type Node,
   type NodeChange,
   type OnNodeDrag,
@@ -41,7 +42,7 @@ import { CanvasToolbox, LinkAction, MinimapChrome, useCanvasToolboxPrefs } from 
 import { CanvasObjectNode, canvasFlowId, canvasObjectId } from "./CanvasObjects";
 import { CanvasEditingToolbar } from "./CanvasEditingToolbar";
 import { useAddPreset } from "../chrome/useAddPreset";
-import { CANVAS_PRESET_MIME } from "./editing";
+import { applyCanvasSelectionDeltas, CANVAS_PRESET_MIME, type CanvasSelectionDelta } from "./editing";
 
 const edgeTypes = { pipe: PipeEdge };
 const allNodeTypes = { ...nodeTypes, canvasObject: CanvasObjectNode };
@@ -465,8 +466,29 @@ function Canvas() {
   );
   const allEdges = useMemo(() => (ghostEdges.length ? [...edges, ...ghostEdges] : edges), [edges, ghostEdges]);
 
+  const syncSelectionChanges = useCallback((deltas: CanvasSelectionDelta[]) => {
+    if (deltas.length === 0) return;
+    // Node and edge selection changes are emitted in separate callbacks. Read the live Zustand
+    // value so the second callback folds into the first even before React has rendered again.
+    const current = useStudio.getState().canvasSelection;
+    const next = applyCanvasSelectionDeltas(current, deltas);
+    useStudio.getState().selectMany(next.selection, next.primary ?? undefined);
+  }, []);
+
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      syncSelectionChanges(
+        changes.flatMap((change): CanvasSelectionDelta[] => {
+          if (change.type !== "select" || change.id.startsWith("ghost:")) return [];
+          const objectId = canvasObjectId(change.id);
+          return [{
+            group: objectId ? "objectIds" : "nodeIds",
+            id: objectId ?? change.id,
+            selected: change.selected,
+          }];
+        })
+      );
+
       const next = new Map(dragPositionsRef.current);
       let changed = false;
       for (const change of changes) {
@@ -500,7 +522,20 @@ function Canvas() {
       dragPositionsRef.current = next;
       setDragPositions(next);
     },
-    [editWorkspace]
+    [editWorkspace, syncSelectionChanges]
+  );
+
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      syncSelectionChanges(
+        changes.flatMap((change): CanvasSelectionDelta[] =>
+          change.type === "select" && !change.id.startsWith("ghost:")
+            ? [{ group: "edgeIds", id: change.id, selected: change.selected }]
+            : []
+        )
+      );
+    },
+    [syncSelectionChanges]
   );
 
   const onNodeDragStart = useCallback(() => {
@@ -722,6 +757,7 @@ function Canvas() {
         nodeTypes={allNodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         onConnect={onConnect}

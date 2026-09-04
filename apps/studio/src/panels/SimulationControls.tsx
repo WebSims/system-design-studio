@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SimulationMode } from "@sds/core";
 import type { FailureEvent } from "@sds/schema";
 import { useStudio } from "../store";
+import { DensitySection } from "./DensitySection";
 
 const SPEEDS = [0.5, 1, 2, 4] as const;
 type FailureKind = FailureEvent["kind"];
@@ -350,13 +351,17 @@ export function SimulationControls() {
         </p>
       )}
 
-      <div className="section failure-section-title">failure timeline</div>
-      <p className="session-help">
-        Saved events replay with the scenario. Live injection uses the same event shape at the
-        session's current virtual time.
-      </p>
+      <DensitySection
+        title="failure timeline"
+        summary={`${design.scenario.failures.length} configured · outages, degradation, latency and loss`}
+        className="failure-density-section"
+      >
+        <p className="session-help">
+          Saved events replay with the scenario. Live injection uses the same event shape at the
+          session's current virtual time.
+        </p>
 
-      <div className="failure-editor">
+        <div className="failure-editor">
         <label>
           <span>failure</span>
           <select value={failureKind} onChange={(event) => setFailureKind(event.currentTarget.value as FailureKind)}>
@@ -415,30 +420,36 @@ export function SimulationControls() {
             Inject now
           </button>
         </div>
-      </div>
+        </div>
 
-      {design.scenario.failures.length > 0 && (
-        <ul className="failure-list" aria-label="Configured failure events">
-          {design.scenario.failures.map((event) => (
-            <li key={event.id}>
-              <span className="failure-marker" aria-hidden="true">!</span>
-              <span>
-                <b>{FAILURE_KINDS.find((item) => item.value === event.kind)?.label}</b>
-                <small>{failureTargetId(event)} · {event.startSec}s for {event.durationSec}s · {failureSummary(event)}</small>
-              </span>
-              <button
-                type="button"
-                className="icon-btn icon-btn-sm"
-                aria-label={`Remove ${event.id}`}
-                title="Remove failure"
-                onClick={() => edit((draft) => { draft.scenario.failures = draft.scenario.failures.filter((item) => item.id !== event.id); })}
-              >
-                ×
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+        {design.scenario.failures.length > 0 && (
+          <ul className="failure-list" aria-label="Configured failure events">
+            {design.scenario.failures.map((event) => (
+              <li key={event.id}>
+                <span className="failure-marker" aria-hidden="true">!</span>
+                <span>
+                  <b>{FAILURE_KINDS.find((item) => item.value === event.kind)?.label}</b>
+                  <small>{failureTargetId(event)} · {event.startSec}s for {event.durationSec}s · {failureSummary(event)}</small>
+                </span>
+                <button
+                  type="button"
+                  className="icon-btn icon-btn-sm"
+                  aria-label={`Remove ${event.id}`}
+                  title="Remove failure"
+                  onClick={() => edit((draft) => { draft.scenario.failures = draft.scenario.failures.filter((item) => item.id !== event.id); })}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <p className="note network-boundary">
+          Request-level model only: packet MTU, congestion control and packet reordering are out of
+          scope.
+        </p>
+      </DensitySection>
 
       {session && session.activeFailures.length > 0 && (
         <div className="active-failures" role="status" aria-live="polite">
@@ -449,10 +460,6 @@ export function SimulationControls() {
         </div>
       )}
 
-      <p className="note network-boundary">
-        Request-level model only: packet MTU, congestion control and packet reordering are out of
-        scope.
-      </p>
     </section>
   );
 }

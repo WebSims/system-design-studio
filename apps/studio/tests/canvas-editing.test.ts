@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { defaultDesign, pizzaStudy } from "@sds/models";
 import { CandidateSchema, blankStudy } from "@sds/schema";
 import {
+  applyCanvasSelectionDeltas,
   alignWorkspaceSelection,
   copyWorkspaceSelection,
   deleteWorkspaceSelection,
@@ -34,6 +35,26 @@ const note = {
 const workspace = (): CanvasWorkspace => ({ design: defaultDesign(), objects: [note] });
 
 describe("architecture canvas operations", () => {
+  it("folds controlled node and edge selection callbacks into one canvas selection", () => {
+    const nodeSelected = applyCanvasSelectionDeltas(
+      { nodeIds: [], edgeIds: ["edge-old"], objectIds: [] },
+      [{ group: "nodeIds", id: "api", selected: true }]
+    );
+    expect(nodeSelected).toEqual({
+      selection: { nodeIds: ["api"], edgeIds: ["edge-old"], objectIds: [] },
+      primary: { kind: "node", id: "api" },
+    });
+
+    const edgeReconciled = applyCanvasSelectionDeltas(nodeSelected.selection, [
+      { group: "edgeIds", id: "edge-old", selected: false },
+      { group: "edgeIds", id: "edge-new", selected: true },
+    ]);
+    expect(edgeReconciled).toEqual({
+      selection: { nodeIds: ["api"], edgeIds: ["edge-new"], objectIds: [] },
+      primary: { kind: "edge", id: "edge-new" },
+    });
+  });
+
   it("copies a connected selection with fresh IDs and no evidence channel", () => {
     const copied = copyWorkspaceSelection(workspace(), {
       nodeIds: ["client", "api"],
@@ -175,6 +196,22 @@ describe("transaction history", () => {
     useStudio.getState().selectMany({ ...selected, nodeIds: [...selected.nodeIds] });
     expect(useStudio.getState()).toBe(settled);
   });
+
+  it("keeps a connection selected while its settings are edited", () => {
+    const edge = useStudio.getState().design.edges[0]!;
+    useStudio.getState().select({ kind: "edge", id: edge.id });
+
+    useStudio.getState().edit((design) => {
+      design.edges.find((candidate) => candidate.id === edge.id)!.weight = 0.75;
+    });
+
+    expect(useStudio.getState().selection).toEqual({ kind: "edge", id: edge.id });
+    expect(useStudio.getState().canvasSelection).toEqual({
+      nodeIds: [],
+      edgeIds: [edge.id],
+      objectIds: [],
+    });
+  });
 });
 
 describe("canvas UI contract", () => {
@@ -183,6 +220,8 @@ describe("canvas UI contract", () => {
     expect(source).toContain("screenToFlowPosition");
     expect(source).toContain("selectionOnDrag");
     expect(source).toContain("SelectionMode.Partial");
+    expect(source).toContain("onEdgesChange={onEdgesChange}");
+    expect(source).toContain("applyCanvasSelectionDeltas");
     expect(source).toContain("dragPositionsRef");
     expect(source).toContain("onNodeDragStop");
     expect(source).toContain('key === "z"');
@@ -196,5 +235,11 @@ describe("canvas UI contract", () => {
     expect(source).toContain("Add frame");
     expect(source).toContain("Add text note");
     expect(source).not.toMatch(/freehand|image upload/i);
+  });
+
+  it("gives connections a single generous interaction target", () => {
+    const source = readFileSync(new URL("../src/canvas/PipeEdge.tsx", import.meta.url), "utf8");
+    expect(source).toContain("interactionWidth={0}");
+    expect(source).toContain("Math.max(interactionWidth ?? 0, 32)");
   });
 });

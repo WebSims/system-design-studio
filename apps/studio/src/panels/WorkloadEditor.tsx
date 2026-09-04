@@ -242,33 +242,46 @@ export const ArrivalFields = ({
             />
           </Field>
           {a.steps.map((step, i) => (
-            <div className="class-editor-row" key={i}>
-              <Field label={`step ${i + 1} at`} hint="s">
-                <NumberInput
-                  value={step.atSec}
-                  min={0}
-                  step={10}
-                  onChange={(v) =>
-                    patch((d) => {
-                      const st = d.kind === "steps" ? d.steps[i] : undefined
-                      if (st) st.atSec = Math.max(0, v)
-                    })
-                  }
-                />
-              </Field>
-              <Field label="rate" hint="req/s">
-                <NumberInput
-                  value={step.ratePerSec}
-                  min={0.1}
-                  step={10}
-                  onChange={(v) =>
-                    patch((d) => {
-                      const st = d.kind === "steps" ? d.steps[i] : undefined
-                      if (st) st.ratePerSec = Math.max(0.1, v)
-                    })
-                  }
-                />
-              </Field>
+            <div className="class-editor" key={i}>
+              <div className="class-editor-head">
+                <strong>step {i + 1}</strong>
+                <IconButton
+                  label={`Remove workload step ${i + 1}`}
+                  tone="danger"
+                  size="sm"
+                  onClick={() => patch((d) => { if (d.kind === "steps") d.steps.splice(i, 1) })}
+                >
+                  <TrashIcon size={14} />
+                </IconButton>
+              </div>
+              <div className="class-editor-row">
+                <Field label="starts at" hint="s">
+                  <NumberInput
+                    value={step.atSec}
+                    min={0}
+                    step={10}
+                    onChange={(v) =>
+                      patch((d) => {
+                        const st = d.kind === "steps" ? d.steps[i] : undefined
+                        if (st) st.atSec = Math.max(0, v)
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="rate" hint="req/s">
+                  <NumberInput
+                    value={step.ratePerSec}
+                    min={0.1}
+                    step={10}
+                    onChange={(v) =>
+                      patch((d) => {
+                        const st = d.kind === "steps" ? d.steps[i] : undefined
+                        if (st) st.ratePerSec = Math.max(0.1, v)
+                      })
+                    }
+                  />
+                </Field>
+              </div>
             </div>
           ))}
           <button

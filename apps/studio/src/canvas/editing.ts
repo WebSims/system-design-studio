@@ -10,6 +10,19 @@ export interface CanvasSelectionState {
   objectIds: string[];
 }
 
+export type CanvasSelectionGroup = keyof CanvasSelectionState;
+
+export interface CanvasSelectionDelta {
+  group: CanvasSelectionGroup;
+  id: string;
+  selected: boolean;
+}
+
+export type CanvasPrimarySelection =
+  | { kind: "node"; id: string }
+  | { kind: "edge"; id: string }
+  | { kind: "canvas"; id: string };
+
 export interface CanvasWorkspace {
   design: Design;
   objects: CanvasObject[];
@@ -26,6 +39,52 @@ export const EMPTY_CANVAS_SELECTION: CanvasSelectionState = {
   edgeIds: [],
   objectIds: [],
 };
+
+/**
+ * Apply React Flow's controlled selection changes without losing selections of another kind.
+ *
+ * React Flow emits node and edge changes separately. Rebuilding the whole selection from either
+ * callback drops the other half, while ignoring the changes means controlled elements can never
+ * become selected. Folding small deltas into the Studio selection handles clicks, keyboard
+ * selection, modifier multi-select and the marquee through the same path.
+ */
+export function applyCanvasSelectionDeltas(
+  current: CanvasSelectionState,
+  deltas: readonly CanvasSelectionDelta[]
+): { selection: CanvasSelectionState; primary: CanvasPrimarySelection | null } {
+  const groups: Record<CanvasSelectionGroup, Set<string>> = {
+    nodeIds: new Set(current.nodeIds),
+    edgeIds: new Set(current.edgeIds),
+    objectIds: new Set(current.objectIds),
+  };
+  let primary: CanvasPrimarySelection | null = null;
+
+  for (const delta of deltas) {
+    if (delta.selected) {
+      groups[delta.group].add(delta.id);
+      primary = {
+        kind:
+          delta.group === "nodeIds"
+            ? "node"
+            : delta.group === "edgeIds"
+              ? "edge"
+              : "canvas",
+        id: delta.id,
+      };
+    } else {
+      groups[delta.group].delete(delta.id);
+    }
+  }
+
+  return {
+    selection: {
+      nodeIds: [...groups.nodeIds],
+      edgeIds: [...groups.edgeIds],
+      objectIds: [...groups.objectIds],
+    },
+    primary,
+  };
+}
 
 const clone = <T>(value: T): T => structuredClone(value);
 

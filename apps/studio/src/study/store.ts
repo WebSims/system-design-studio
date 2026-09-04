@@ -58,6 +58,7 @@ import {
   importRepositoryArchitecture,
   promoteCandidate,
   releaseApproval,
+  removeIssue as removeRegistryIssue,
   recordIssueDecision,
   recordCandidateIssueVerification,
   replaceCandidateDraft,
@@ -70,6 +71,7 @@ import {
   type CreateCandidateInput,
   type RecordCandidateIssueVerificationInput,
   type RecordIssueDecisionInput,
+  type RemoveIssueInput,
   type UpsertIssueInput,
   type UpsertSourceInventoryInput,
 } from "./mutations";
@@ -279,6 +281,7 @@ export interface StudioState {
   upsertInventory(input: UpsertSourceInventoryInput): Candidate;
   upsertIssue(input: UpsertIssueInput): import("@sds/schema").Issue;
   decideIssue(input: RecordIssueDecisionInput): import("@sds/schema").Issue;
+  removeIssue(input: RemoveIssueInput): boolean;
   removeCandidate(id: string): void;
   promote(id: string): void;
 
@@ -766,6 +769,16 @@ export const useStudyStore = create<StudioState>((set, get) => {
       const { study, issue } = recordIssueDecision(get().study, input);
       commit(study, true);
       return issue;
+    },
+
+    removeIssue: (input) => {
+      try {
+        commit(removeRegistryIssue(get().study, input), true);
+        return true;
+      } catch (err) {
+        set({ error: err instanceof MutationRefused ? err.message : String(err) });
+        return false;
+      }
     },
 
     removeCandidate: (id) => {
