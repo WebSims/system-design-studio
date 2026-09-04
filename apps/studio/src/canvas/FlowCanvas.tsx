@@ -1,7 +1,6 @@
 import {
   Background,
   BackgroundVariant,
-  Controls,
   MiniMap,
   Panel,
   ReactFlow,
@@ -35,7 +34,8 @@ import { useRacePlayback } from "../racePlayback";
 import { useStudio } from "../store";
 import { useStudyStore, type Annotation } from "../study/store";
 import { compareDesignTopology, type DesignDelta } from "../topology";
-import { TopologyExplorer, type TopologyExploration } from "./TopologyExplorer";
+import { TopologyTools, type TopologyExploration } from "./TopologyExplorer";
+import { CanvasToolbox, MinimapChrome, useCanvasToolboxPrefs } from "./CanvasToolbox";
 
 const edgeTypes = { pipe: PipeEdge };
 
@@ -229,6 +229,8 @@ function Canvas() {
         id: `ghost:${n.id}`,
         type: "ghost",
         position: { x: n.x, y: n.y },
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
         data: { label: n.label, kind: n.kind },
         draggable: false,
         selectable: false,
@@ -257,6 +259,8 @@ function Canvas() {
   /** Click-to-link: the node picked as the source while waiting for a target. */
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
+  const [toolbox, setToolbox] = useCanvasToolboxPrefs();
+  const expandToolbox = useCallback(() => setToolbox({ collapsed: false }), [setToolbox]);
   useFocusRequests(design);
 
   const topologyFingerprint = useMemo(
@@ -284,6 +288,10 @@ function Canvas() {
    * The React Flow node array is derived from the design and carries NOTHING that
    * changes during playback. Live state reaches the node components through the
    * playback store instead, so an animating graph does not re-render here.
+   *
+   * Every node carries its size. `onNodesChange` writes back positions only, so React Flow's
+   * measurements never reach these objects, and a node without dimensions is skipped by the
+   * minimap and by any fit that runs before first paint. The DOM box is this size already.
    */
   const nodes = useMemo<Node[]>(
     () =>
@@ -291,6 +299,8 @@ function Canvas() {
         id: n.id,
         type: n.kind,
         position: { x: n.x, y: n.y },
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
         data: {
           repositoryLinked: study.repository !== null,
           performanceCalibrated: !uncalibratedTargets.has(`node:${n.id}`),
@@ -473,20 +483,50 @@ function Canvas() {
         fitViewOptions={{ padding: FIT_PADDING, maxZoom: FIT_MAX_ZOOM }}
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
-        proOptions={{ hideAttribution: false }}
+        proOptions={{ hideAttribution: true }}
         defaultEdgeOptions={{ type: "pipe" }}
       >
         <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#2a2621" />
-        <Controls showInteractive={false} />
-        <MiniMap pannable zoomable nodeColor="#3a342c" maskColor="rgba(10,9,7,0.7)" />
-        <TopologyExplorer
-          key={`${activeCandidateId ?? "none"}:${topologyFingerprint}`}
-          design={design}
-          selectedNodeId={selection?.kind === "node" ? selection.id : null}
-          exploration={exploration}
-          onExplorationChange={setExploration}
-          onSelectNode={onSelectNode}
-        />
+        {toolbox.minimap && (
+          <MiniMap
+            pannable
+            zoomable
+            maskColor="rgba(10,9,7,0.7)"
+            maskStrokeColor="rgba(232,224,212,0.35)"
+            maskStrokeWidth={1}
+            nodeClassName={(node) =>
+              [
+                "minimap-node",
+                node.type === "ghost" ? "minimap-ghost" : `minimap-kind-${node.type}`,
+                node.selected ? "selected" : "",
+                touchedNodeIds.has(node.id) ? "agent-touched" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")
+            }
+          />
+        )}
+        <MinimapChrome shown={toolbox.minimap} onToggle={() => setToolbox({ minimap: !toolbox.minimap })} />
+        <CanvasToolbox
+          prefs={toolbox}
+          onPrefs={setToolbox}
+          linking={linking}
+          linkFrom={linkFrom}
+          linkFromLabel={linkFrom ? (design.nodes.find((n) => n.id === linkFrom)?.label ?? null) : null}
+          linkableTargets={linkableTargets}
+          nodeCount={design.nodes.length}
+          onToggleLinking={toggleLinking}
+        >
+          <TopologyTools
+            key={`${activeCandidateId ?? "none"}:${topologyFingerprint}`}
+            design={design}
+            selectedNodeId={selection?.kind === "node" ? selection.id : null}
+            exploration={exploration}
+            onExplorationChange={setExploration}
+            onSelectNode={onSelectNode}
+            onReveal={expandToolbox}
+          />
+        </CanvasToolbox>
         {diffBase && delta && (
           <Panel position="top-right" className="diff-panel" aria-label="Version diff legend">
             <span className="diff-title">
@@ -502,27 +542,6 @@ function Canvas() {
             <button type="button" className="btn small ghost" onClick={() => setDiffBase(null)}>
               hide diff
             </button>
-          </Panel>
-        )}
-        {design.nodes.length >= 2 && linkableTargets > 0 && (
-          <Panel position="bottom-center" className="link-panel">
-            <button
-              type="button"
-              className={`btn small ${linking ? "primary" : ""}`}
-              onClick={toggleLinking}
-              aria-pressed={linking}
-              title="Make a link by clicking two components in turn. You can also drag from a component's right handle to another's left."
-            >
-              {linking ? "Linking\u2026" : "Link"}
-            </button>
-            {linking && (
-              <span className="link-hint">
-                {linkFrom
-                  ? `now click the component ${design.nodes.find((n) => n.id === linkFrom)?.label ?? "it"} calls`
-                  : "click the component that makes the call"}
-                <span className="muted">{" \u00b7 Esc to cancel"}</span>
-              </span>
-            )}
           </Panel>
         )}
         {lens === "load" ? <PacketLayer design={design} trace={trace} /> : <RaceLayer />}

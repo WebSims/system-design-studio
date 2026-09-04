@@ -13,17 +13,24 @@ import {
   type PortfolioResult,
   type RepositorySnapshot,
   performanceCalibration,
+  isPlaceholderWorkload,
+  PLACEHOLDER_WORKLOAD_MESSAGE,
   StudyContractLockedError,
   StudyContractPatchSchema,
+  StudyWorkloadSchema,
   studyContractLock,
   type Study,
   type StudyContractPatch,
 } from "@sds/schema";
 import {
+  DRAWING_INTENT,
+  DRAWING_LABEL,
   MutationRefused,
   assertAgentModelFields,
   type ArchitecturePatchOperation,
 } from "../study/mutations";
+import { nextStepHint } from "../study/steps";
+import { buildInvariant, invariantTemplates } from "../correctness/builder";
 import { buildImplementationHandoff } from "../implementation-handoff";
 import { layoutIssue } from "../canvas/layout";
 import { toJsonSchema, type JsonSchema } from "./json-schema";
@@ -73,7 +80,7 @@ import { toJsonSchema, type JsonSchema } from "./json-schema";
 
 const CandidateIdInput = z
   .object({
-    candidateId: z.string().min(1).max(64).describe("Candidate id, from studio_get_study."),
+    candidateId: z.string().min(1).max(64).describe("Version id (`candidateId`), from studio_get_study."),
   })
   .strict();
 
@@ -105,7 +112,7 @@ const CreateCandidateInput = z
       .max(2000)
       .default("")
       .describe(
-        "Why this candidate is expected to be interesting, including whether it is expected to be broken."
+        "Why this version is expected to be interesting, including whether it is expected to be broken."
       ),
     /**
      * Optional, and when absent the candidate is copied from the study's active one.
@@ -119,8 +126,8 @@ const CreateCandidateInput = z
       .unknown()
       .optional()
       .describe(
-        "A complete design document. Omit to copy the project's active candidate as a starting point, or, in a project " +
-          "with no candidate yet, to open an empty canvas and draw on it with studio_apply_architecture_patch. " +
+        "A complete design document. Omit to copy the project's active version as a starting point, or, while the " +
+          "project's blank drawing is still empty, to adopt that drawing and keep working on it with studio_apply_architecture_patch. " +
           "Validate a supplied design with studio_validate_draft first."
       ),
     copyFrom: z
@@ -128,7 +135,7 @@ const CreateCandidateInput = z
       .min(1)
       .max(64)
       .optional()
-      .describe("Candidate id to copy, when no design is supplied."),
+      .describe("Version id to copy, when no design is supplied."),
   })
   .strict();
 
@@ -140,7 +147,7 @@ const ReplaceDraftInput = z
       .int()
       .nonnegative()
       .describe(
-        "The revision you believe you are replacing, from studio_get_candidate. The call is refused if the candidate has moved on."
+        "The revision you believe you are replacing, from studio_get_candidate. The call is refused if the version has moved on."
       ),
     design: z.unknown().describe("A complete, validated design document."),
   })
@@ -192,7 +199,7 @@ const ImportArchitectureInput = z
       .optional()
       .describe(
         "Complete design document for the architecture observed at this repository revision. " +
-          "Omit when sealing a candidate you drew step by step with fromCandidateId."
+          "Omit when sealing the version you drew step by step with fromCandidateId."
       ),
     fromCandidateId: z
       .string()
@@ -200,8 +207,8 @@ const ImportArchitectureInput = z
       .max(64)
       .optional()
       .describe(
-        "An experiment drawn on the canvas with studio_create_candidate and studio_apply_architecture_patch. " +
-          "It becomes the as-is baseline in place, keeping its id and everything already drawn."
+        "The version drawn on the canvas (the one studio_create_study opened, patched with studio_apply_architecture_patch). " +
+          "It becomes the as-is baseline (shown as CURRENT) in place, keeping its id and everything already drawn."
       ),
     expectedRevision: z
       .number()
@@ -230,7 +237,7 @@ const GetArchitectureInput = z
       .min(1)
       .max(64)
       .optional()
-      .describe("Candidate to read. Omit for the active architecture."),
+      .describe("Version to read. Omit for the active architecture."),
   })
   .strict();
 
@@ -302,11 +309,27 @@ const CompareInput = z
       .array(z.string().min(1).max(64))
       .max(64)
       .default([])
-      .describe("Candidates to include. Empty means every candidate in the project."),
+      .describe("Versions to include. Empty means every version in the project."),
   })
   .strict();
 
 const EmptyInput = z.object({}).strict();
+
+const CreateStudyInput = z
+  .object({
+    name: z.string().min(1).max(120).describe("The project's name."),
+    problem: z.string().max(4000).default("").describe("The problem statement, in the person's terms."),
+    workload: StudyWorkloadSchema.partial()
+      .optional()
+      .describe(
+        "The workload the whole project is judged against, when you already know it: the arrival you observed " +
+          "(or the assumption you are making), run length, warm-up and seeds. Omit to set it later with studio_update_study; " +
+          "the Studio's own placeholder (Poisson 50 req/s) is refused by the runners, so it must be set before the first run."
+      ),
+  })
+  .strict();
+
+export type CreateStudyInput = z.infer<typeof CreateStudyInput>;
 
 const AnnotateInput = z
   .object({
@@ -315,11 +338,11 @@ const AnnotateInput = z
       .min(1)
       .max(64)
       .optional()
-      .describe("Candidate the note belongs to. Defaults to the active candidate."),
+      .describe("Version the note belongs to. Defaults to the active version."),
     targetKind: z
       .enum(["node", "edge", "step", "candidate"])
-      .describe("What the note is pinned to. A step is a 0-based index into that candidate's counterexample."),
-    targetId: z.string().min(1).max(64).describe("Node id, edge id, step index as a string, or candidate id."),
+      .describe("What the note is pinned to (candidate = a whole version). A step is a 0-based index into that version's counterexample."),
+    targetId: z.string().min(1).max(64).describe("Node id, edge id, step index as a string, or version id."),
     text: z.string().min(1).max(400).describe("The note, one or two sentences. Say what, and cite where when you can."),
     tone: z
       .enum(["info", "warn", "bad"])
@@ -342,8 +365,8 @@ const FocusToolInput = z
       .int()
       .nonnegative()
       .optional()
-      .describe("0-based step of the candidate's counterexample. Required for kind step."),
-    candidateId: z.string().min(1).max(64).optional().describe("Defaults to the active candidate."),
+      .describe("0-based step of the version's counterexample. Required for kind step."),
+    candidateId: z.string().min(1).max(64).optional().describe("Defaults to the active version."),
   })
   .strict();
 
@@ -363,7 +386,7 @@ export interface ToolHost {
   getStudy(): Study;
   getCatalog(): Catalog;
   /** Start a new, empty project document and open it. The current project remains saved. */
-  createStudy(input: { name?: string; problem?: string }): Promise<Study>;
+  createStudy(input: CreateStudyInput): Promise<Study>;
   /** Patch the executable contract. Rejects once results exist. */
   updateStudyContract(patch: StudyContractPatch): Promise<Study>;
   /** Saved projects, for switching. */
@@ -460,6 +483,22 @@ export interface Catalog {
   operations: Array<{ op: string; indivisible: boolean; whatItDoes: string }>;
   patterns: Array<{ id: string; label: string; expectation: string }>;
   faults: Array<{ kind: string; whatItModels: string }>;
+  /** The guided rules the interface offers, as constructors an agent can name instead of writing an Expr tree. */
+  invariantTemplates: Array<{
+    id: string;
+    label: string;
+    explanation: string;
+    defaultScope: "safety" | "postcondition";
+    params: Array<{ name: string; label: string; kind: "collection" | "field" | "number"; of?: "counter" | "table" }>;
+  }>;
+  /** The full Invariant shape, for the expert path. */
+  invariantShape: {
+    fields: string[];
+    scopes: string[];
+    exprKinds: string[];
+    templateForm: string;
+    example: unknown;
+  };
   layoutGuide: {
     coordinateSystem: string;
     nodeSize: { width: number; height: number };
@@ -569,14 +608,69 @@ function define<S extends z.ZodTypeAny>(spec: ToolSpec<S>, host: ToolHost): Tool
 const isDrawing = (study: Study, candidate: Candidate): boolean =>
   candidate.role === "experiment" && !study.candidates.some((c) => c.role === "baseline");
 
-/** The next step while drawing, with the ids and revision filled in so nothing has to be re-read. */
-const drawingNext = (candidate: Candidate): string =>
-  `Keep drawing with studio_apply_architecture_patch { candidateId: "${candidate.id}", expectedRevision: ${candidate.revision} }: ` +
-  "add-node per component with x/y chosen from studio_get_catalog.layoutGuide (or include auto-layout in the patch and omit them), " +
-  "set fanout and positive timing fields explicitly on every service component, add-edge once both ends exist with explicit positive one-way latency and fanoutFactor (1 for one-to-one), " +
-  "make every active component reachable from its real external or autonomous client/work source, " +
-  "and set-workflow for a source-backed state-changing flow when the project declares correctness invariants; " +
-  `each accepted patch appears on the canvas. When complete, seal it with studio_import_architecture { fromCandidateId: "${candidate.id}", expectedRevision, repository, evidence }.`;
+/**
+ * The next step, from the same list the agent panel's tracker reads (`study/steps.ts`), with ids
+ * and revisions filled in so nothing has to be re-read. Only while the as-is design is being
+ * drawn: experiments forked from a baseline are redesigns and get no such hint.
+ */
+const drawingNext = (study: Study): { next: string } | Record<string, never> => {
+  const hint = nextStepHint(study);
+  return hint ? { next: hint } : {};
+};
+
+/**
+ * Invariants written as `{ template, args }` are built with the same constructors the interface
+ * uses, so an agent never has to guess the Expr grammar. Anything else passes through untouched
+ * for the schema to judge.
+ */
+const resolveTemplateInvariants = (contract: unknown): unknown => {
+  if (typeof contract !== "object" || contract === null) return contract;
+  const correctness = (contract as { correctness?: unknown }).correctness;
+  if (typeof correctness !== "object" || correctness === null) return contract;
+  const invariants = (correctness as { invariants?: unknown }).invariants;
+  if (!Array.isArray(invariants)) return contract;
+  const resolved = invariants.map((invariant) => {
+    if (typeof invariant !== "object" || invariant === null || !("template" in invariant)) return invariant;
+    const draft = invariant as {
+      template: unknown;
+      args?: unknown;
+      id?: unknown;
+      label?: unknown;
+      message?: unknown;
+      scope?: unknown;
+    };
+    const templateId = String(draft.template);
+    const template = invariantTemplates.find((item) => item.id === templateId);
+    if (!template) {
+      throw new Error(
+        `unknown invariant template "${templateId}". Templates: ${invariantTemplates.map((item) => item.id).join(", ")} (see studio_get_catalog.invariantTemplates).`
+      );
+    }
+    const scope = draft.scope === "safety" || draft.scope === "postcondition" ? draft.scope : template.defaultScope;
+    const built = buildInvariant({
+      templateId,
+      label: typeof draft.label === "string" ? draft.label : "",
+      message: typeof draft.message === "string" ? draft.message : "",
+      scope,
+      args: (typeof draft.args === "object" && draft.args !== null ? draft.args : {}) as Record<string, string | number>,
+    });
+    if (!built.ok) {
+      throw new Error(
+        `invariant template "${templateId}": ${built.reason}. Its args are ${template.params
+          .map((param) => `${param.name} (${param.kind}${param.of ? ` of ${param.of}` : ""})`)
+          .join(", ")}.`
+      );
+    }
+    return typeof draft.id === "string" && draft.id.length > 0 ? { ...built.invariant, id: draft.id } : built.invariant;
+  });
+  return { ...contract, correctness: { ...correctness, invariants: resolved } };
+};
+
+const INVARIANT_REPAIR_HINT =
+  "Invariants: either { template, args } from studio_get_catalog.invariantTemplates, or a full Invariant " +
+  "{ id, label, scope: \"safety\" | \"postcondition\", expr, message }. expr.kind must be one of the kinds listed in " +
+  "studio_get_catalog.invariantShape.exprKinds; \"postcondition\" is a scope value, not a field. Rules can only name " +
+  "collections the workflow declares, so set-workflow first.";
 
 // ---------------------------------------------------------------------------
 // the tools
@@ -588,34 +682,34 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_create_study",
         description:
-          "Create and open a new project. The currently open project remains saved and can be reopened with " +
-          "studio_open_study. Set the new project's yardstick with studio_update_study, then add candidates. " +
-          "The page keeps showing its start screen until the project has a candidate: nothing is drawn until " +
-          "studio_create_candidate (an empty canvas to draw on) or studio_import_architecture succeeds.",
-        input: z
-          .object({
-            name: z.string().min(1).max(120),
-            problem: z.string().max(4000).default(""),
-          })
-          .strict(),
+          "Create and open a new project (the project id is `studyId`) with one empty version to draw on; the canvas " +
+          "opens at once. The currently open project remains saved and can be reopened with studio_open_study. " +
+          "Order of work: read studio_get_catalog, draw components then links with studio_apply_architecture_patch, " +
+          "set-workflow for the highest-risk flow, then set the yardstick with studio_update_study (workload, targets, " +
+          "faults, invariants naming the collections you drew), seal with studio_import_architecture { fromCandidateId }, " +
+          "then evaluate. Pass the evidenced arrival as workload here or set it with studio_update_study before the first " +
+          "run: the Studio's placeholder workload is refused by the runners.",
+        input: CreateStudyInput,
         annotations: {},
         async run(args) {
           const study = await host.createStudy(args);
+          const candidate = await host.createCandidate({ label: DRAWING_LABEL, intent: DRAWING_INTENT, design: undefined });
           host.log({
             tool: "studio_create_study",
             at: Date.now(),
             ok: true,
-            summary: `created project "${study.name}"`,
+            summary: `created project "${study.name}" with an empty version to draw on`,
+            candidateId: candidate.id,
+            revision: candidate.revision,
           });
           return {
             studyId: study.id,
             name: study.name,
+            candidateId: candidate.id,
+            revision: candidate.revision,
             contractLocked: false,
-            next:
-              "The canvas stays empty until a candidate exists. To draw live, call studio_create_candidate with no design " +
-              "for an empty canvas, add each component and link with studio_apply_architecture_patch (position them from " +
-              "studio_get_catalog.layoutGuide or include an auto-layout operation), then seal it with " +
-              "studio_import_architecture { fromCandidateId }. Or import a complete design in one call.",
+            workloadIsPlaceholder: isPlaceholderWorkload(host.getStudy().workload),
+            ...drawingNext(host.getStudy()),
           };
         },
       },
@@ -626,10 +720,12 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_update_study",
         description:
-                    "Set the shared yardstick: workload, SLOs, business goals, invariants, faults and exploration bounds. " +
-          "Every candidate is judged against these. Set the invariants BEFORE running anything: a project with " +
-          "none fails the correctness gate rather than passing it. Refused once any evaluation exists or a " +
-          "candidate is promoted.",
+          "Set the project's shared yardstick: workload, SLOs, business goals, invariants, faults and exploration bounds. " +
+          "Every version is judged against these. Set it AFTER the workflow exists and BEFORE sealing or running: rules " +
+          "name collections, and collections exist only once set-workflow has run. Invariants may be written as " +
+          "{ template, args } using studio_get_catalog.invariantTemplates, or as a full Invariant. A project with no " +
+          "invariants fails the correctness gate rather than passing it. Replace the placeholder workload here before the " +
+          "first run. Refused once any evaluation exists or a version is promoted.",
         input: z
           .object({
             name: z.string().min(1).max(120).optional(),
@@ -663,13 +759,13 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             const lock = studyContractLock(host.getStudy());
             if (lock.locked) throw new StudyContractLockedError(lock.reason);
 
-            const parsed = StudyContractPatchSchema.safeParse(args.contract);
+            const parsed = StudyContractPatchSchema.safeParse(resolveTemplateInvariants(args.contract));
             if (!parsed.success) {
-              throw new Error(
-                `the contract patch is not valid: ${parsed.error.issues
-                  .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-                  .join("; ")}`
+              const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+              const aboutInvariants = parsed.error.issues.some(
+                (i) => i.path.includes("invariants") || i.path.includes("correctness")
               );
+              throw new Error(`the contract patch is not valid: ${detail}${aboutInvariants ? ` ${INVARIANT_REPAIR_HINT}` : ""}`);
             }
             contract = parsed.data;
           }
@@ -682,9 +778,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             tool: "studio_update_study",
             at: Date.now(),
             ok: true,
-            summary: `updated the project contract`,
+            summary: `updated the project yardstick`,
           });
-          return summariseStudy(study);
+          return { ...summariseStudy(study), ...drawingNext(study) };
         },
       },
       host
@@ -748,8 +844,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "If the project declares correctness invariants, the design must contain a workflow handler that can exercise them; " +
           "a vacuous immutable baseline is refused. " +
           "Two ways in: pass the complete design in one call, or pass fromCandidateId to seal an experiment you drew " +
-          "step by step on the canvas (studio_create_candidate, then studio_apply_architecture_patch per component and link). " +
-          "Either way this is what makes the drawing the immutable as-is baseline.",
+          "step by step on the canvas (the version studio_create_study opened, patched with studio_apply_architecture_patch per component and link). " +
+          "Either way this is what makes the drawing the immutable as-is baseline, shown to the person as CURRENT.",
         input: ImportArchitectureInput,
         annotations: { readOnlyHint: false, untrustedContentHint: true },
         async run(args) {
@@ -777,7 +873,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             designHash: contentHash(candidate.design),
             evidenceCount: candidate.evidence.length,
             next:
-              "Create an experiment from this baseline with studio_create_candidate before proposing architecture changes.",
+              "The as-is baseline is sealed. Next: studio_run_evaluation { candidateId, correctness: true }, then studio_annotate and " +
+              "studio_focus the highest risk. To propose a change, create a new version from this baseline with studio_create_candidate.",
           };
         },
       },
@@ -788,8 +885,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_get_study",
         description:
-                    "Read the current project: problem, workload, SLOs, business goals, invariants, bounds, and the candidates " +
-          "with their revisions. Start here. Workload, SLOs, invariants and bounds are project-level; a candidate " +
+          "Read the current project: problem, workload, SLOs, business goals, invariants, bounds, and its versions " +
+          "(candidates) with their revisions. Workload, SLOs, invariants and bounds are project-level; a version " +
           "cannot change them. Contains user-authored text.",
         input: EmptyInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
@@ -835,8 +932,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_get_catalog",
         description:
           "Read the modelling vocabulary: component kinds, workflow operations and which are indivisible, the shipped " +
-          "patterns, injectable faults, layout rules, and non-zero latency placeholders. Read this before writing a " +
-          "design. The operations are a closed set, and the indivisible ones are what make a design safe.",
+          "patterns, injectable faults, invariant templates and the Invariant shape, layout rules, and non-zero latency " +
+          "placeholders. Read this before drawing. The operations are a closed set, and the indivisible ones are what " +
+          "make a design safe.",
         input: EmptyInput,
         annotations: { readOnlyHint: true },
         async run() {
@@ -851,7 +949,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_get_candidate",
         description:
-                    "Read one candidate: its design, workflow, revision and stated intent. The revision is required by " +
+          "Read one version: its design, workflow, revision and stated intent. The revision is required by " +
           "studio_replace_candidate_draft. Contains user-authored text.",
         input: CandidateIdInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
@@ -897,7 +995,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
           "coordinates are otherwise refused, never silently repositioned. Agent-authored servers must set fanout explicitly; " +
           "agent-authored service components must set positive timing fields explicitly, and links must include positive one-way " +
           "latency plus fanoutFactor (1 for one-to-one; use a catalog benchmark marked assumed when timing is unmeasured). Requires the revision read from " +
-          "studio_get_architecture or returned by the previous call, and refuses baselines, promoted candidates, stale " +
+          "studio_get_architecture or returned by the previous call, and refuses baselines, promoted versions, stale " +
           "revisions, missing targets and results with errors (a link to a node that does not exist yet, for example).",
         input: ArchitecturePatchInput,
         annotations: { readOnlyHint: false },
@@ -921,7 +1019,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             designHash: contentHash(result.candidate.design),
             changed: result.changed,
             evidenceCount: result.candidate.evidence.length,
-            ...(isDrawing(host.getStudy(), result.candidate) ? { next: drawingNext(result.candidate) } : {}),
+            ...(isDrawing(host.getStudy(), result.candidate) ? drawingNext(host.getStudy()) : {}),
           };
         },
       },
@@ -932,7 +1030,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_attach_code_evidence",
         description:
-          "Append evidence to nodes or links without replacing the architecture. Requires the current candidate revision and " +
+          "Append evidence to nodes or links without replacing the architecture. Requires the current version revision and " +
           "refuses duplicate ids or missing targets. Evidence is append-only through WebMCP so an agent cannot silently erase " +
           "the basis for an as-is claim.",
         input: AttachEvidenceInput,
@@ -962,7 +1060,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         name: "studio_validate_draft",
         description:
                     "Check a design without storing it. Returns schema, topology and workflow errors naming the field and what " +
-          "is wrong, plus warnings. Call this before creating or replacing a candidate. A valid result changes nothing on " +
+          "is wrong, plus warnings. Call this before creating or replacing a version. A valid result changes nothing on " +
           "the page; pass the same design to studio_import_architecture or studio_create_candidate to render it.",
         input: ValidateDraftInput,
         annotations: { readOnlyHint: true },
@@ -990,9 +1088,11 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_create_candidate",
         description:
-                    "Create a new candidate architecture: isolated, marked agent-authored, revision 0. Omit the design to copy " +
-          "the active candidate, which is what you want when changing one aspect of it, or to start from an empty canvas " +
-          "when the project has none. The candidate is drawn on the page at once. Never modifies an existing candidate.",
+          "Create a new version: isolated, marked agent-authored, revision 0. Omit the design to copy the active version, " +
+          "which is what you want when changing one aspect of it. Called right after studio_create_study, while the blank " +
+          "drawing it opened is still empty, this adopts that drawing (relabelled, filled with the design if one is given) " +
+          "instead of adding a second empty version. The version is drawn on the page at once. Never modifies a version " +
+          "somebody has worked on.",
         input: CreateCandidateInput,
         annotations: { readOnlyHint: false },
         async run(args) {
@@ -1016,8 +1116,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             origin: candidate.origin,
             designHash: contentHash(candidate.design),
             note:
-              "This candidate is isolated and marked as agent-authored in the interface. Promoting it is a human-only action.",
-            ...(isDrawing(host.getStudy(), candidate) ? { next: drawingNext(candidate) } : {}),
+              "This version is isolated and marked as agent-authored in the interface. Promoting it is a human-only action.",
+            ...(isDrawing(host.getStudy(), candidate) ? drawingNext(host.getStudy()) : {}),
           };
         },
       },
@@ -1028,9 +1128,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_replace_candidate_draft",
         description:
-                    "Replace a candidate's design with a complete, validated document. Requires the revision you read, and is " +
-          "refused if the candidate changed since, so two editors cannot silently overwrite each other. Refused for " +
-          "the promoted candidate and for an as-is baseline; create an experiment before redesigning code-derived architecture.",
+          "Replace a version's design with a complete, validated document. Requires the revision you read, and is " +
+          "refused if the version changed since, so two editors cannot silently overwrite each other. Refused for " +
+          "the promoted version and for the as-is baseline; create a new version before redesigning code-derived architecture.",
         input: ReplaceDraftInput,
         annotations: { readOnlyHint: false },
         async run(args) {
@@ -1070,7 +1170,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_run_evaluation",
         description:
-          "Run the bounded correctness search and/or the replicated performance measurement for one candidate. Performance " +
+          "Run the bounded correctness search and/or the replicated performance measurement for one version. Refused while " +
+          "the project's workload is still the Studio placeholder, because the first result locks the yardstick for every version. Performance " +
           "defaults off and is refused for a repository model until every component and link has observed runtime or user performance evidence. " +
           "Verdicts: VIOLATED, NO_VIOLATION_WITHIN_BOUNDS, INCONCLUSIVE_BOUND_REACHED, INVALID_MODEL. " +
           "NO_VIOLATION_WITHIN_BOUNDS is not proof of safety, and INCONCLUSIVE_BOUND_REACHED establishes nothing " +
@@ -1080,6 +1181,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         async run(args, ctx) {
           const study = host.getStudy();
           const candidate = requireCandidate(study, args.candidateId);
+          assertWorkloadChosen(study);
           const calibration = performanceCalibration(study, candidate);
           if (args.performance) assertPerformanceCalibrated(study, candidate);
           const evaluation = await host.runEvaluation({
@@ -1116,7 +1218,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_run_production_scenarios",
         description:
-          "Run the standard production suite for one candidate: bounded concurrent requests and retries, a 3x " +
+          "Run the standard production suite for one version: bounded concurrent requests and retries, a 3x " +
           "30-second traffic spike with recovery, a load ramp to the project SLO boundary, and 30% degradation " +
           "of a high-impact dependency. Returns measured evidence and a specific recommendation for every probe. " +
           "For a repository model this is refused until every component and link has observed runtime or user performance evidence. " +
@@ -1126,6 +1228,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
         async run({ candidateId }, ctx) {
           const study = host.getStudy();
           const candidate = requireCandidate(study, candidateId);
+          assertWorkloadChosen(study);
           assertPerformanceCalibrated(study, candidate);
           const evaluation = await host.runEvaluation({
             candidateId,
@@ -1159,8 +1262,8 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_get_evaluation",
         description:
-                    "Read a candidate's cached evaluation, including the full counterexample trace when an invariant was " +
-          "violated: actor lanes, operation order, state changes and the faults injected. Null when the candidate " +
+          "Read a version's cached evaluation, including the full counterexample trace when an invariant was " +
+          "violated: actor lanes, operation order, state changes and the faults injected. Null when the version " +
           "has not been evaluated at the current design, seeds and bounds.",
         input: CandidateIdInput,
         annotations: { readOnlyHint: true, untrustedContentHint: true },
@@ -1179,7 +1282,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
             return {
               evaluation: null,
               reason:
-                "No evaluation is cached for this candidate at the project's current design, seeds and bounds. Run studio_run_evaluation.",
+                "No evaluation is cached for this version at the project's current design, seeds and bounds. Run studio_run_evaluation.",
             };
           }
           const calibration = performanceCalibration(study, candidate);
@@ -1209,10 +1312,10 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_compare_candidates",
         description:
-          "Compare candidates. Returns each eligibility decision with the reason every gate opened or did not, and " +
+          "Compare versions. Returns each eligibility decision with the reason every gate opened or did not, and " +
           "the Pareto frontier among the ELIGIBLE ones. Eligible means the correctness search ran to exhaustion " +
           "without a violation, repository performance inputs are calibrated, AND the conservative end of the performance interval meets every SLO and goal. " +
-          "The frontier is Pareto-optimal among the candidates tested: not globally best, and not ranked. " +
+          "The frontier is Pareto-optimal among the versions tested: not globally best, and not ranked. " +
           "Differences within the measured intervals are ties, not wins.",
         input: CompareInput,
         annotations: { readOnlyHint: true },
@@ -1267,9 +1370,9 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_annotate",
         description:
-          "Pin a short note to a component, link, counterexample step or candidate so the person sees your reasoning on the canvas " +
+          "Pin a short note to a component, link, counterexample step or version so the person sees your reasoning on the canvas " +
           "(for example: which component the race happens at, what a proposed version trades off). Notes are session-only narration: " +
-          "they are not part of the study, are never saved or exported, and cannot change any result.",
+          "they are not part of the project, are never saved or exported, and cannot change any result.",
         input: AnnotateInput,
         annotations: {},
         async run(args) {
@@ -1309,7 +1412,7 @@ export function buildTools(host: ToolHost): ToolDefinition[] {
       {
         name: "studio_focus",
         description:
-          "Point the person at something: select and pan the canvas to a component or link, or scrub the active candidate's " +
+          "Point the person at something: select and pan the canvas to a component or link, or scrub the active version's " +
           "counterexample to a step (0-based) so the sprites and state chips show that moment. Changes only what is on screen.",
         input: FocusToolInput,
         annotations: {},
@@ -1364,6 +1467,18 @@ function requireCandidate(study: Study, id: string): Candidate {
     );
   }
   return candidate;
+}
+
+/**
+ * No run while the workload is the placeholder the empty project was born with.
+ *
+ * Any cached result -- correctness-only included -- locks the yardstick for every version of the
+ * project, and a placeholder frozen that way is the reason an agent once threw a project away
+ * rather than adding a version. The interface's own run button is not gated: a person sees the
+ * client node and chose to run.
+ */
+function assertWorkloadChosen(study: Study): void {
+  if (isPlaceholderWorkload(study.workload)) throw new Error(PLACEHOLDER_WORKLOAD_MESSAGE);
 }
 
 function assertPerformanceCalibrated(study: Study, candidate: Candidate): void {
@@ -1471,8 +1586,9 @@ export function summariseStudy(study: Study) {
     promotedCandidateId: study.promotedCandidateId,
     approval: study.approval,
     notes: [
-      "The workload, SLOs, invariants and exploration bounds are project-level. A candidate's local copies are overwritten from the project before every evaluation, so a candidate cannot improve its results by changing the workload.",
-      "There is no tool to delete or promote a candidate. Promotion is a human-only action in the interface.",
+      "Vocabulary: the person sees a project (study in this schema), versions (candidates) and CURRENT (the sealed as-is baseline). Use those words with them.",
+      "The workload, SLOs, invariants and exploration bounds are project-level. A version's local copies are overwritten from the project before every evaluation, so a version cannot improve its results by changing the workload.",
+      "There is no tool to delete or promote a version. Promotion is a human-only action in the interface.",
       "Every numeric and correctness claim you make must come from a studio result. Nothing here should be estimated.",
     ],
   };

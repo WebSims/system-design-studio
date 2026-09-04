@@ -8,6 +8,7 @@ import {
   blankDesign,
   blankStudy,
   clearStudyResults,
+  isPlaceholderWorkload,
   studyContractLock,
   validateDesign,
   validateStudy,
@@ -20,6 +21,36 @@ import { assemblePortfolio } from "@sds/study";
  * than a special case the rest of the code works around. Everything here is about the path a new
  * user actually takes: open the app, then define a problem.
  */
+describe("the placeholder workload", () => {
+  it("is what a blank study is born with, and is recognised by value", () => {
+    const study = blankStudy({ id: "s1" });
+    expect(isPlaceholderWorkload(study.workload)).toBe(true);
+    // Key order does not matter: a saved document may come back reordered.
+    const reordered = JSON.parse(JSON.stringify({ ...study.workload, arrival: { ratePerSec: 50, kind: "poisson" } }));
+    expect(isPlaceholderWorkload(reordered)).toBe(true);
+  });
+
+  it("stops being the placeholder when any field changes", () => {
+    const study = blankStudy({ id: "s1" });
+    expect(isPlaceholderWorkload({ ...study.workload, durationSec: 600 })).toBe(false);
+    expect(isPlaceholderWorkload({ ...study.workload, arrival: { kind: "poisson", ratePerSec: 51 } })).toBe(false);
+    expect(isPlaceholderWorkload(applyStudyContract(study, { workload: { seeds: [1, 2] } }).workload)).toBe(false);
+  });
+
+  it("is not the placeholder when the study is created with its workload", () => {
+    const study = blankStudy({ id: "s1", workload: { arrival: { kind: "deterministic", ratePerSec: 12 } } });
+    expect(isPlaceholderWorkload(study.workload)).toBe(false);
+    expect(study.workload.durationSec).toBe(1200);
+    expect(() => StudySchema.parse(study)).not.toThrow();
+  });
+
+  it("the lock explains that versions share the yardstick", () => {
+    const study = blankStudy({ id: "s1" });
+    const locked = { ...study, evaluations: { k: {} as never } };
+    expect(() => applyStudyContract(locked, { workload: { durationSec: 5 } })).toThrow(/new version cannot change it/);
+  });
+});
+
 describe("the empty study", () => {
   it("is a valid study, so nothing downstream needs an empty-case branch", () => {
     const study = blankStudy({ id: "s1" });

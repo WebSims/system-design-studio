@@ -10,31 +10,33 @@
  * so the first line says exactly that; without it a coding agent may look for an MCP server or
  * start clicking the UI. The prompt keeps only the outcome, critical sequence and guardrails;
  * tool descriptions and returned next steps own payload syntax and operational detail. The design
- * is DRAWN, not delivered: an empty candidate first, then one patch per component and link, so a
- * person watching the page sees the architecture form. The import at the end seals that drawing
- * as the immutable baseline and links the repository revision.
+ * is DRAWN, not delivered: the project opens on an empty canvas, then one patch per component and
+ * link, so a person watching the page sees the architecture form. The yardstick comes AFTER the
+ * workflow, because rules name collections and collections exist only once the flow is drawn. The
+ * import at the end seals that drawing as the immutable baseline and links the repository revision.
+ * The order here is the one `study/steps.ts` tracks in the agent panel.
  */
 export const CODEBASE_PROMPT = [
-  "Inspect this repository. Use the System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; it cannot read files, so do not drive its UI.",
-  "Identify entrypoints, processes or containers, dependencies, and synchronous/background flows. A node is a runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
-    "Keep in-process work on its host; for a separate bound, label it '(in-process)' and cite shared lifecycle. Links are causal work, never ownership. " +
-    "Give each external entrypoint, poller, timer, cron, or consumer its own client/work source. Set server fanout from code and edge fanoutFactor from each source event (1 for one-to-one; expand batches, loops, or broadcasts). Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
-  "Create a study, read its catalog, and record only evidenced workloads, goals, SLOs, and invariants. Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. " +
-    "Safety is checked after every step; use a postcondition for allowed divergence. Trace the highest-risk state-changing flow into a workflow. If unsupported, state exact checked scope and leave it unmodeled; never substitute an easier flow or imply full coverage.",
-  "Never invent production rates, replicas, latencies, or provider choices. Set component timings, link latency, and fanoutFactor explicitly; use positive locality-matched placeholders assumed for unknown timings, never 0ms. " +
-    "Then do not run performance until calibrated. Plan topology and layout from layoutGuide or use auto-layout. " +
-    "Open an empty as-is candidate; add one component or link per patch; carry forward each returned revision.",
-  "Seal the immutable as-is baseline with branch, commit, dirty state, scope, and architecture evidence for every element. Mark facts observed, deductions inferred, and unknown production behaviour assumed. " +
-    "Follow the tool schemas and next-step guidance. Read back, report gaps, and focus its highest risk. Stop before redesigning or editing code.",
+  "Inspect this repository and use the System Design Studio page's studio_* WebMCP site tools to draw an evidence-backed as-is architecture; do not drive its UI.",
+  "Identify entrypoints, processes or containers, dependencies, and flows. A node is a runtime or independent capacity or failure boundary, not merely a package, handler, goroutine, or class. " +
+    "Keep in-process work on its host; if separately bounded, label it '(in-process)'. Links are causal work, never ownership. " +
+    "Give each external entrypoint, poller, timer, or consumer its own client/work source. Set server fanout from code and edge fanoutFactor from each source event (1 for one-to-one). Draw the configured or documented-default provider; report mutually exclusive alternatives as gaps.",
+  "Create the project (an empty as-is version opens) and read its catalog. Plan topology and layout from layoutGuide or use auto-layout; add one component or link per patch; carry forward each returned revision. " +
+    "Never invent production rates, replicas, latencies, or provider choices. Set timings and latency explicitly, positive placeholders assumed for unknowns, never 0ms; do not run performance until calibrated. " +
+    "Trace the highest-risk state-changing flow into a workflow. If unsupported, state exact checked scope and leave it unmodeled; never substitute an easier flow or imply full coverage.",
+  "Once the workflow exists, record only evidenced workloads, goals, SLOs, and invariants, naming the collections you drew via the catalog's invariant templates. State the arrival you observed or assume before the first run; the placeholder is refused. " +
+    "Use invariants for required system outcomes, not implementation mechanisms or process-local guarantees. Safety is checked after every step; postconditions allow divergence.",
+  "Seal the immutable as-is baseline with branch, commit, dirty state, scope, and evidence for every element. Mark facts observed, deductions inferred, unknown production behaviour assumed. " +
+    "Follow the tool schemas and next-step guidance. Report gaps and focus the highest risk. Stop before redesigning or editing code.",
 ].join("\n\n")
 
 export const CODEBASE_PROMPT_ROUTE = [
   "inspect the codebase",
   "identify runtime and capacity boundaries",
-  "define the system yardstick",
+  "draw the as-is design live",
   "trace one critical flow",
-  "draw the as-is design live, then seal it",
-  "show evidence gaps",
+  "define the system yardstick",
+  "seal it and show evidence gaps",
 ] as const
 
 /**

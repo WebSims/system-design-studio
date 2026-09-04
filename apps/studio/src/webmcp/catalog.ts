@@ -2,6 +2,28 @@ import type { Catalog } from "./tools";
 import { NETWORK_LATENCIES } from "@sds/models";
 import { LAYOUT_STEP, NODE_GAP } from "../canvas/layout";
 import { NODE_HEIGHT, NODE_WIDTH } from "../canvas/geometry";
+import { invariantTemplates } from "../correctness/builder";
+
+/** Every `expr.kind` the invariant language accepts, in the order the schema lists them. */
+const EXPR_KINDS = [
+  "lit",
+  "counter",
+  "request",
+  "local",
+  "row",
+  "exists",
+  "count",
+  "distinct",
+  "sum",
+  "field",
+  "arith",
+  "compare",
+  "and",
+  "or",
+  "not",
+  "isNull",
+  "now",
+] as const;
 
 /**
  * The modelling vocabulary, as an agent needs to read it.
@@ -203,6 +225,33 @@ export function buildCatalog(): Catalog {
       { kind: "reservationExpiry", whatItModels: "A scheduled expiry fires, possibly racing the request that armed it." },
     ],
 
+    invariantTemplates: invariantTemplates.map((template) => ({
+      id: template.id,
+      label: template.label,
+      explanation: template.explanation,
+      defaultScope: template.defaultScope,
+      params: template.params.map((param) => ({
+        name: param.name,
+        label: param.label,
+        kind: param.kind,
+        ...(param.of ? { of: param.of } : {}),
+      })),
+    })),
+
+    invariantShape: {
+      fields: ["id", "label", "scope", "expr", "message"],
+      scopes: ["safety", "postcondition"],
+      exprKinds: [...EXPR_KINDS],
+      templateForm:
+        "In studio_update_study, an invariant may be written as { template: <invariantTemplates[].id>, args: { <param.name>: <collection name | field name | number> }, id?, label?, message?, scope? } " +
+        "and the studio builds the expression with the same constructor the interface uses. Collection names must be ones the workflow declares (set-workflow first).",
+      example: {
+        template: "counter-non-negative",
+        args: { collection: "stock" },
+        message: "stock went negative: an allocation had nothing behind it.",
+      },
+    },
+
     layoutGuide: {
       coordinateSystem: "x increases to the right; y increases downward",
       nodeSize: { width: NODE_WIDTH, height: NODE_HEIGHT },
@@ -250,7 +299,7 @@ export function buildCatalog(): Catalog {
       "`read` followed by `write` is TWO transitions and another actor may run in between. That is the point of the model, not a limitation of it.",
       "There is no exactly-once queue setting. Exactly-once EFFECTS are reachable, and the only routes are insertUnique or a guarded conditionalWrite in the consumer.",
       "State must live on a database node. A workflow that claims a transaction against a cache is refused, because it would otherwise be reported safe on the strength of a capability the topology does not have.",
-      "A resource profile left absent is reported as UNKNOWN and excludes that axis from the comparison for every candidate. It is never treated as zero, so an unmeasured design cannot win on cost.",
+      "A resource profile left absent is reported as UNKNOWN and excludes that axis from the comparison for every version. It is never treated as zero, so an unmeasured design cannot win on cost.",
       "The correctness search is bounded. NO_VIOLATION_WITHIN_BOUNDS means the search exhausted the configured actors, faults and transitions without finding a counterexample. It is not a proof, and raising any bound may change the answer.",
     ],
   };

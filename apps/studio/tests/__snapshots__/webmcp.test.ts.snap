@@ -11,13 +11,13 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "type": "string",
       },
       "targetId": {
-        "description": "Node id, edge id, step index as a string, or candidate id.",
+        "description": "Node id, edge id, step index as a string, or version id.",
         "maxLength": 64,
         "minLength": 1,
         "type": "string",
       },
       "targetKind": {
-        "description": "What the note is pinned to. A step is a 0-based index into that candidate's counterexample.",
+        "description": "What the note is pinned to (candidate = a whole version). A step is a 0-based index into that version's counterexample.",
         "enum": [
           "node",
           "edge",
@@ -398,6 +398,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     "additionalProperties": false,
     "properties": {
       "name": {
+        "description": "The project's name.",
         "maxLength": 120,
         "minLength": 1,
         "type": "string",
@@ -406,6 +407,209 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "default": "",
         "maxLength": 4000,
         "type": "string",
+      },
+      "workload": {
+        "additionalProperties": false,
+        "properties": {
+          "arrival": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "poisson",
+                  },
+                  "ratePerSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "ratePerSec",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "deterministic",
+                  },
+                  "ratePerSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "ratePerSec",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "fromRatePerSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                  "kind": {
+                    "const": "ramp",
+                  },
+                  "toRatePerSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "fromRatePerSec",
+                  "toRatePerSec",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "atSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                  "baseRatePerSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                  "durationSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                  "kind": {
+                    "const": "spike",
+                  },
+                  "peakRatePerSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "baseRatePerSec",
+                  "peakRatePerSec",
+                  "atSec",
+                  "durationSec",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "steps",
+                  },
+                  "ratePerSec": {
+                    "minimum": 0,
+                    "type": "number",
+                  },
+                  "steps": {
+                    "default": [],
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "atSec": {
+                          "minimum": 0,
+                          "type": "number",
+                        },
+                        "ratePerSec": {
+                          "minimum": 0,
+                          "type": "number",
+                        },
+                      },
+                      "required": [
+                        "atSec",
+                        "ratePerSec",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "kind",
+                  "ratePerSec",
+                ],
+                "type": "object",
+              },
+            ],
+          },
+          "classes": {
+            "default": [],
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "label": {
+                  "type": "string",
+                },
+                "serviceMultiplier": {
+                  "default": 1,
+                  "minimum": 0,
+                  "type": "number",
+                },
+                "weight": {
+                  "default": 1,
+                  "minimum": 0,
+                  "type": "number",
+                },
+              },
+              "required": [
+                "id",
+                "label",
+              ],
+              "type": "object",
+            },
+            "maxItems": 16,
+            "type": "array",
+          },
+          "durationSec": {
+            "default": 1200,
+            "minimum": 0,
+            "type": "number",
+          },
+          "seeds": {
+            "default": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+            ],
+            "items": {
+              "minimum": 0,
+              "type": "integer",
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+          },
+          "traceLimit": {
+            "default": 5000,
+            "minimum": 0,
+            "type": "integer",
+          },
+          "warmupSec": {
+            "default": 200,
+            "minimum": 0,
+            "type": "number",
+          },
+        },
+        "type": "object",
       },
     },
     "required": [
@@ -460,7 +664,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     "additionalProperties": false,
     "properties": {
       "candidateId": {
-        "description": "Candidate id, from studio_get_study.",
+        "description": "Version id (\`candidateId\`), from studio_get_study.",
         "maxLength": 64,
         "minLength": 1,
         "type": "string",
@@ -480,7 +684,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     "additionalProperties": false,
     "properties": {
       "candidateId": {
-        "description": "Candidate id, from studio_get_study.",
+        "description": "Version id (\`candidateId\`), from studio_get_study.",
         "maxLength": 64,
         "minLength": 1,
         "type": "string",
@@ -703,7 +907,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
         "description": "A complete, validated design document.",
       },
       "expectedRevision": {
-        "description": "The revision you believe you are replacing, from studio_get_candidate. The call is refused if the candidate has moved on.",
+        "description": "The revision you believe you are replacing, from studio_get_candidate. The call is refused if the version has moved on.",
         "minimum": 0,
         "type": "integer",
       },
@@ -741,7 +945,7 @@ exports[`input schemas come from the validators > matches a snapshot, so widenin
     "additionalProperties": false,
     "properties": {
       "candidateId": {
-        "description": "Candidate id, from studio_get_study.",
+        "description": "Version id (\`candidateId\`), from studio_get_study.",
         "maxLength": 64,
         "minLength": 1,
         "type": "string",

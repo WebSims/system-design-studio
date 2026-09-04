@@ -31,6 +31,7 @@ import {
   portfolioInWorker,
 } from "../engine/client";
 import {
+  deleteStudy,
   loadStudy,
   listStudies,
   isRetiredDevelopmentStudyId,
@@ -44,6 +45,7 @@ import {
 } from "../persist";
 import {
   MutationRefused,
+  manualCandidate,
   applyArchitecturePatch,
   attachArchitectureEvidence,
   createCandidate,
@@ -58,7 +60,7 @@ import {
   type AttachArchitectureEvidenceInput,
   type ImportRepositoryArchitectureInput,
 } from "./mutations";
-import type { ActivityEntry } from "../webmcp/tools";
+import type { ActivityEntry, CreateStudyInput } from "../webmcp/tools";
 
 /**
  * The study store.
@@ -146,6 +148,14 @@ export interface StudioState {
   reviewOpen: boolean;
   /** The agent stream panel. */
   agentOpen: boolean;
+  /**
+   * The projects home shown OVER an open project. Transient: it is how a person reaches "new",
+   * "open", "rename" and "delete" once a project has versions, and it closes itself when a
+   * document loads or a version is added.
+   */
+  homeOpen: boolean;
+  /** The Workload row's inline arrival editor is open. Set from the client inspector's "set it" jump too. */
+  workloadEditOpen: boolean;
   annotations: Annotation[];
   focusRequest: FocusRequest | null;
   agentAttention: AgentAttention | null;
@@ -187,6 +197,8 @@ export interface StudioState {
   setLens(lens: LensId): void;
   setReviewOpen(open: boolean): void;
   setAgentOpen(open: boolean): void;
+  setHomeOpen(open: boolean): void;
+  setWorkloadEditOpen(open: boolean): void;
   selectCandidate(id: string): void;
   addAnnotation(annotation: Omit<Annotation, "id" | "at">): Annotation;
   dismissAnnotation(id: string): void;
@@ -206,8 +218,20 @@ export interface StudioState {
 
   // ---- document ----
   loadStudyDocument(study: Study): void;
-  /** Start a new, empty study and open it. */
-  createStudy(input: { name?: string; problem?: string }): Study;
+  /** Start a new, empty study and open it. The workload, when given, replaces the placeholder. */
+  createStudy(input: Partial<CreateStudyInput>): Study;
+  /** Rename the open project. Prose, so allowed while the contract is locked. */
+  renameStudy(input: { name?: string; problem?: string }): void;
+  /** Copy the open project under a new id, results cleared so the copy's yardstick is unlocked. */
+  duplicateStudy(): Study;
+  /** Rename a saved project without opening it (the open one goes through `renameStudy`). */
+  renameStoredStudy(id: string, input: { name?: string; problem?: string }): Promise<void>;
+  /** Duplicate a saved project and open the copy. */
+  duplicateStoredStudy(id: string): Promise<void>;
+  /** Remove a saved project. Refused for the open one: switch first, so nothing open can vanish. */
+  deleteStoredStudy(id: string): Promise<void>;
+  /** Remove the open project after switching to the most recent other one, or a fresh blank project. */
+  deleteOpenStudy(): Promise<void>;
   /** Edit the executable contract. Refused, with a reason, once results exist. */
   updateContract(patch: StudyContractPatch): void;
   /** Discard every result, which is the only way to unfreeze the contract. */
@@ -390,6 +414,8 @@ export const useStudyStore = create<StudioState>((set, get) => {
     lens: "behaviour",
     reviewOpen: false,
     agentOpen: false,
+    homeOpen: false,
+    workloadEditOpen: false,
     annotations: [],
     focusRequest: null,
     agentAttention: null,
@@ -407,6 +433,8 @@ export const useStudyStore = create<StudioState>((set, get) => {
     setLens: (lens) => set({ lens }),
     setReviewOpen: (reviewOpen) => set({ reviewOpen }),
     setAgentOpen: (agentOpen) => set({ agentOpen }),
+    setHomeOpen: (homeOpen) => set({ homeOpen }),
+    setWorkloadEditOpen: (workloadEditOpen) => set({ workloadEditOpen, ...(workloadEditOpen ? { lens: "behaviour" as LensId } : {}) }),
     addAnnotation: (input) => {
       const annotation: Annotation = {
         ...input,
@@ -456,6 +484,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
       set({
         portfolio: null,
         reviewOpen: false,
+        homeOpen: false,
         annotations: [],
         focusRequest: null,
         agentAttention: null,
@@ -476,14 +505,97 @@ export const useStudyStore = create<StudioState>((set, get) => {
     exportStudyJson: () => exportStudy(get().study),
 
     createStudy: (input) => {
-      const study = blankStudy({ id: `study-${Date.now().toString(36)}`, ...input });
+      const study = blankStudy({
+        id: freshStudyId(),
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.problem !== undefined ? { problem: input.problem } : {}),
+        ...(input.workload !== undefined ? { workload: input.workload } : {}),
+      });
       get().loadStudyDocument(study);
       return study;
     },
 
+    renameStudy: (input) => {
+      const name = input.name?.trim();
+      get().updateStudy((study) => ({
+        ...study,
+        ...(name ? { name } : {}),
+        ...(input.problem !== undefined ? { problem: input.problem } : {}),
+      }));
+    },
+
+    duplicateStudy: () => {
+      const copy = duplicateOf(get().study);
+      get().loadStudyDocument(copy);
+      return copy;
+    },
+
+    renameStoredStudy: async (id, input) => {
+      if (id === get().study.id) {
+        get().renameStudy(input);
+        return;
+      }
+      const result = await loadStudy(id);
+      if (result.status !== "ok") {
+        set({ error: `the project "${id}" could not be read${result.status === "unreadable" ? `: ${result.reason}` : ""}.` });
+        return;
+      }
+      const name = input.name?.trim();
+      await saveStudy({
+        ...result.study,
+        ...(name ? { name } : {}),
+        ...(input.problem !== undefined ? { problem: input.problem } : {}),
+      });
+    },
+
+    duplicateStoredStudy: async (id) => {
+      if (id === get().study.id) {
+        get().duplicateStudy();
+        return;
+      }
+      const result = await loadStudy(id);
+      if (result.status !== "ok") {
+        set({ error: `the project "${id}" could not be read${result.status === "unreadable" ? `: ${result.reason}` : ""}.` });
+        return;
+      }
+      get().loadStudyDocument(duplicateOf(result.study));
+    },
+
+    deleteStoredStudy: async (id) => {
+      if (id === get().study.id) {
+        set({ error: "the open project cannot be deleted. Open another project first." });
+        return;
+      }
+      try {
+        await deleteStudy(id);
+      } catch (err) {
+        set({ error: `could not delete the project: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    },
+
+    deleteOpenStudy: async () => {
+      const id = get().study.id;
+      const other = (await listStudies()).find((stored) => stored.id !== id);
+      if (other) {
+        await get().openStudy(other.id);
+      } else {
+        get().createStudy({});
+        get().addCandidate(manualCandidate());
+      }
+      if (get().study.id === id) return;
+      await get().deleteStoredStudy(id);
+    },
+
     updateContract: (patch) => {
       try {
-        commit(applyStudyContract(get().study, patch), true);
+        // The project's workload and targets are what every version RUNS with; pushing them into
+        // the drawings now means the canvas shows what the next run will use rather than a stale
+        // local copy. Revisions do not move: nothing an editor owns has changed.
+        const next = applyStudyContract(get().study, patch);
+        commit(
+          { ...next, candidates: next.candidates.map((candidate) => syncCandidateToStudy(next, candidate)) },
+          true
+        );
       } catch (err) {
         set({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -521,8 +633,13 @@ export const useStudyStore = create<StudioState>((set, get) => {
     },
 
     editActive: (mutate) => {
+      const study = get().study;
+      // Synced on every edit so a client dropped from the palette shows the project's arrival at
+      // once, not the preset's; the canvas then reads what the runner will use.
       commit(
-        editActiveDesign(get().study, (candidate) => ({ ...candidate, design: mutate(candidate.design) }))
+        editActiveDesign(study, (candidate) =>
+          syncCandidateToStudy(study, { ...candidate, design: mutate(candidate.design) })
+        )
       );
       // A topology edit invalidates every portfolio claim derived from the previous revision.
       // Do not recompute here: node drags and inspector inputs can produce dozens of edits per
@@ -533,7 +650,7 @@ export const useStudyStore = create<StudioState>((set, get) => {
     addCandidate: (input) => {
       const { study, candidate } = createCandidate(get().study, input);
       commit(study, true);
-      set({ portfolio: null });
+      set({ portfolio: null, homeOpen: false });
       void get().refreshPortfolio();
       return candidate;
     },
@@ -703,6 +820,26 @@ export const useStudyStore = create<StudioState>((set, get) => {
     setWebmcp: (status, detail) => set({ webmcp: { status, detail } }),
   };
 });
+
+/**
+ * A new project id. Time-ordered so the list reads chronologically, with a random tail so two
+ * projects made in the same millisecond (create, then duplicate) cannot share one.
+ */
+const freshStudyId = (): string => `study-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+/**
+ * A copy under a new id, results cleared so the copy's yardstick is unlocked. The reason to copy a
+ * project is almost always "same problem, different rules or workload", and a copy that inherited
+ * the lock could not be edited.
+ */
+function duplicateOf(source: Study): Study {
+  return clearStudyResults({
+    ...source,
+    id: freshStudyId(),
+    name: `copy of ${source.name}`,
+    createdAt: Date.now(),
+  });
+}
 
 /**
  * The design a candidate is evaluated as, for hashing.

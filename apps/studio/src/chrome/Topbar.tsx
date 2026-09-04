@@ -1,6 +1,5 @@
-import { useCallback, useRef, useState, type ChangeEvent } from "react"
+import { useCallback, useState } from "react"
 import { performanceCalibration } from "@sds/schema"
-import { studyFilename } from "../persist"
 import { useRaceModel } from "../raceModel"
 import { useRacePlayback } from "../racePlayback"
 import { useStudio } from "../store"
@@ -11,17 +10,16 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CompareIcon,
-  DownloadIcon,
   GaugeIcon,
   PauseIcon,
   PlayIcon,
   PlusIcon,
   SearchIcon,
   StopIcon,
-  UploadIcon,
   type IconComponent,
 } from "../ui/icons"
 import { KindTile, Palette } from "./Palette"
+import { ProjectMenu } from "./ProjectMenu"
 import { ORDERED_PRESETS } from "./presetGroups"
 import { useAddPreset } from "./useAddPreset"
 
@@ -214,18 +212,16 @@ const RepositoryStatus = () => {
 }
 
 /**
- * The header, in two rows.
+ * The header, in two rows and six controls.
  *
- * The primary row is about the STUDY: which lens, the one big button, how the document stands (saved,
- * agent connected, ready to review). The secondary row is the EDITOR toolbar: what you can insert and
- * how the file moves in and out. Grouped with labels and separators, the way an editor does it, so a
- * reader finds "add a database" and "export" without scanning a row of same-looking buttons.
+ * The primary row is about the PROJECT: where you are (the breadcrumb), which lens, the one Play
+ * button whose label follows the lens, and how things stand (saved, agent connected, ready to
+ * review). The secondary row is the EDITOR toolbar: what you can insert. Export and Import act on
+ * the project, so they live in the project popover behind its name, not here.
  */
 export const Topbar = () => {
   const design = useStudio((s) => s.design)
   const study = useStudyStore((s) => s.study)
-  const exportStudyJson = useStudyStore((s) => s.exportStudyJson)
-  const importStudyJson = useStudyStore((s) => s.importStudyJson)
   const persistence = useStudyStore((s) => s.persistence)
   const webmcp = useStudyStore((s) => s.webmcp)
   const reviewOpen = useStudyStore((s) => s.reviewOpen)
@@ -234,33 +230,14 @@ export const Topbar = () => {
   const setAgentOpen = useStudyStore((s) => s.setAgentOpen)
   const noteCount = useStudyStore((s) => s.annotations.length)
   const agentBusy = useStudyStore((s) => s.agentBusy > 0)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const homeOpen = useStudyStore((s) => s.homeOpen)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const hasCandidates = study.candidates.length > 0
+  /** The canvas is showing: lens, Play, Insert and Review make sense. The breadcrumb stays over the home. */
+  const onCanvas = hasCandidates && !homeOpen
   const webmcpReady = webmcp.status.includes("tools")
 
   const closePalette = useCallback(() => setPaletteOpen(false), [])
-
-  const download = useCallback(() => {
-    // A STUDY, not a design. The design alone would lose the rules, the bounds and every other
-    // version -- which is to say it would lose the argument and keep only one of its conclusions.
-    const blob = new Blob([exportStudyJson()], { type: "application/json" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = studyFilename(study)
-    a.click()
-    URL.revokeObjectURL(url)
-  }, [exportStudyJson, study])
-
-  const importFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    // Accepts a study OR a bare design; a design becomes a one-version project with no rules, which
-    // is the honest treatment of a document that has none.
-    importStudyJson(await file.text())
-    event.target.value = ""
-  }
 
   return (
     <header className="topbar" onClick={closePalette}>
@@ -271,12 +248,12 @@ export const Topbar = () => {
             <div className="brand-name">
               System Design <b>Studio</b>
             </div>
-            <div className="brand-sub">{"Draw \u2192 play \u2192 fix \u2192 hand off"}</div>
+            {hasCandidates ? <ProjectMenu /> : <div className="brand-sub">{"Draw \u2192 play \u2192 fix \u2192 hand off"}</div>}
           </div>
         </div>
 
-        {hasCandidates && (
-          <div className="tb-section tb-study" role="group" aria-label="Study">
+        {onCanvas && (
+          <div className="tb-section tb-study" role="group" aria-label="Project">
             <LensTabs />
             <HeroPlay />
           </div>
@@ -285,7 +262,7 @@ export const Topbar = () => {
         <div className="tb-spacer" />
 
         <div className="topbar-status" role="group" aria-label="Status">
-          {hasCandidates && (
+          {onCanvas && (
             <span className="tb-meta tnum">
               {design.nodes.length} components {"\u00b7"} {design.edges.length} links
             </span>
@@ -312,7 +289,7 @@ export const Topbar = () => {
             {agentBusy ? "Agent working" : "Agent"}
             {noteCount > 0 && <span className="count-pill tnum">{noteCount}</span>}
           </button>
-          {hasCandidates && (
+          {onCanvas && (
             <button
               className={`btn tool-btn ${reviewOpen ? "active" : ""}`}
               aria-pressed={reviewOpen}
@@ -329,8 +306,8 @@ export const Topbar = () => {
         </div>
       </div>
 
-      <div className="topbar-secondary toolbar" role="toolbar" aria-label="Editor tools">
-        {hasCandidates && (
+      {onCanvas && (
+        <div className="topbar-secondary toolbar" role="toolbar" aria-label="Editor tools">
           <div className="toolbar-group" role="group" aria-label="Insert">
             <span className="toolbar-label">Insert</span>
             <div className="menu-anchor">
@@ -353,27 +330,12 @@ export const Topbar = () => {
             <span className="toolbar-sep" aria-hidden="true" />
             <QuickInsert />
           </div>
-        )}
 
-        <RepositoryStatus />
+          <RepositoryStatus />
 
-        <div className="tb-spacer" />
-
-        <div className="toolbar-group" role="group" aria-label="File">
-          <span className="toolbar-label">File</span>
-          {hasCandidates && (
-            <button className="btn tool-btn" onClick={download} title="Download the whole study: every version, the rules, the bounds.">
-              <DownloadIcon size={14} />
-              Export
-            </button>
-          )}
-          <button className="btn tool-btn" onClick={() => fileRef.current?.click()} title="Open a study or a bare design from a JSON file.">
-            <UploadIcon size={14} />
-            Import
-          </button>
-          <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }} onChange={(e) => void importFile(e)} />
+          <div className="tb-spacer" />
         </div>
-      </div>
+      )}
     </header>
   )
 }

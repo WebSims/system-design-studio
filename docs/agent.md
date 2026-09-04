@@ -11,8 +11,11 @@ Twenty-one imperative tools are registered on the top-level page through
 Zod schema that validates at runtime and is snapshot-tested, so a widened validator
 cannot drift from its documentation.
 
-The tool names retain `study` as an internal API term. In the interface, this document
-is simply a project.
+The tool names retain `study` and `candidate` as API terms. A person sees the same things
+as a **project** (`study`, `studyId`), its **versions** (`candidate`, `candidateId`) and
+**CURRENT** (the `baseline` role: the sealed as-is design). Tool descriptions and `next`
+hints use the person's words and name the parameter once, so an agent can speak to the
+person in theirs.
 
 WebMCP is the coordination layer, not a filesystem back door. Codex inspects and edits
 the repository with its normal local tools and permissions. These site tools let it put
@@ -22,8 +25,8 @@ structured architecture evidence and results into the same live page a person re
 
 | tool | what it does |
 | --- | --- |
-| `studio_create_study` | start a new project |
-| `studio_update_study` | set the workload, SLOs, invariants, faults and bounds |
+| `studio_create_study` | start a new project with one empty version; the canvas opens; optional `workload` |
+| `studio_update_study` | set the workload, SLOs, invariants (`{ template, args }` or full), faults and bounds |
 | `studio_list_studies` | list saved projects |
 | `studio_open_study` | open a saved project |
 | `studio_import_architecture` | link a repository snapshot and seal its evidence-backed as-is baseline |
@@ -32,10 +35,10 @@ structured architecture evidence and results into the same live page a person re
 
 | tool | what it does |
 | --- | --- |
-| `studio_get_study` | the problem, the yardstick, the candidate list |
+| `studio_get_study` | the problem, the yardstick, the version list |
 | `studio_get_architecture` | one complete as-is or experiment model, ancestry, and evidence coverage |
-| `studio_get_catalog` | component kinds, operations, patterns, faults |
-| `studio_get_candidate` | one candidate's design, workflow and revision |
+| `studio_get_catalog` | component kinds, operations, patterns, faults, invariant templates, layout guide |
+| `studio_get_candidate` | one version's design, workflow and revision |
 | `studio_get_evaluation` | a cached result, with the full counterexample |
 | `studio_get_implementation_handoff` | the exact human-approved code delta and acceptance receipt |
 
@@ -44,12 +47,12 @@ structured architecture evidence and results into the same live page a person re
 | tool | what it does |
 | --- | --- |
 | `studio_validate_draft` | check a design without storing or drawing it |
-| `studio_create_candidate` | add an isolated, agent-marked architecture |
+| `studio_create_candidate` | add an isolated, agent-marked version (adopts the empty drawing right after `studio_create_study`) |
 | `studio_replace_candidate_draft` | replace a design, guarded by revision |
 | `studio_apply_architecture_patch` | apply a small, revision-guarded node/link/workflow delta |
 | `studio_attach_code_evidence` | append source evidence without replacing topology |
-| `studio_run_evaluation` | run the correctness search and/or the measurement |
-| `studio_run_production_scenarios` | run concurrency, spike, capacity, and dependency probes |
+| `studio_run_evaluation` | run the correctness search and/or the measurement; refused while the workload is the placeholder |
+| `studio_run_production_scenarios` | run concurrency, spike, capacity, and dependency probes; same refusal |
 | `studio_compare_candidates` | gates and the Pareto frontier |
 
 **Point at the canvas**
@@ -60,7 +63,7 @@ structured architecture evidence and results into the same live page a person re
 | `studio_focus` | move the canvas and inspector to a component or link |
 
 Every mutating call already behaves like a hand on the canvas: the studio switches to the
-candidate it touched, pans and zooms to cover the drawing (or the changed part when the
+version it touched, pans and zooms to cover the drawing (or the changed part when the
 whole no longer reads), selects the component or link the call worked on, opens it in the
 inspector with a strip naming the fields that were set, and pulses it for a moment. While
 a call is in flight the Agent button in the top bar says so. `studio_focus` is therefore
@@ -68,32 +71,47 @@ for pointing at something the agent did *not* just change.
 
 ## The repository loop
 
-1. Codex reads the real workspace and records commit, branch, dirty state, and scope.
-2. Codex draws the as-is design on the canvas: `studio_create_candidate` with no design
-   opens an empty canvas, then one `studio_apply_architecture_patch` per component and
+The seven steps below are the one order every hint follows. `apps/studio/src/study/steps.ts`
+holds them as data: the tools' `next` strings and the tracker in the agent panel both read
+it, so the agent and the person watching it see the same list.
+
+1. **Open a project.** `studio_create_study { name, problem, workload? }` creates the
+   project with one empty version and the canvas opens at once. Codex has already read the
+   real workspace and recorded commit, branch, dirty state, and scope. Pass the observed
+   arrival as `workload` when it is known.
+2. **Read the catalog.** `studio_get_catalog`: component kinds, the closed set of workflow
+   operations, `layoutGuide`, latency placeholders and `invariantTemplates`.
+3. **Draw components, then links.** One `studio_apply_architecture_patch` per component and
    link, each drawn as it is accepted. Nodes represent deployed runtimes or independent
    capacity/failure boundaries, not arbitrary source modules; a separately modeled
    in-process subsystem is labelled as such. Coordinates follow the topology: Codex either
-   supplies `x`/`y` per node from `studio_get_catalog.layoutGuide` or includes an
-   `auto-layout` operation and the studio lays the graph out by dependency depth.
-   Missing or overlapping positions are otherwise refused.
-3. `studio_import_architecture` with `fromCandidateId` seals that drawing as the as-is
-   baseline (or imports a complete `design` in one call). Observed facts cite source;
-   deductions are `inferred`; unknown production behavior stays `assumed`. A project that
-   declares correctness invariants cannot seal a design with no workflow handlers, because
-   every correctness verdict would be vacuous and the baseline would then be immutable.
-4. Codex creates experiments from that baseline. The baseline cannot be redesigned in
-   place through WebMCP.
-5. Correctness can run immediately. Performance and named production scenarios run only after
-   every modeled node and link has observed runtime or user performance evidence. Exact-ID
-   comparison shows what was authored, without pretending it proves runtime causality.
-6. A person approves one eligible experiment in Compare. The receipt pins both the
-   experiment revision and its baseline revision.
-7. `studio_get_implementation_handoff` exposes before/after values, source starting
-   points, the project contract, current evaluation, and unresolved findings. It is
-   read-only.
-8. Codex edits code and tests through normal workspace permissions. It does not deploy.
-   A fresh repository scan is required before the visual twin can be considered current.
+   supplies `x`/`y` per node from `layoutGuide` or includes an `auto-layout` operation and
+   the studio lays the graph out by dependency depth. Missing or overlapping positions are
+   otherwise refused.
+4. **Trace one flow.** `set-workflow` with the collections and one handler on the component
+   that serves the highest-risk state-changing flow, a citation per step.
+5. **Set the yardstick.** `studio_update_study { contract }`: the workload (the placeholder is
+   refused by the runners), targets, faults and invariants naming the collections just
+   drawn, written as `{ template, args }` from `invariantTemplates` or as full invariants.
+   Rules come after the workflow because they name collections that do not exist before it.
+6. **Seal.** `studio_import_architecture` with `fromCandidateId` seals that drawing as the
+   as-is baseline (or imports a complete `design` in one call, filling the empty version).
+   Observed facts cite source; deductions are `inferred`; unknown production behavior stays
+   `assumed`. A project that declares correctness invariants cannot seal a design with no
+   workflow handlers, because every correctness verdict would be vacuous and the baseline
+   would then be immutable.
+7. **Evaluate and show the gaps.** Correctness can run immediately. Performance and named
+   production scenarios run only after every modeled node and link has observed runtime or
+   user performance evidence. `studio_annotate` and `studio_focus` put the findings on the
+   canvas.
+
+From there: Codex creates versions from that baseline (the baseline cannot be redesigned in
+place through WebMCP); a person approves one eligible version in Review, and the receipt pins
+both the version revision and its baseline revision; `studio_get_implementation_handoff`
+exposes before/after values, source starting points, the project contract, current evaluation
+and unresolved findings, read-only; Codex edits code and tests through normal workspace
+permissions and does not deploy. A fresh repository scan is required before the visual twin
+can be considered current.
 
 ## The yardstick freezes once results exist
 
@@ -102,10 +120,17 @@ judged. The dangerous sequence is not malice, it is helpfulness: a design fails 
 invariant, and the obvious next move for something optimising "make the tests pass" is
 to weaken the invariant.
 
-So `studio_update_study` is refused once any evaluation is cached or a candidate is
+So `studio_update_study` is refused once any evaluation is cached or a version is
 approved. The prose — the project's name and problem statement — stays editable, because
 it is not what the engine reads. Clearing the results, which visibly discards them,
 is the only way to reopen the contract.
+
+Every version of a project shares the yardstick, so a new version cannot escape the lock
+either; the refusal says so. That is also why the placeholder workload a new project is
+born with (Poisson 50 req/s) is refused by `studio_run_evaluation` and
+`studio_run_production_scenarios`: the first cached result would freeze it in, and the only
+way out would be a new project. State the arrival you observed, or the assumption you are
+making, before the first run.
 
 This is a rule about the document, so it binds the manual UI too.
 
@@ -171,8 +196,8 @@ that exists today, citing code or configuration for observed components and conn
 while keeping deductions and unknown production behaviour explicit. It creates one
 repository-linked as-is baseline and stops before redesigning or changing code.
 
-The other start path is human-authored: **Design manually** creates a schema-valid empty
-candidate, then the existing component palette, canvas, inspector, and evaluation views
-take over. Follow-up agent work—risk analysis, incident reproduction, and implementation
-of an approved delta—happens conversationally against the current study rather than
-through a template menu. [MVP workflow](usage.md) explains the boundary and tool path.
+The other start path is human-authored: **New project** creates a schema-valid empty
+version on a blank canvas, then the existing component palette, canvas, inspector, and
+evaluation views take over. Follow-up agent work—risk analysis, incident reproduction, and
+implementation of an approved delta—happens conversationally against the current project
+rather than through a template menu. [MVP workflow](usage.md) explains the boundary and tool path.

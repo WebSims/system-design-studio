@@ -2,18 +2,19 @@ import { citationText } from "@sds/models";
 import {
   MAX_CONCURRENCY,
   MAX_REPLICAS,
+  isPlaceholderWorkload,
   isTimeVarying,
   performanceCalibration,
-  type ArrivalProcess,
   type Citation,
   type Distribution,
   type RetryableReason,
 } from "@sds/schema";
 import { useStudio } from "../store";
 import { useStudyStore } from "../study/store";
-import { CursorIcon, KindIcon, LinkIcon, PlusIcon, TrashIcon } from "../ui/icons";
+import { CursorIcon, KindIcon, LinkIcon, TrashIcon } from "../ui/icons";
 import { BehaviourEditor, LockEditor, StateEditor } from "./BehaviourEditor";
 import { Field, FieldRow, IconButton, NumberInput, Select, Toggle } from "./controls";
+import { describeArrival } from "./WorkloadEditor";
 
 /** Round to an integer and hold it inside the schema's bounds. */
 const clampInt = (v: number, min: number, max: number): number =>
@@ -348,8 +349,6 @@ export function Inspector() {
               : "To link two components, press Link on the canvas and click them in turn, or drag from one's right handle to another's left."}
           </div>
         </div>
-        <ClassEditor />
-        <ScenarioEditor />
       </aside>
     );
   }
@@ -483,8 +482,6 @@ export function Inspector() {
 
         <PolicyEditor edgeId={selection.id} />
         <FreehandNote />
-        <ClassEditor />
-        <ScenarioEditor />
       </aside>
     );
   }
@@ -540,7 +537,7 @@ export function Inspector() {
 
       {node.kind === "client" && node.client && (
         <>
-          <ArrivalEditor nodeId={node.id} />
+          <ArrivalSummary nodeId={node.id} />
 
           <div className="section">client timeout</div>
           <Field label="deadline" hint="ms, 0 = none">
@@ -1224,307 +1221,38 @@ export function Inspector() {
       )}
 
       <FreehandNote />
-      <ClassEditor />
-      <ScenarioEditor />
     </aside>
   );
 }
 
 /**
- * The arrival profile.
+ * What arrives at this client, read from the project.
  *
- * The first two shapes are stationary and the rest are not, and the difference
- * changes what the tool can honestly report. A design under a ramp has no steady
- * state, so a single p99 over the whole run averages across regimes that never
- * coexisted -- part measured at 50/s and part at 800/s. The result panel says so and
- * points at the time series instead.
- *
- * They earn their place because they answer questions a steady-state run cannot: how
- * far a design gets before it breaks, whether it survives a burst, and how long it
- * takes to recover afterwards.
+ * The project owns the workload: `syncCandidateToStudy` copies it onto every client before each
+ * run, so a rate typed here would be shown and then ignored. The row in the left rail is where it
+ * is set, once, for every version.
  */
-function ArrivalEditor({ nodeId }: { nodeId: string }) {
+function ArrivalSummary({ nodeId }: { nodeId: string }) {
   const node = useStudio((s) => s.design.nodes.find((n) => n.id === nodeId));
-  const durationSec = useStudio((s) => s.design.scenario.durationSec);
-  const edit = useStudio((s) => s.edit);
+  const arrival = useStudyStore((s) => s.study.workload.arrival);
+  const placeholder = useStudyStore((s) => isPlaceholderWorkload(s.study.workload));
+  const setWorkloadEditOpen = useStudyStore((s) => s.setWorkloadEditOpen);
   if (!node?.client) return null;
-  const a = node.client.arrival;
-
-  const patch = (fn: (n: NonNullable<typeof node>) => void) =>
-    edit((d) => {
-      const n = d.nodes.find((x) => x.id === nodeId);
-      if (n) fn(n);
-    });
-
-  const setKind = (kind: ArrivalProcess["kind"]) =>
-    patch((n) => {
-      if (!n.client) return;
-      const current =
-        a.kind === "poisson" || a.kind === "deterministic"
-          ? a.ratePerSec
-          : a.kind === "ramp"
-            ? a.toRatePerSec
-            : a.kind === "spike"
-              ? a.baseRatePerSec
-              : a.ratePerSec;
-      switch (kind) {
-        case "poisson":
-        case "deterministic":
-          n.client.arrival = { kind, ratePerSec: current };
-          break;
-        case "ramp":
-          n.client.arrival = {
-            kind,
-            fromRatePerSec: Math.max(1, current * 0.1),
-            toRatePerSec: current * 2,
-          };
-          break;
-        case "spike":
-          n.client.arrival = {
-            kind,
-            baseRatePerSec: current,
-            peakRatePerSec: current * 3,
-            atSec: Math.round(durationSec * 0.3),
-            durationSec: Math.max(5, Math.round(durationSec * 0.1)),
-          };
-          break;
-        case "steps":
-          n.client.arrival = {
-            kind,
-            ratePerSec: current,
-            steps: [{ atSec: Math.round(durationSec * 0.5), ratePerSec: current * 2 }],
-          };
-          break;
-      }
-    });
-
-  const timeVarying = isTimeVarying(a);
-
   return (
     <>
       <div className="section">
-        arrival process
-        {timeVarying && <span className="section-tag">time-varying</span>}
+        arrival
+        {isTimeVarying(arrival) && <span className="section-tag">time-varying</span>}
+        {placeholder && <span className="section-tag warn">placeholder</span>}
       </div>
-      <Field label="profile">
-        <Select
-          value={a.kind}
-          options={[
-            { value: "poisson" as const, label: "poisson (independent users)" },
-            { value: "deterministic" as const, label: "deterministic (paced)" },
-            { value: "ramp" as const, label: "ramp (find the limit)" },
-            { value: "spike" as const, label: "spike (burst + recovery)" },
-            { value: "steps" as const, label: "steps" },
-          ]}
-          onChange={setKind}
-        />
-      </Field>
-
-      {(a.kind === "poisson" || a.kind === "deterministic") && (
-        <>
-          <Field label="rate" hint="req/s">
-            <NumberInput
-              value={a.ratePerSec}
-              min={0.1}
-              step={10}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client && (n.client.arrival.kind === "poisson" || n.client.arrival.kind === "deterministic")) {
-                    n.client.arrival.ratePerSec = Math.max(0.1, v);
-                  }
-                })
-              }
-            />
-          </Field>
-          <p className="note">
-            Poisson arrivals are burstier than a fixed rate at the same average, and burstiness
-            alone lengthens queues. A deterministic source is the best-case workload, not a
-            neutral one.
-          </p>
-        </>
-      )}
-
-      {a.kind === "ramp" && (
-        <>
-          <FieldRow>
-            <Field label="from" hint="req/s">
-              <NumberInput
-                value={a.fromRatePerSec}
-                min={0}
-                step={10}
-                onChange={(v) =>
-                  patch((n) => {
-                    if (n.client?.arrival.kind === "ramp") n.client.arrival.fromRatePerSec = Math.max(0, v);
-                  })
-                }
-              />
-            </Field>
-            <Field label="to" hint="req/s">
-              <NumberInput
-                value={a.toRatePerSec}
-                min={0.1}
-                step={10}
-                onChange={(v) =>
-                  patch((n) => {
-                    if (n.client?.arrival.kind === "ramp") n.client.arrival.toRatePerSec = Math.max(0.1, v);
-                  })
-                }
-              />
-            </Field>
-          </FieldRow>
-          <p className="note">
-            A load test in one run: the offered rate rises steadily and the first SLO breach marks
-            the limit. It reads slightly <b>high</b> against a steady-state search, because queues
-            take time to fill and the system is always catching up with a load that has already
-            moved on &mdash; the same bias a live load test has. Set warm-up to 0; there is no
-            steady state for it to reach.
-          </p>
-        </>
-      )}
-
-      {a.kind === "spike" && (
-        <>
-          <FieldRow>
-            <Field label="base" hint="req/s">
-              <NumberInput
-                value={a.baseRatePerSec}
-                min={0.1}
-                step={10}
-                onChange={(v) =>
-                  patch((n) => {
-                    if (n.client?.arrival.kind === "spike") n.client.arrival.baseRatePerSec = Math.max(0.1, v);
-                  })
-                }
-              />
-            </Field>
-            <Field label="peak" hint="req/s">
-              <NumberInput
-                value={a.peakRatePerSec}
-                min={0.1}
-                step={10}
-                onChange={(v) =>
-                  patch((n) => {
-                    if (n.client?.arrival.kind === "spike") n.client.arrival.peakRatePerSec = Math.max(0.1, v);
-                  })
-                }
-              />
-            </Field>
-          </FieldRow>
-          <FieldRow>
-            <Field label="starts at" hint="s">
-              <NumberInput
-                value={a.atSec}
-                min={0}
-                step={10}
-                onChange={(v) =>
-                  patch((n) => {
-                    if (n.client?.arrival.kind === "spike") n.client.arrival.atSec = Math.max(0, v);
-                  })
-                }
-              />
-            </Field>
-            <Field label="lasts" hint="s">
-              <NumberInput
-                value={a.durationSec}
-                min={1}
-                step={5}
-                onChange={(v) =>
-                  patch((n) => {
-                    if (n.client?.arrival.kind === "spike") n.client.arrival.durationSec = Math.max(1, v);
-                  })
-                }
-              />
-            </Field>
-          </FieldRow>
-          <p className="note">
-            Leave room after the burst: <b>recovery is usually the more interesting half</b>. A
-            queue built during a spike keeps hurting requests that arrive after it has passed, so a
-            design can survive the spike itself and still spend minutes catching up.
-            {a.atSec + a.durationSec >= durationSec && (
-              <>
-                {" "}
-                <b className="warn-text">
-                  This spike runs to the end of the run, so recovery is never observed.
-                </b>
-              </>
-            )}
-          </p>
-        </>
-      )}
-
-      {a.kind === "steps" && (
-        <>
-          <Field label="initial rate" hint="req/s">
-            <NumberInput
-              value={a.ratePerSec}
-              min={0.1}
-              step={10}
-              onChange={(v) =>
-                patch((n) => {
-                  if (n.client?.arrival.kind === "steps") n.client.arrival.ratePerSec = Math.max(0.1, v);
-                })
-              }
-            />
-          </Field>
-          {a.steps.map((step, i) => (
-            <div className="class-editor-row" key={i}>
-              <Field label={`step ${i + 1} at`} hint="s">
-                <NumberInput
-                  value={step.atSec}
-                  min={0}
-                  step={10}
-                  onChange={(v) =>
-                    patch((n) => {
-                      if (n.client?.arrival.kind === "steps") {
-                        const st = n.client.arrival.steps[i];
-                        if (st) st.atSec = Math.max(0, v);
-                      }
-                    })
-                  }
-                />
-              </Field>
-              <Field label="rate" hint="req/s">
-                <NumberInput
-                  value={step.ratePerSec}
-                  min={0.1}
-                  step={10}
-                  onChange={(v) =>
-                    patch((n) => {
-                      if (n.client?.arrival.kind === "steps") {
-                        const st = n.client.arrival.steps[i];
-                        if (st) st.ratePerSec = Math.max(0.1, v);
-                      }
-                    })
-                  }
-                />
-              </Field>
-            </div>
-          ))}
-          <button
-            className="btn small with-icon"
-            onClick={() =>
-              patch((n) => {
-                if (n.client?.arrival.kind === "steps") {
-                  n.client.arrival.steps.push({
-                    atSec: Math.round(durationSec * 0.5),
-                    ratePerSec: n.client.arrival.ratePerSec * 2,
-                  });
-                }
-              })
-            }
-          >
-            <PlusIcon size={13} />
-            add step
-          </button>
-        </>
-      )}
-
-      {timeVarying && (
-        <p className="note warn">
-          With load varying over the run there is no steady state, so a single p99 averages across
-          regimes that never coexisted. Read the time series and the first-breach figure instead.
-        </p>
-      )}
+      <p className="note arrival-readonly">
+        <b className="tnum">{describeArrival(arrival)}</b>
+        <br />
+        set by the project workload, the same for every version.{" "}
+        <button className="btn-link" type="button" onClick={() => setWorkloadEditOpen(true)}>
+          set it
+        </button>
+      </p>
     </>
   );
 }
@@ -2074,171 +1802,6 @@ function QueueLimitEditor({
         still has a steady state. Blocking in an open-loop system makes the bound advisory,
         since there is no upstream buffer to push back against.
       </p>
-    </>
-  );
-}
-
-/**
- * Request classes.
- *
- * The dimension that makes "3% of traffic hits the expensive endpoint" expressible.
- * With no classes declared, a single implicit class carries everything.
- */
-function ClassEditor() {
-  const classes = useStudio((s) => s.design.classes);
-  const edit = useStudio((s) => s.edit);
-  const totalWeight = classes.reduce((s, c) => s + c.weight, 0);
-
-  return (
-    <>
-      <div className="section">request classes</div>
-      {classes.length === 0 ? (
-        <p className="note">
-          All traffic currently shares one route. Add classes for separate paths, such as reads
-          and writes.
-        </p>
-      ) : (
-        classes.map((c, i) => (
-          <div className="class-editor" key={c.id}>
-            <div className="class-editor-head">
-              <input
-                className="input"
-                value={c.label}
-                onChange={(e) =>
-                  edit((d) => {
-                    const cls = d.classes[i];
-                    if (cls) cls.label = e.target.value;
-                  })
-                }
-              />
-              <IconButton
-                label={`Remove class ${c.label}`}
-                tone="danger"
-                size="sm"
-                onClick={() =>
-                  edit((d) => {
-                    const removed = d.classes[i]?.id;
-                    d.classes = d.classes.filter((_, k) => k !== i);
-                    // Connections restricted to a deleted class would become
-                    // unroutable, so the restriction is dropped with it.
-                    if (removed) {
-                      for (const e of d.edges) e.classes = e.classes.filter((x) => x !== removed);
-                    }
-                  })
-                }
-              >
-                <TrashIcon size={14} />
-              </IconButton>
-            </div>
-            <div className="class-editor-row">
-              <Field label="weight" hint={`${((c.weight / totalWeight) * 100).toFixed(0)}% of traffic`}>
-                <NumberInput
-                  value={c.weight}
-                  min={0.1}
-                  step={0.5}
-                  onChange={(v) =>
-                    edit((d) => {
-                      const cls = d.classes[i];
-                      if (cls) cls.weight = Math.max(0.1, v);
-                    })
-                  }
-                />
-              </Field>
-              <Field label="cost" hint="× service time">
-                <NumberInput
-                  value={c.serviceMultiplier}
-                  min={0.1}
-                  step={0.5}
-                  onChange={(v) =>
-                    edit((d) => {
-                      const cls = d.classes[i];
-                      if (cls) cls.serviceMultiplier = Math.max(0.1, v);
-                    })
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-        ))
-      )}
-      <button
-        className="btn small with-icon"
-        onClick={() =>
-          edit((d) => {
-            const n = d.classes.length;
-            d.classes.push({
-              id: `class${n + 1}`,
-              label: n === 0 ? "reads" : n === 1 ? "writes" : `class ${n + 1}`,
-              weight: 1,
-              serviceMultiplier: 1,
-            });
-          })
-        }
-      >
-        <PlusIcon size={13} />
-        add class
-      </button>
-    </>
-  );
-}
-
-function ScenarioEditor() {
-  const scenario = useStudio((s) => s.design.scenario);
-  const slo = useStudio((s) => s.design.slo);
-  const edit = useStudio((s) => s.edit);
-
-  return (
-    <>
-      <div className="section">scenario</div>
-      <FieldRow>
-        <Field label="duration" hint="s">
-          <NumberInput
-            value={scenario.durationSec}
-            min={1}
-            step={60}
-            onChange={(v) => edit((d) => { d.scenario.durationSec = Math.max(1, v); })}
-          />
-        </Field>
-        <Field label="warm-up" hint="s">
-          <NumberInput
-            value={scenario.warmupSec}
-            min={0}
-            step={10}
-            onChange={(v) => edit((d) => { d.scenario.warmupSec = Math.max(0, v); })}
-          />
-        </Field>
-        <Field label="seed">
-          <NumberInput
-            value={scenario.seed}
-            min={0}
-            onChange={(v) => edit((d) => { d.scenario.seed = Math.max(0, Math.round(v)); })}
-          />
-        </Field>
-      </FieldRow>
-      <p className="note">
-        Warm-up removes startup bias. Longer runs improve accuracy, especially near saturation.
-      </p>
-
-      <div className="section">slo</div>
-      <FieldRow>
-        <Field label="p99 target" hint="ms, 0 = none">
-          <NumberInput
-            value={slo.p99LatencyMs ?? 0}
-            min={0}
-            step={10}
-            onChange={(v) => edit((d) => { d.slo.p99LatencyMs = v <= 0 ? null : v; })}
-          />
-        </Field>
-        <Field label="max errors" hint="%, 0 = none">
-          <NumberInput
-            value={slo.maxErrorRatePct ?? 0}
-            min={0}
-            max={100}
-            step={0.1}
-            onChange={(v) => edit((d) => { d.slo.maxErrorRatePct = v <= 0 ? null : v; })}
-          />
-        </Field>
-      </FieldRow>
     </>
   );
 }

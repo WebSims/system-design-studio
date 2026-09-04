@@ -129,13 +129,11 @@ summary:focus-visible {
 }
 .candidate-bar-title {
   flex: none;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 650;
-  font-size: 13px;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
   white-space: nowrap;
-  color: var(--fg);
+  color: var(--fg-3);
 }
 .candidate-chips {
   min-width: 0;
@@ -782,6 +780,123 @@ summary:focus-visible {
   font-size: 10.5px;
   color: var(--fg-3);
 }
+
+/* Breadcrumb: Projects > name, in the tagline's slot. Everything about the project hangs off the name. */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--fg-3);
+  line-height: 1;
+}
+.crumb {
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 4px;
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.crumb:hover, .crumb.active { color: var(--fg); background: var(--bg-3); }
+.crumb-sep { color: var(--fg-3); }
+.crumb-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 260px;
+  color: var(--fg-2);
+}
+.crumb-current strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+/* A popover on the palette's surface. */
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  padding: 6px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover { background: var(--bg-3); color: var(--fg); }
+.menu-item.active { color: var(--fg); }
+.menu-item.danger { color: var(--bad); }
+.menu-sep { display: block; height: 1px; margin: 4px 0; background: var(--line); }
+.confirm-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bad) 8%, var(--bg-3));
+}
+.project-popover {
+  width: 320px;
+  text-align: left;
+}
+.project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 4px 8px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 6px;
+}
+.project-form input,
+.project-form textarea,
+.project-row-rename input {
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+.project-form input:focus,
+.project-form textarea:focus,
+.project-row-rename input:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent);
+}
+.project-form textarea { resize: vertical; line-height: 1.45; }
+.project-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.project-actions { display: flex; flex-direction: column; gap: 1px; }
+.small { font-size: 11.5px; }
+.flip { transform: scaleX(-1); }
 
 .tb-group {
   display: flex;
@@ -2707,6 +2822,63 @@ summary:focus-visible {
   white-space: nowrap;
 }
 .agent-progress-hint { color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
+
+/* the step tracker: where the agent is, from the document, in the order it was told */
+.agent-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-2) 92%, transparent);
+  text-align: left;
+}
+.agent-steps.compact { padding: 6px 0 0; border: 0; background: transparent; }
+.agent-steps-head { display: flex; align-items: baseline; justify-content: space-between; }
+.agent-steps-title { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-3); }
+.agent-steps-count { font-size: 11px; color: var(--fg-3); }
+.agent-step-list { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.agent-step { display: flex; align-items: flex-start; gap: 8px; }
+.agent-step-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1px solid var(--line-2);
+  border-radius: 99px;
+  color: var(--fg-3);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+.agent-step.done .agent-step-mark { border-color: var(--ok); color: var(--ok); }
+.agent-step.current .agent-step-mark { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+.agent-step-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.agent-step-label { font-size: 12px; color: var(--fg-2); }
+.agent-step.done .agent-step-label { color: var(--fg-3); }
+.agent-step.current .agent-step-label { color: var(--fg); font-weight: 600; }
+.agent-step-unblock { font-size: 11px; }
+.agent-step-hint {
+  display: block;
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  font: 10.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-step-failure {
+  padding: 5px 7px;
+  border-left: 2px solid var(--bad);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.agent-step-failure strong { color: var(--bad); font-weight: 600; }
 .agent-progress code {
   padding: 1px 5px;
   border-radius: 5px;
@@ -2719,13 +2891,56 @@ summary:focus-visible {
   .agent-progress > .btn { margin-left: 0; }
 }
 
-/* recent studies: one row, title inline with the items */
+/* projects list: every saved project, one row each, with its actions */
 .start-recent {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px 14px;
 }
+.projects-list { flex-direction: column; align-items: stretch; }
+.projects-list .recent-list { flex-direction: column; gap: 6px; }
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-2) 92%, transparent);
+}
+.project-row.open { border-color: color-mix(in srgb, var(--accent) 50%, var(--line-2)); }
+.project-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.project-row-name { display: flex; align-items: center; gap: 6px; }
+.project-row-name strong { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-row-problem {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-row-meta { color: var(--fg-3); font-size: 11px; }
+.project-row-actions { display: flex; flex: none; gap: 2px; opacity: 0.55; transition: opacity 120ms ease-out; }
+.project-row:hover .project-row-actions, .project-row:focus-within .project-row-actions { opacity: 1; }
+.project-row-rename { display: flex; flex: 1 1 auto; align-items: center; gap: 6px; }
+.project-row-rename input { flex: 1 1 auto; min-width: 0; }
+.chip-mark.chip-open { background: var(--accent); color: var(--bg); }
+.start-back { display: flex; }
+.btn.ghost.danger { color: var(--bad); }
 .recent-list {
   display: flex;
   flex-wrap: wrap;
@@ -2852,12 +3067,152 @@ summary:focus-visible {
 }
 .copy-feedback.ready .status-dot-inline { background: var(--ok); }
 
-/* ---------- topology explorer ---------- */
+/* ---------- canvas toolbox: one floating pane for find, route, link, zoom, minimap ---------- */
 
-.topology-panel {
-  max-width: calc(100% - 30px);
-  margin: 14px;
+/* The React Flow panel is only an anchor at the canvas's top-left; the pane's own offset is a
+   translate set inline, so moving it never reflows anything else. */
+.react-flow__panel.canvas-toolbox {
+  margin: 0;
+  pointer-events: none;
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+.canvas-toolbox.dragging { transition: none; }
+.toolbox-pane {
+  pointer-events: auto;
+  max-width: min(720px, calc(100vw - var(--rail-left) - var(--rail-right) - 30px));
+  width: max-content;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-2) 94%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.34);
+  color: var(--fg);
+  transition: box-shadow 140ms ease-out, opacity 140ms ease-out;
+}
+.canvas-toolbox.dragging .toolbox-pane {
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.5);
+  opacity: 0.94;
+}
+.canvas-toolbox.collapsed .toolbox-pane {
+  border-radius: 99px;
+}
+.toolbox-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 4px 0 2px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-3) 60%, transparent);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.toolbox-head:hover .toolbox-grip { color: var(--fg); }
+.canvas-toolbox.dragging .toolbox-head { cursor: grabbing; }
+.canvas-toolbox.collapsed .toolbox-head {
+  border-bottom: 0;
+  background: transparent;
+  padding-right: 6px;
+}
+.toolbox-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--fg-3);
+  font-size: 15px;
+  line-height: 1;
+}
+.toolbox-title {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  margin-right: auto;
+  padding-right: 10px;
+}
+.toolbox-pill-note { font-size: 10.5px; color: var(--accent); }
+.toolbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+.toolbox-btn:hover { color: var(--fg); background: var(--bg-3); }
+.toolbox-body .topology-explorer {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.toolbox-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px;
+  border-top: 1px solid var(--line);
+}
+
+/* The minimap folds in place: a small button over its corner while it shows, a pill when it is
+   folded. The panel sits above the map (z 6 > the map's 5) and matches its 15px margin. */
+.react-flow__panel.minimap-chrome {
+  z-index: 6;
+  pointer-events: none;
+}
+.react-flow__panel.minimap-chrome.over-map {
+  /* The map is 200 x 150 with a 15px margin; this puts the button just inside its top-right corner. */
+  margin: 0 19px 143px 0;
+}
+.minimap-chrome .minimap-fold {
+  pointer-events: auto;
+  border: 1px solid var(--line-2);
+  background: color-mix(in srgb, var(--bg-2) 94%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--fg-3);
+}
+.minimap-chrome.over-map .minimap-fold {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+.minimap-chrome.folded .minimap-fold {
+  width: auto;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 99px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+}
+.minimap-fold-label {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.minimap-chrome .minimap-fold:hover { color: var(--fg); background: var(--bg-3); }
+
+/* minimap: nodes in their kind colour, the selected and agent-touched ones lit */
+.react-flow__minimap-node.minimap-node { fill: #3a342c; stroke: transparent; }
+.react-flow__minimap-node.minimap-kind-client { fill: var(--sky); }
+.react-flow__minimap-node.minimap-kind-loadbalancer { fill: var(--teal); }
+.react-flow__minimap-node.minimap-kind-server { fill: var(--accent); }
+.react-flow__minimap-node.minimap-kind-cache { fill: var(--pink); }
+.react-flow__minimap-node.minimap-kind-database { fill: var(--purple); }
+.react-flow__minimap-node.minimap-kind-queue { fill: var(--green); }
+.react-flow__minimap-node.minimap-kind-gateway { fill: var(--yellow); }
+.react-flow__minimap-node.minimap-kind-lock { fill: var(--bad); }
+.react-flow__minimap-node.minimap-node { fill-opacity: 0.55; }
+.react-flow__minimap-node.minimap-ghost { fill: var(--fg-3); fill-opacity: 0.25; }
+.react-flow__minimap-node.minimap-node.selected { fill-opacity: 1; stroke: var(--fg); stroke-width: 6; }
+.react-flow__minimap-node.minimap-node.agent-touched { fill-opacity: 0.95; stroke: var(--accent); stroke-width: 6; }
 
 .topology-explorer {
   width: max-content;
@@ -3647,7 +4002,7 @@ summary:focus-visible {
     width: 36px;
   }
 
-  .topology-panel {
+  .canvas-toolbox {
     max-width: calc(100% - 20px);
     margin: 10px;
   }
@@ -3980,7 +4335,53 @@ summary:focus-visible {
 }
 .bounds-details { margin-top: 12px; font-size: 11.5px; }
 .bounds-details summary { cursor: pointer; color: var(--fg-3); }
-.bounds-details label { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; color: var(--fg-2); font-size: 11.5px; }
+.bounds-details label,
+.doc-rail .advanced > label { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; color: var(--fg-2); font-size: 11.5px; }
+.doc-rail .advanced > label input {
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+/* the workload row: one line, a badge while it is the placeholder, the fields inline once "set" is pressed */
+.workload-row .section-head { display: flex; align-items: center; gap: 8px; }
+.workload-row .section-head h2 { flex: none; }
+.workload-summary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--fg-2); }
+.workload-row .badge { flex: none; }
+.workload-row .btn { flex: none; margin-left: auto; }
+.workload-fields { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.section-tag.warn { color: var(--warn); opacity: 1; }
+.arrival-readonly b { color: var(--fg); font-weight: 600; }
+.btn-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* advanced: folded project settings, values in the summary line */
+.doc-rail details.advanced > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  list-style: none;
+}
+.doc-rail details.advanced > summary::-webkit-details-marker { display: none; }
+.doc-rail details.advanced > summary h2 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 14px; text-transform: none; letter-spacing: 0; }
+.doc-rail details.advanced > summary h2::before { content: "\203a"; display: inline-block; color: var(--fg-3); transition: transform 120ms ease-out; }
+.doc-rail details.advanced[open] > summary h2::before { transform: rotate(90deg); }
+.advanced-summary { font-size: 11px; }
+.doc-rail details.advanced[open] .advanced-summary { display: none; }
+.advanced-sub { margin: 14px 0 4px; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
 .doc-rail .fault-toggles { margin-top: 4px; }
 .doc-rail .assumptions .stat-grid { margin: 8px 0; }
 
@@ -4060,13 +4461,7 @@ summary:focus-visible {
 .node-note.note-warn { background: var(--warn); }
 .node-note.note-bad { background: var(--crit); color: var(--fg); }
 
-/* Click-to-link. */
-.link-panel {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 10px 10px 0 0;
-}
+/* Click-to-link. The button lives in the canvas toolbox; the hint sits beside it. */
 .link-hint {
   padding: 4px 9px;
   border: 1px solid var(--line-2);

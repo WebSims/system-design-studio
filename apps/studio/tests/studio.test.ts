@@ -395,18 +395,20 @@ describe("nothing in the app is wired to one domain", () => {
     }
   });
 
-  it("offers the codebase prompt, a manual canvas and worked scenarios on the start screen", () => {
+  it("offers the codebase prompt, a new project and worked scenarios on the Projects home", () => {
     const app = appSources().find((file) => file.path === "App.tsx")?.text ?? "";
-    expect(app).not.toMatch(/ExampleMenu|AgentPromptMenu|ProjectMenu/);
+    expect(app).not.toMatch(/ExampleMenu|AgentPromptMenu/);
     const start = appSources().find((file) => file.path === "chrome/StartScreen.tsx")?.text ?? "";
     expect(start).toContain("CODEBASE_PROMPT");
-    expect(start).toContain("Design manually");
+    expect(start).toContain("New project");
     expect(start).toContain("DEMO_SCENARIOS");
-    expect(start).toContain("blankDesign");
+    // A new project is one empty human version on a blank canvas, the same shape studio_create_study makes.
+    expect(start).toContain("manualCandidate");
+    expect(start).toContain("createStudy({})");
     expect(start).toContain("WebMCP");
-    // An agent at work with nothing drawn yet is told so, and told which step draws.
+    // An agent at work with nothing drawn yet is told so, with the step tracker showing where it is.
     expect(start).toContain("Nothing is drawn yet");
-    expect(start).toContain("studio_create_candidate");
+    expect(start).toContain("AgentStepper");
   });
 
   it("creates an empty study with no invariants, candidates or domain assumptions", () => {
@@ -417,5 +419,95 @@ describe("nothing in the app is wired to one domain", () => {
     expect(study.contract.outcomes ?? []).toEqual([]);
     // No collection names, no counters, nothing that presumes what is being built.
     expect(JSON.stringify(study)).not.toMatch(/inventory|pizza|claims/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fewer parts on screen: the interface's shape, checked against its source
+// ---------------------------------------------------------------------------
+
+/**
+ * These read the components' source rather than rendering them: the suite runs in node without a
+ * DOM, and what is being pinned is which module OWNS a control, which is a property of the source.
+ */
+describe("the interface has one place for each thing", () => {
+  const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+
+  it("keeps Export and Import in the project popover, not the top bar", () => {
+    const topbar = source("chrome/Topbar.tsx");
+    expect(topbar).not.toMatch(/DownloadIcon|UploadIcon|exportStudyJson|importStudyJson/);
+    expect(topbar).toContain("<ProjectMenu />");
+    const popover = source("chrome/ProjectMenu.tsx");
+    expect(popover).toMatch(/exportStudyJson/);
+    expect(popover).toMatch(/importStudyJson/);
+    expect(popover).toMatch(/renameStudy|duplicateStudy|deleteOpenStudy/);
+    // The breadcrumb's first crumb opens the Projects home.
+    expect(popover).toContain("setHomeOpen(true)");
+  });
+
+  it("shows one Play button whose label follows the lens, never a second Find races beside it", () => {
+    const topbar = source("chrome/Topbar.tsx");
+    expect(topbar.match(/<HeroPlay \/>/g)).toHaveLength(1);
+    // "Find races" is HeroPlay's Behaviour-lens label, and appears nowhere else in the bar.
+    expect(topbar.match(/Find races/g)).toHaveLength(1);
+  });
+
+  it("lets the versions strip own one level: versions, not the project name", () => {
+    const strip = source("panels/CandidateBar.tsx");
+    expect(strip).not.toMatch(/\{study\.name\}/);
+    expect(strip).toContain("New version");
+  });
+
+  it("edits the workload in one place, the rail row, and shows it read-only on the client", () => {
+    const rail = source("panels/BehaviourRail.tsx");
+    expect(rail).toContain("<WorkloadRow");
+    expect(rail).toContain("<AdvancedSettings");
+    const inspector = source("panels/Inspector.tsx");
+    expect(inspector).not.toMatch(/function (ArrivalEditor|ScenarioEditor|ClassEditor)/);
+    expect(inspector).toContain("ArrivalSummary");
+    expect(inspector).toContain("setWorkloadEditOpen(true)");
+    // Nothing in the design store writes scenario, slo or a client's arrival any more.
+    expect(inspector).not.toMatch(/d\.scenario\.|d\.slo\.|client\.arrival\s*=/);
+    const editor = source("panels/WorkloadEditor.tsx");
+    expect(editor).toContain("isPlaceholderWorkload");
+    expect(editor).toContain("updateContract({ workload: { arrival } })");
+  });
+
+  it("gives every flow node its size, so the minimap and fitView see it before measurement", () => {
+    const canvas = source("canvas/FlowCanvas.tsx");
+    expect(canvas.match(/width: NODE_WIDTH,\s*height: NODE_HEIGHT/g)).toHaveLength(2);
+    expect(canvas).toContain("<MiniMap");
+    expect(canvas).toContain("nodeClassName");
+    // The old separate overlays are gone; the toolbox hosts find, route, link and zoom.
+    expect(canvas).not.toMatch(/<Controls|link-panel/);
+    expect(canvas).toContain("<CanvasToolbox");
+    expect(source("canvas/TopologyExplorer.tsx")).not.toMatch(/<Panel/);
+    const toolbox = source("canvas/CanvasToolbox.tsx");
+    expect(toolbox).toContain("zoomIn");
+    expect(toolbox).toContain("fitView");
+    expect(toolbox).toContain("onToggleLinking");
+    expect(toolbox).toContain("minimap");
+    // The pane moves freely by its header and is clamped to the canvas; no dock menu remains.
+    expect(toolbox).toContain("clampToolboxPosition");
+    expect(toolbox).not.toMatch(/toolbox-menu|nearestDock|DOCKS/);
+    // The minimap folds in place and React Flow's attribution badge is off.
+    expect(canvas).toContain("<MinimapChrome");
+    expect(canvas).toContain("hideAttribution: true");
+  });
+
+  it("speaks to people in project and version, never study or candidate", () => {
+    // Text a person reads: JSX text nodes and title/placeholder strings in the screens they see.
+    const screens = ["chrome/Topbar.tsx", "chrome/ProjectMenu.tsx", "chrome/StartScreen.tsx", "panels/CandidateBar.tsx",
+      "panels/BehaviourRail.tsx", "panels/WorkloadEditor.tsx", "panels/AgentStepper.tsx", "panels/AgentPanel.tsx"];
+    for (const path of screens) {
+      const text = source(path)
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      const visible = [
+        ...Array.from(text.matchAll(/>([^<>{}]+)</g), (m) => m[1]!).filter((t) => /[a-z]/i.test(t) && !/[=();]/.test(t)),
+        ...Array.from(text.matchAll(/(?:title|placeholder|aria-label)=["']([^"']+)["']/g), (m) => m[1]!),
+      ].join("\n");
+      expect(visible, path).not.toMatch(/\b(stud(y|ies)|candidates?)\b/i);
+    }
   });
 });

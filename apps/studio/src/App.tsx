@@ -135,8 +135,9 @@ function ReviewDrawer() {
 
 function Workbench() {
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
+  const homeOpen = useStudyStore((s) => s.homeOpen);
   const lens = useStudyStore((s) => s.lens);
-  if (!hasCandidates) return <StartScreen />;
+  if (homeOpen || !hasCandidates) return <StartScreen />;
   return (
     <>
       {lens === "behaviour" ? <BehaviourRail /> : <ResultsRail />}
@@ -161,7 +162,14 @@ function useWebmcp() {
     const host: ToolHost = {
       getStudy: () => useStudyStore.getState().study,
       getCatalog: () => buildCatalog(),
-      createStudy: async (input) => useStudyStore.getState().createStudy(input),
+      createStudy: async (input) => {
+        const store = useStudyStore.getState();
+        const study = store.createStudy(input);
+        // The agent's first call opens the panel that narrates the rest, same rule `annotate` uses:
+        // work the person cannot see is work that did not happen, as far as they can tell.
+        if (!store.agentOpen) store.setAgentOpen(true);
+        return study;
+      },
       updateStudyContract: async (patch) => {
         const { name, problem, ...contract } = patch as typeof patch & { name?: string; problem?: string };
         const store = useStudyStore.getState();
@@ -291,7 +299,7 @@ function useWebmcp() {
         const study = useStudyStore.getState().study;
         const wanted = new Set(candidateIds);
         const missing = candidateIds.filter((id) => !study.candidates.some((candidate) => candidate.id === id));
-        if (missing.length > 0) throw new Error(`unknown candidate: ${missing.join(", ")}`);
+        if (missing.length > 0) throw new Error(`unknown version (candidateId): ${missing.join(", ")}`);
         return portfolioInWorker(
           candidateIds.length === 0
             ? study
@@ -334,8 +342,10 @@ export function App() {
   const lens = useStudyStore((s) => s.lens);
   const error = useStudyStore((s) => s.error);
   const hasCandidates = useStudyStore((s) => s.study.candidates.length > 0);
+  const homeOpen = useStudyStore((s) => s.homeOpen);
   const reviewOpen = useStudyStore((s) => s.reviewOpen);
   const agentOpen = useStudyStore((s) => s.agentOpen);
+  const showWorkbench = hasCandidates && !homeOpen;
   useWebmcp();
 
   useEffect(() => {
@@ -343,13 +353,13 @@ export function App() {
   }, []);
 
   return (
-    <div className={`shell shell-${lens} ${hasCandidates ? "" : "shell-empty"} ${agentOpen ? "agent-open" : ""}`}>
+    <div className={`shell shell-${lens} ${showWorkbench ? "" : "shell-empty"} ${agentOpen ? "agent-open" : ""}`}>
       <Topbar />
-      {hasCandidates ? <CandidateBar /> : null}
+      {showWorkbench ? <CandidateBar /> : null}
       {error && <div className="banner banner-error">{error}</div>}
       <Workbench />
       {agentOpen && <AgentPanel />}
-      {reviewOpen && hasCandidates && <ReviewDrawer />}
+      {reviewOpen && showWorkbench && <ReviewDrawer />}
     </div>
   );
 }

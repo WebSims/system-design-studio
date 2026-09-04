@@ -33,11 +33,10 @@ export function CandidateBar() {
     select(candidate.id);
   };
 
+  // The project's name lives in the top bar's breadcrumb; this row owns one level only: versions.
   return (
-    <div className="candidate-bar">
-      <span className="candidate-bar-title" title={study.problem}>
-        {study.name}
-      </span>
+    <div className="candidate-bar" aria-label="Versions">
+      <span className="candidate-bar-title">versions</span>
 
       <div className="candidate-chips">
         {study.candidates.map((candidate) => {

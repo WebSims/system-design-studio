@@ -44,8 +44,23 @@ export function isRetiredDevelopmentStudyId(id: string): boolean {
 export interface StoredStudy {
   id: string;
   name: string;
+  problem: string;
   updatedAt: number;
   candidateCount: number;
+  /** Any version drawn by an agent, so the list can carry the same mark the versions strip does. */
+  hasAgentVersions: boolean;
+}
+
+/** The list row for a study document, the one place its summary is computed. */
+export function summariseStored(study: Study): StoredStudy {
+  return {
+    id: study.id,
+    name: study.name,
+    problem: study.problem,
+    updatedAt: study.updatedAt,
+    candidateCount: study.candidates.length,
+    hasAgentVersions: study.candidates.some((candidate) => candidate.origin === "agent"),
+  };
 }
 
 export type LoadResult =
@@ -134,21 +149,17 @@ export async function listStudies(): Promise<StoredStudy[]> {
       if (typeof rawId === "string" && isRetiredDevelopmentStudyId(rawId)) continue;
       // Each entry is summarised independently, so one unreadable study does not hide the rest.
       try {
-        const study = migrateAndParseStudy(raw);
-        out.push({
-          id: study.id,
-          name: study.name,
-          updatedAt: study.updatedAt,
-          candidateCount: study.candidates.length,
-        });
+        out.push(summariseStored(migrateAndParseStudy(raw)));
       } catch {
         const partial = raw as { id?: unknown; name?: unknown };
         if (typeof partial.id === "string") {
           out.push({
             id: partial.id,
             name: typeof partial.name === "string" ? `${partial.name} (unreadable)` : "(unreadable)",
+            problem: "",
             updatedAt: 0,
             candidateCount: 0,
+            hasAgentVersions: false,
           });
         }
       }
@@ -189,6 +200,34 @@ export function writeActiveStudyId(id: string | null): void {
   } catch {
     // Swallowed deliberately: failing to remember which study was open is a small annoyance, and
     // throwing here would break an edit that had otherwise succeeded.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// interface preferences
+// ---------------------------------------------------------------------------
+
+/**
+ * Small, non-document preferences: where a pane is docked, whether it is collapsed. Local storage
+ * is right for these because they are a few bytes, wanted synchronously at first render, and
+ * losing them costs one click. `parse` is the caller's validator, so a stale or hand-edited value
+ * falls back to the default rather than reaching the interface.
+ */
+export function readUiPref<T>(key: string, fallback: T, parse: (raw: unknown) => T | null): T {
+  try {
+    const raw = localStorage.getItem(`sds.ui.${key}`);
+    if (raw === null) return fallback;
+    return parse(JSON.parse(raw)) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeUiPref<T>(key: string, value: T): void {
+  try {
+    localStorage.setItem(`sds.ui.${key}`, JSON.stringify(value));
+  } catch {
+    // A preference that does not stick is one click of inconvenience, not an error worth showing.
   }
 }
 

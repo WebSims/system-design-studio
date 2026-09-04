@@ -5,6 +5,8 @@ import {
   applyStudyContract,
   blankStudy,
   evaluationKey,
+  isPlaceholderWorkload,
+  studyContractLock,
   type CandidateEvaluation,
   type PortfolioResult,
   type Study,
@@ -96,7 +98,7 @@ class TestHost implements ToolHost {
     this.activity.push(entry);
   }
 
-  async createStudy(input: { name?: string; problem?: string }) {
+  async createStudy(input: Parameters<ToolHost["createStudy"]>[0]) {
     this.study = blankStudy({ id: "study-new", ...input });
     return this.study;
   }
@@ -314,6 +316,9 @@ async function call(name: string, input: unknown, ctx?: { signal?: AbortSignal }
   register();
   return (await mc.call(name, input, ctx)) as { content: Record<string, unknown>; isError?: boolean };
 }
+
+/** An arrival somebody observed, so a test project is not stuck behind the placeholder gate. */
+const OBSERVED_WORKLOAD = { arrival: { kind: "poisson" as const, ratePerSec: 120 } };
 
 function repositoryArchitectureInput(calibrated = false) {
   const design = structuredClone(
@@ -691,7 +696,10 @@ describe("repository-backed architecture", () => {
     expect(result.isError).toBe(true);
     expect(String(result.content.error)).toContain("no evidence");
     expect(host.study.repository).toBeNull();
-    expect(host.study.candidates).toEqual([]);
+    // The blank drawing the project opened with is untouched: nothing was adopted or sealed.
+    expect(host.study.candidates).toHaveLength(1);
+    expect(host.study.candidates[0]!.design.nodes).toEqual([]);
+    expect(host.study.candidates[0]!.role).toBe("experiment");
   });
 
   it("refuses to seal an active component that no client/work source can reach", async () => {
@@ -1428,7 +1436,7 @@ describe("replacing a draft", () => {
       design: host.study.candidates[0]!.design,
     });
     expect(isError).toBe(true);
-    expect(String(content.error)).toContain("promoted candidate");
+    expect(String(content.error)).toContain("promoted version");
     expect(String(content.error)).toContain("human-only");
     // And it really is untouched.
     const promoted = host.study.candidates.find((c) => c.id === "c6-serializable-transaction")!;
@@ -1488,7 +1496,7 @@ describe("running and reading an evaluation", () => {
   });
 
   it("withholds repository load results until every target is calibrated", async () => {
-    await call("studio_create_study", { name: "checkout" });
+    await call("studio_create_study", { name: "checkout", workload: OBSERVED_WORKLOAD });
     const imported = await call("studio_import_architecture", repositoryArchitectureInput());
     const candidateId = imported.content.candidateId as string;
 
@@ -1514,7 +1522,7 @@ describe("running and reading an evaluation", () => {
   });
 
   it("allows repository performance after every target has observed measurements", async () => {
-    await call("studio_create_study", { name: "checkout" });
+    await call("studio_create_study", { name: "checkout", workload: OBSERVED_WORKLOAD });
     const imported = await call("studio_import_architecture", repositoryArchitectureInput(true));
     const result = await call("studio_run_evaluation", {
       candidateId: imported.content.candidateId,
@@ -1598,7 +1606,7 @@ describe("comparing", () => {
   it("its description states the qualifier an agent must repeat", async () => {
     register();
     const tool = mc.registered.find((t) => t.name === "studio_compare_candidates")!;
-    expect(tool.description).toContain("Pareto-optimal among the candidates tested");
+    expect(tool.description).toContain("Pareto-optimal among the versions tested");
     expect(tool.description).toContain("not globally best");
     expect(tool.description).toContain("ties, not wins");
   });
@@ -1702,7 +1710,7 @@ describe("promotion and deletion are human-only", () => {
         design: study.candidates[6]!.design,
         by: "agent",
       })
-    ).toThrow(/promoted candidate/);
+    ).toThrow(/promoted version/);
   });
 
   it("pins the as-is revision and withdraws approval when that baseline changes", () => {
@@ -1820,7 +1828,10 @@ describe("an agent can define the study, not just answer it", () => {
     });
     expect(r.isError).toBeFalsy();
     expect(host.study.name).toBe("one seat, many buyers");
-    expect(host.study.candidates).toEqual([]);
+    // Born with one empty version to draw on, so the canvas opens on this call.
+    expect(host.study.candidates).toHaveLength(1);
+    expect(r.content).toMatchObject({ candidateId: host.study.candidates[0]!.id, revision: 0, workloadIsPlaceholder: true });
+    expect(String((r.content as { next: string }).next)).toContain("studio_get_catalog");
   });
 
   it("sets the yardstick, and the study reports it back", async () => {
@@ -1911,6 +1922,156 @@ describe("an agent can define the study, not just answer it", () => {
     if (mc.registered.length === 0) registerWebmcpTools({ host, target: { modelContext: mc } });
     const names = mc.registered.map((t) => t.name).join(" ");
     expect(names).not.toMatch(/delete|remove|promote|approve|ship|deploy/i);
+  });
+
+  // ---- the start flow: canvas open on the first call, one version, no placeholder locked in ----
+
+  it("opens the canvas on studio_create_study and leaves exactly one empty version", async () => {
+    const r = await call("studio_create_study", { name: "seats" });
+    const content = r.content as { candidateId: string; revision: number; next: string };
+    expect(host.study.candidates).toHaveLength(1);
+    expect(host.study.candidates[0]).toMatchObject({ id: content.candidateId, origin: "agent", role: "experiment", revision: 0 });
+    expect(host.study.activeCandidateId).toBe(content.candidateId);
+    expect(host.activity.at(-1)).toMatchObject({ tool: "studio_create_study", candidateId: content.candidateId, revision: 0 });
+  });
+
+  it("studio_create_candidate right after adopts the blank drawing instead of adding a second one", async () => {
+    const created = await call("studio_create_study", { name: "seats" });
+    const first = (created.content as { candidateId: string }).candidateId;
+    const again = await call("studio_create_candidate", { label: "as-is · api", intent: "the http service" });
+    expect(again.isError).toBeFalsy();
+    expect((again.content as { candidateId: string }).candidateId).toBe(first);
+    expect(host.study.candidates).toHaveLength(1);
+    expect(host.study.candidates[0]).toMatchObject({ id: first, label: "as-is · api", intent: "the http service", revision: 0 });
+  });
+
+  it("does not adopt a drawing somebody has already touched", async () => {
+    await call("studio_create_study", { name: "seats" });
+    const id = host.study.candidates[0]!.id;
+    await call("studio_apply_architecture_patch", {
+      candidateId: id,
+      expectedRevision: 0,
+      operations: [{ op: "set-design-name", name: "touched" }],
+    });
+    await call("studio_create_candidate", { label: "another" });
+    expect(host.study.candidates).toHaveLength(2);
+  });
+
+  it("studio_import_architecture with a complete design seals the blank drawing in place", async () => {
+    const created = await call("studio_create_study", { name: "checkout" });
+    const first = (created.content as { candidateId: string }).candidateId;
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    expect(imported.isError).toBeFalsy();
+    expect((imported.content as { candidateId: string }).candidateId).toBe(first);
+    expect(host.study.candidates).toHaveLength(1);
+    expect(host.study.candidates[0]!.role).toBe("baseline");
+  });
+
+  it("refuses to run while the workload is the placeholder, and the yardstick stays unlocked", async () => {
+    await call("studio_create_study", { name: "checkout" });
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const candidateId = (imported.content as { candidateId: string }).candidateId;
+    expect(isPlaceholderWorkload(host.study.workload)).toBe(true);
+
+    const refused = await call("studio_run_evaluation", { candidateId, correctness: true, performance: false });
+    expect(refused.isError).toBe(true);
+    expect(String((refused.content as { error: string }).error)).toMatch(/placeholder/);
+    expect(String((refused.content as { error: string }).error)).toMatch(/every version/);
+    expect(host.runCalls).toHaveLength(0);
+    const scenarios = await call("studio_run_production_scenarios", { candidateId });
+    expect(scenarios.isError).toBe(true);
+    expect(host.runCalls).toHaveLength(0);
+    expect(studyContractLock(host.study).locked).toBe(false);
+
+    const set = await call("studio_update_study", { contract: { workload: { arrival: { kind: "poisson", ratePerSec: 300 } } } });
+    expect(set.isError).toBeFalsy();
+    const ran = await call("studio_run_evaluation", { candidateId, correctness: true, performance: false });
+    expect(ran.isError).toBeFalsy();
+    expect(host.runCalls).toHaveLength(1);
+  });
+
+  it("a project born with its workload is not the placeholder and runs at once", async () => {
+    const r = await call("studio_create_study", {
+      name: "checkout",
+      workload: { arrival: { kind: "deterministic", ratePerSec: 12 }, durationSec: 600 },
+    });
+    expect(r.isError).toBeFalsy();
+    expect((r.content as { workloadIsPlaceholder: boolean }).workloadIsPlaceholder).toBe(false);
+    expect(isPlaceholderWorkload(host.study.workload)).toBe(false);
+    expect(host.study.workload.durationSec).toBe(600);
+    const imported = await call("studio_import_architecture", repositoryArchitectureInput());
+    const ran = await call("studio_run_evaluation", { candidateId: (imported.content as { candidateId: string }).candidateId });
+    expect(ran.isError).toBeFalsy();
+  });
+
+  it("names the version/project distinction when the yardstick is locked", async () => {
+    await call("studio_create_study", { name: "seats" });
+    host.study = { ...host.study, evaluations: { "some-key": {} as never } };
+    const r = await call("studio_update_study", { contract: { workload: { arrival: { kind: "poisson", ratePerSec: 9 } } } });
+    expect(String((r.content as { error: string }).error)).toMatch(/new version\s+cannot change it/);
+  });
+
+  // ---- invariants without trial and error ----
+
+  it("the catalogue exposes the invariant templates and the Invariant shape", async () => {
+    const r = await call("studio_get_catalog");
+    const catalog = r.content as {
+      invariantTemplates: Array<{ id: string; params: Array<{ name: string }> }>;
+      invariantShape: { exprKinds: string[]; scopes: string[]; example: unknown };
+    };
+    expect(catalog.invariantTemplates.map((t) => t.id)).toContain("counter-non-negative");
+    expect(catalog.invariantTemplates.find((t) => t.id === "one-per-key")!.params.map((p) => p.name)).toEqual(["table", "field"]);
+    expect(catalog.invariantShape.exprKinds).toContain("compare");
+    expect(catalog.invariantShape.scopes).toEqual(["safety", "postcondition"]);
+  });
+
+  it("accepts template invariants and builds the same expression the interface would", async () => {
+    await call("studio_create_study", { name: "seats" });
+    const r = await call("studio_update_study", {
+      contract: {
+        correctness: {
+          invariants: [
+            { template: "counter-non-negative", args: { collection: "stock" } },
+            { template: "one-per-key", args: { table: "claims", field: "userId" }, id: "one-claim", scope: "safety" },
+          ],
+        },
+      },
+    });
+    expect(r.isError).toBeFalsy();
+    const [first, second] = host.study.correctness.invariants;
+    expect(first!.expr).toEqual({ kind: "compare", op: ">=", left: { kind: "counter", collection: "stock" }, right: { kind: "lit", value: 0 } });
+    expect(first!.scope).toBe("safety");
+    expect(first!.message.length).toBeGreaterThan(0);
+    expect(second!.id).toBe("one-claim");
+    expect(second!.expr).toMatchObject({ kind: "compare", op: "==" });
+  });
+
+  it("names the template's args when one is missing, and the templates when the id is unknown", async () => {
+    await call("studio_create_study", { name: "seats" });
+    const missing = await call("studio_update_study", {
+      contract: { correctness: { invariants: [{ template: "counter-at-most", args: { collection: "stock" } }] } },
+    });
+    expect(missing.isError).toBe(true);
+    expect(String((missing.content as { error: string }).error)).toMatch(/max \(number\)/);
+    const unknown = await call("studio_update_study", {
+      contract: { correctness: { invariants: [{ template: "no-such-rule", args: {} }] } },
+    });
+    expect(String((unknown.content as { error: string }).error)).toMatch(/counter-non-negative/);
+  });
+
+  it("adds a repair hint when a hand-written invariant does not fit the schema", async () => {
+    await call("studio_create_study", { name: "seats" });
+    const r = await call("studio_update_study", {
+      contract: {
+        correctness: {
+          invariants: [{ id: "x", label: "x", postcondition: true, expr: { kind: "compare" }, message: "m" }],
+        },
+      },
+    });
+    expect(r.isError).toBe(true);
+    const error = String((r.content as { error: string }).error);
+    expect(error).toMatch(/invariantTemplates/);
+    expect(error).toMatch(/"postcondition" is a scope value, not a field/);
   });
 });
 

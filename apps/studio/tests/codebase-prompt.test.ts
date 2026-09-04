@@ -16,7 +16,7 @@ describe("the codebase-to-design prompt", () => {
   });
 
   it("draws the design live and seals it, rather than importing blind", () => {
-    expect(CODEBASE_PROMPT).toMatch(/empty as-is candidate/);
+    expect(CODEBASE_PROMPT).toMatch(/empty as-is version opens/);
     expect(CODEBASE_PROMPT).toMatch(/one component or link per patch/);
     expect(CODEBASE_PROMPT).toMatch(/carry forward each returned revision/);
     expect(CODEBASE_PROMPT).toMatch(/immutable as-is baseline/);
@@ -57,12 +57,23 @@ describe("the codebase-to-design prompt", () => {
     expect(CODEBASE_PROMPT_ROUTE).toEqual([
       "inspect the codebase",
       "identify runtime and capacity boundaries",
-      "define the system yardstick",
+      "draw the as-is design live",
       "trace one critical flow",
-      "draw the as-is design live, then seal it",
-      "show evidence gaps",
+      "define the system yardstick",
+      "seal it and show evidence gaps",
     ]);
   });
+
+  it("draws first and sets the yardstick only once the workflow exists, refusing the placeholder", () => {
+    const paragraphs = CODEBASE_PROMPT.split("\n\n")
+    const drawing = paragraphs.findIndex((p) => /one component or link per patch/.test(p))
+    const yardstick = paragraphs.findIndex((p) => /Once the workflow exists/.test(p))
+    expect(drawing).toBeGreaterThan(-1)
+    expect(yardstick).toBeGreaterThan(drawing)
+    expect(CODEBASE_PROMPT).toMatch(/naming the collections you drew/)
+    expect(CODEBASE_PROMPT).toMatch(/invariant templates/)
+    expect(CODEBASE_PROMPT).toMatch(/before the first run; the placeholder is refused/)
+  })
 
   it("contains no bundled example domain", () => {
     expect(CODEBASE_PROMPT).not.toMatch(/pizza|inventory|ticket|seat/i);

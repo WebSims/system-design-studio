@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import { useStudio } from "../store"
 import { useStudyStore, type Annotation } from "../study/store"
 import { useRaceModel } from "../raceModel"
+import { AgentStepper } from "./AgentStepper"
 import {
   CODEBASE_PROMPT,
   alternativePrompt,
@@ -35,6 +36,8 @@ export function AgentPanel() {
   const selectCandidate = useStudyStore((s) => s.selectCandidate)
   const study = useStudyStore((s) => s.study)
   const webmcpReady = webmcp.status.includes("tools")
+  // The tracker earns its space once the agent has done anything, or the project is still being built.
+  const showSteps = activity.length > 0 || study.repository === null
 
   const stream = useMemo(() => {
     const items: Array<{ at: number; kind: "call"; entry: (typeof activity)[number] } | { at: number; kind: "note"; note: Annotation }> = [
@@ -59,7 +62,7 @@ export function AgentPanel() {
           <p className="muted">
             <span className={`status-dot ${webmcpReady ? "ready" : ""}`} />{" "}
             {webmcpReady
-              ? `connected through WebMCP · ${webmcp.status} · it can draw and test, not approve`
+              ? `connected through WebMCP · ${webmcp.status} · it can draw and test versions, not approve them`
               : "no WebMCP client attached · open this page beside your coding agent"}
           </p>
         </div>
@@ -67,6 +70,8 @@ export function AgentPanel() {
           close
         </button>
       </header>
+
+      {showSteps && <AgentStepper />}
 
       <div className="agent-stream">
         {stream.length === 0 ? (

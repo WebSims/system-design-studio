@@ -56,6 +56,45 @@ const assertAgentLayout = (design: Design, by: "human" | "agent") => {
   if (issue) throw new MutationRefused(issue.message, "design-layout-invalid")
 }
 
+/**
+ * Parse and validate a design on its way into a candidate.
+ *
+ * `authored` says the caller wrote this design (rather than copying one), which is when the
+ * agent's field and layout contracts apply. Refused rather than stored when broken: a candidate
+ * that cannot be evaluated occupies a slot in the comparison and reports "ineligible: schema-valid
+ * failed", which is technically honest and practically just noise -- and an agent that got a
+ * success response would move on to testing it.
+ */
+function parseCandidateDesign(raw: unknown, origin: "human" | "agent", authored: boolean): Design {
+  let design: Design;
+  try {
+    if (origin === "agent" && authored) assertAgentModelFields(raw);
+    design = migrateAndParse(raw);
+    if (authored) assertAgentLayout(design, origin);
+  } catch (err) {
+    if (err instanceof MutationRefused) throw err;
+    throw new MutationRefused(
+      `the design does not parse: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Use studio_validate_draft to see the field-level errors.`,
+      "design-invalid"
+    );
+  }
+  const errors = [
+    ...validateDesign(design).filter((i) => i.severity === "error"),
+    ...validateWorkflow(design).filter((i) => i.severity === "error"),
+  ];
+  if (errors.length > 0) {
+    throw new MutationRefused(
+      `the design has ${errors.length} error${errors.length === 1 ? "" : "s"}: ${errors
+        .slice(0, 3)
+        .map((e) => e.message)
+        .join("; ")}`,
+      "design-invalid"
+    );
+  }
+  return design;
+}
+
 /** The raw draft an architecture patch edits before it is parsed. */
 interface RawDraft {
   name: string;
@@ -223,6 +262,71 @@ export interface CreateCandidateInput {
   evidence?: ArchitectureEvidence[];
 }
 
+/** The label and intent every blank drawing starts with, for the agent and the palette alike. */
+export const DRAWING_LABEL = "as-is (drawing)";
+export const DRAWING_INTENT =
+  "The current system, drawn one patch at a time and sealed as the as-is baseline by studio_import_architecture.";
+
+/** The empty human-authored version behind every "New project" and "Design manually" button. */
+export const manualCandidate = (): CreateCandidateInput => ({
+  label: "manual design",
+  intent: "Created manually from an empty canvas.",
+  design: blankDesign(),
+  origin: "human",
+});
+
+/**
+ * The blank canvas `studio_create_study` opens, if nobody has drawn on it yet.
+ *
+ * A project born with an empty agent version and then handed a complete design (an import in
+ * one call, or an older agent still calling `studio_create_candidate` first) should end with
+ * ONE version, not an empty stray beside the real one. So the untouched drawing is adopted:
+ * relabelled and, if a design was supplied, filled in place. Anything already drawn, evidenced
+ * or sealed is somebody's work and is never adopted.
+ */
+export function untouchedDrawing(study: Study): Candidate | null {
+  if (study.candidates.length !== 1 || study.candidates.some((candidate) => candidate.role === "baseline")) return null;
+  const only = study.candidates[0]!;
+  const empty =
+    only.origin === "agent" &&
+    only.role === "experiment" &&
+    only.revision === 0 &&
+    only.design.nodes.length === 0 &&
+    only.design.edges.length === 0 &&
+    only.design.workflow === null &&
+    only.evidence.length === 0;
+  return empty ? only : null;
+}
+
+/** Fill the untouched drawing in place: label, intent and, when given, a validated design. */
+function adoptDrawing(
+  study: Study,
+  drawing: Candidate,
+  input: Omit<CreateCandidateInput, "copyFrom">
+): { study: Study; candidate: Candidate } {
+  const design =
+    input.design !== undefined ? parseCandidateDesign(input.design, input.origin, true) : drawing.design;
+  const candidate = CandidateSchema.parse({
+    ...drawing,
+    label: input.label,
+    intent: input.intent ?? drawing.intent,
+    notes: input.notes ?? drawing.notes,
+    role: input.role ?? drawing.role,
+    basedOnCandidateId: input.basedOnCandidateId !== undefined ? input.basedOnCandidateId : drawing.basedOnCandidateId,
+    evidence: structuredClone(input.evidence ?? drawing.evidence),
+    design,
+  });
+  return {
+    candidate,
+    study: StudySchema.parse({
+      ...study,
+      candidates: [candidate],
+      activeCandidateId: candidate.id,
+      updatedAt: Date.now(),
+    }),
+  };
+}
+
 /**
  * Add a candidate.
  *
@@ -234,10 +338,15 @@ export interface CreateCandidateInput {
 export function createCandidate(study: Study, input: CreateCandidateInput): { study: Study; candidate: Candidate } {
   if (study.candidates.length >= MAX_CANDIDATES) {
     throw new MutationRefused(
-      `this project already holds ${MAX_CANDIDATES} candidates, which is the limit. Remove one before adding another.`,
+      `this project already holds ${MAX_CANDIDATES} versions, which is the limit. Remove one before adding another.`,
       "too-many-candidates"
     );
   }
+
+  // An agent asking for a version while the blank drawing it was given is still blank gets that
+  // drawing back, relabelled and filled, rather than a second empty canvas beside it.
+  const drawing = input.origin === "agent" && input.copyFrom === undefined ? untouchedDrawing(study) : null;
+  if (drawing) return adoptDrawing(study, drawing, input);
 
   // No design and nothing to copy means an empty canvas, not a refusal: it is how a drawing starts
   // in a fresh project, for the palette and for an agent adding one node at a time alike.
@@ -245,40 +354,9 @@ export function createCandidate(study: Study, input: CreateCandidateInput): { st
   const source = input.design !== undefined || startsEmpty ? null : resolveSource(study, input.copyFrom);
   const rawDesign =
     input.design !== undefined ? input.design : startsEmpty ? blankDesign() : structuredClone(source!.design);
-
-  let design;
-  try {
-    if (input.origin === "agent" && input.design !== undefined) assertAgentModelFields(rawDesign);
-    design = migrateAndParse(rawDesign)
-    // Only a design the agent wrote is held to the layout contract; a copy of what a person drew
-    // is theirs, and refusing the copy would tell the agent to fix something it did not do.
-    if (input.design !== undefined) assertAgentLayout(design, input.origin)
-  } catch (err) {
-    if (err instanceof MutationRefused) throw err
-    throw new MutationRefused(
-      `the design does not parse: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Use studio_validate_draft to see the field-level errors.`,
-      "design-invalid"
-    );
-  }
-
-  const errors = [
-    ...validateDesign(design).filter((i) => i.severity === "error"),
-    ...validateWorkflow(design).filter((i) => i.severity === "error"),
-  ];
-  if (errors.length > 0) {
-    // Refused rather than stored as a broken candidate. A candidate that cannot be evaluated
-    // occupies a slot in the comparison and reports "ineligible: schema-valid failed", which is
-    // technically honest and practically just noise -- and an agent that got a success response
-    // would move on to testing it.
-    throw new MutationRefused(
-      `the design has ${errors.length} error${errors.length === 1 ? "" : "s"}: ${errors
-        .slice(0, 3)
-        .map((e) => e.message)
-        .join("; ")}`,
-      "design-invalid"
-    );
-  }
+  // Only a design the agent wrote is held to the agent's field and layout contracts; a copy of what
+  // a person drew is theirs, and refusing the copy would tell the agent to fix something it did not do.
+  const design = parseCandidateDesign(rawDesign, input.origin, input.design !== undefined);
 
   const candidate = CandidateSchema.parse({
     id: nextCandidateId(study, input.origin),
@@ -382,8 +460,8 @@ export function replaceCandidateDraft(study: Study, input: ReplaceDraftInput): {
     // changing the decision rather than informing it, and it would do so without anybody
     // approving the change.
     throw new MutationRefused(
-      `"${existing.label}" is the promoted candidate and cannot be modified through this interface. ` +
-        `Create a new candidate instead; promotion is a human-only action.`,
+      `"${existing.label}" is the promoted version and cannot be modified through this interface. ` +
+        `Create a new version instead; promotion is a human-only action.`,
       "promoted-candidate"
     );
   }
@@ -483,7 +561,9 @@ export function importRepositoryArchitecture(
       "design-invalid"
     );
   }
-  const created = createCandidate(linked, {
+  // A one-shot import into a project whose blank drawing nobody touched fills that drawing and
+  // seals it, so the project ends with one version rather than an empty stray beside the baseline.
+  const baselineInput: CreateCandidateInput = {
     label: input.label,
     intent: input.intent ?? "As-is architecture reconstructed from repository evidence.",
     design: input.design,
@@ -491,7 +571,9 @@ export function importRepositoryArchitecture(
     role: "baseline",
     basedOnCandidateId: null,
     evidence: input.evidence ?? [],
-  });
+  };
+  const drawing = untouchedDrawing(linked);
+  const created = drawing ? adoptDrawing(linked, drawing, baselineInput) : createCandidate(linked, baselineInput);
   assertRepositoryBaselineContract(created.study, created.candidate, input.origin);
   return {
     candidate: created.candidate,
@@ -515,7 +597,7 @@ function assertRepositoryBaselineContract(
     (candidate.design.workflow?.handlers.length ?? 0) === 0
   ) {
     throw new MutationRefused(
-      `cannot seal "${candidate.label}" as an immutable baseline: the project declares ` +
+      `cannot seal "${candidate.label}" as the immutable CURRENT version: the project declares ` +
         `${study.correctness.invariants.length} correctness invariant${study.correctness.invariants.length === 1 ? "" : "s"}, ` +
         "but the drawing has no workflow handlers, so every correctness result would be vacuous. " +
         "Add a source-backed workflow with studio_apply_architecture_patch, or remove unsupported invariants before sealing.",
@@ -862,13 +944,13 @@ export function releaseApproval(study: Study, now = Date.now()): Study {
 export function deleteCandidate(study: Study, candidateId: string): Study {
   if (study.promotedCandidateId === candidateId) {
     throw new MutationRefused(
-      "the promoted candidate cannot be removed. Promote something else first.",
+      "the promoted version cannot be removed. Promote something else first.",
       "promoted-candidate"
     );
   }
   if (study.approval?.baselineCandidateId === candidateId) {
     throw new MutationRefused(
-      "the baseline used by the approved candidate cannot be removed. Clear the decision first.",
+      "the CURRENT version the approved change is based on cannot be removed. Clear the decision first.",
       "approved-baseline"
     );
   }
@@ -926,8 +1008,8 @@ function resolveSource(study: Study, copyFrom: string | undefined): Candidate {
   if (!source) {
     throw new MutationRefused(
       copyFrom
-        ? `no candidate "${copyFrom}" to copy from`
-        : "this project has no candidate to copy from, so a complete design is required",
+        ? `no version "${copyFrom}" to copy from`
+        : "this project has no version to copy from, so a complete design is required",
       "no-such-candidate"
     );
   }
@@ -948,5 +1030,5 @@ function nextCandidateId(study: Study, origin: "human" | "agent"): string {
     const id = `${prefix}-${n}`;
     if (!taken.has(id)) return id;
   }
-  throw new MutationRefused("could not allocate a candidate id", "id-exhausted");
+  throw new MutationRefused("could not allocate a version id", "id-exhausted");
 }

@@ -1231,18 +1231,60 @@ function structuredArrival<T>(a: T): T {
  * passes `StudySchema`, so every downstream consumer can assume a well-formed study from
  * the first frame and the UI needs no "no study yet" branch.
  */
-export function blankStudy(input: { id: string; name?: string; problem?: string; now?: number } ): Study {
+export function blankStudy(input: {
+  id: string;
+  name?: string;
+  problem?: string;
+  now?: number;
+  /** The real workload, when it is known at creation. Merged over the placeholder. */
+  workload?: Partial<z.input<typeof StudyWorkloadSchema>>;
+}): Study {
   const now = input.now ?? Date.now();
   return StudySchema.parse({
     version: STUDY_SCHEMA_VERSION,
     id: input.id,
     name: input.name ?? "untitled project",
     problem: input.problem ?? "",
-    workload: { arrival: { kind: "poisson", ratePerSec: 50 } },
+    workload: { ...PLACEHOLDER_WORKLOAD_INPUT, ...(input.workload ?? {}) },
     createdAt: now,
     updatedAt: now,
   });
 }
+
+/**
+ * The workload a study is born with when nobody has said what the real one is.
+ *
+ * It exists so the empty study is VALID, not because 50 requests a second means anything. The
+ * danger is that it looks like a number somebody chose: the first cached result freezes it into
+ * the yardstick for every version of the study (see `studyContractLock`), and from then on the
+ * only way out is a new study. So it is recognised by value, everywhere a run is about to happen,
+ * and refused there. Recognised by value rather than by a flag so saved studies need no migration
+ * and a person who deliberately types these exact numbers is simply asked to confirm by changing
+ * any one of them.
+ */
+const PLACEHOLDER_WORKLOAD_INPUT = { arrival: { kind: "poisson", ratePerSec: 50 } } as const;
+export const PLACEHOLDER_WORKLOAD: StudyWorkload = StudyWorkloadSchema.parse(PLACEHOLDER_WORKLOAD_INPUT);
+
+export function isPlaceholderWorkload(workload: StudyWorkload): boolean {
+  return sameValue(workload, PLACEHOLDER_WORKLOAD);
+}
+
+/** Structural equality that does not care about key order, which JSON.stringify would. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keysA = Object.keys(a as object);
+  const keysB = Object.keys(b as object);
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every((key) => sameValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+}
+
+/** One line for a person or an agent, saying what the placeholder is and what to do about it. */
+export const PLACEHOLDER_WORKLOAD_MESSAGE =
+  "The workload is still the Studio's placeholder (Poisson 50 req/s, 1200 s, 8 seeds). Running would lock it into the " +
+  "yardstick for every version of this project. Set the observed or assumed arrival first: studio_update_study " +
+  '{ contract: { workload: { arrival: { kind: "poisson", ratePerSec: <rate> } } } }, or the Workload row in the interface.';
 
 /** The executable half of a study: everything an evaluation's verdict depends on. */
 export const StudyContractPatchSchema = z
@@ -1301,7 +1343,10 @@ export function studyContractLock(study: Study): StudyLock {
 
 export class StudyContractLockedError extends Error {
   constructor(reason: string) {
-    super(`the project contract is locked: ${reason}. Clear the results or start a new project.`);
+    super(
+      `the project contract is locked: ${reason}. Every version of a project shares this yardstick, so a new version ` +
+        "cannot change it either. Ask the person to clear the results, or start a new project."
+    );
     this.name = "StudyContractLockedError";
   }
 }

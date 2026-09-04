@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import type { CorrectnessResult, Expr, Invariant, InvariantScope, Study } from "@sds/schema"
 import { useStudyStore } from "../study/store"
 import { verdictHeadline } from "../correctness/layout"
+import { AdvancedSettings, WorkloadRow } from "./WorkloadEditor"
 import {
   buildInvariant,
   describeInvariant,
@@ -11,13 +12,12 @@ import {
 } from "../correctness/builder"
 
 /**
- * The left rail under the Behaviour lens: the scenario's rules and what can go wrong.
+ * The left rail under the Behaviour lens: what you need now, the rest folded.
  *
- * This used to be a whole tab ("Correctness") with the counterexample rendered as prose beside the
- * rules. Now the counterexample plays on the canvas and in the bottom dock, and this rail holds only
- * what a person AUTHORS about behaviour: the rules the design must keep, the faults the search may
- * inject, and the limits that size every claim the search makes. The verdict sits at the top because
- * it is the answer to the question the rail asks.
+ * Visible: the verdict, the workload (one line, with a badge while it is still the placeholder), the
+ * rules, and the faults. Folded under "advanced": search limits, starting counters, run length,
+ * seeds, SLO and request classes, with their values in the summary line so nothing is hidden, only
+ * folded. Everything here is the project's yardstick, shared by every version.
  *
  * TWO WAYS IN, ONE MODEL
  *
@@ -65,8 +65,12 @@ export function BehaviourRail() {
         {correctness && <Verdict result={correctness} />}
       </section>
 
+      <WorkloadRow study={study} />
       <InvariantEditor study={study} />
-      <BoundsEditor study={study} />
+      <FaultsSection study={study} />
+      <AdvancedSettings study={study}>
+        <StartingStock study={study} />
+      </AdvancedSettings>
     </aside>
   )
 }
@@ -340,57 +344,17 @@ function ExpertExpression({ invariant }: { invariant: Invariant }) {
 }
 
 /**
- * The faults and bounds, which are the size of every claim the search can make.
- *
- * "No break found" is meaningless without these numbers and defensible with them, so they are
- * editable and each one says what it costs.
+ * The faults the search may inject. "No break found" is a claim about exactly these, so each one is
+ * a visible tick rather than a default.
  */
-function BoundsEditor({ study }: { study: Study }) {
-  const updateContract = useStudyStore((s) => s.updateContract)
-  const b = study.correctness.bounds
-
-  const set = (patch: Partial<typeof b>) =>
-    updateContract({ correctness: { ...study.correctness, bounds: { ...b, ...patch } } })
-  const touched = useStudyTouch("correctness.faults", "correctness.bounds")
-
+function FaultsSection({ study }: { study: Study }) {
+  const touched = useStudyTouch("correctness.faults")
   return (
     <section className={sectionClass(touched)}>
       <header className="section-head">
         <h2>what can go wrong</h2>
       </header>
       <FaultToggles study={study} />
-
-      <details className="bounds-details">
-        <summary>search limits · {b.actors} requests · {b.faults} faults · {b.states.toLocaleString()} states</summary>
-        <label>
-          concurrent requests
-          <input type="number" min={1} max={6} value={b.actors} onChange={(e) => set({ actors: Number(e.target.value) })} />
-        </label>
-        <p className="muted">Each extra request multiplies the orderings to explore.</p>
-
-        <label>
-          injected faults per run
-          <input type="number" min={0} max={4} value={b.faults} onChange={(e) => set({ faults: Number(e.target.value) })} />
-        </label>
-
-        <label>
-          steps per run
-          <input
-            type="number"
-            min={1}
-            max={500}
-            value={b.transitions}
-            onChange={(e) => set({ transitions: Number(e.target.value) })}
-          />
-        </label>
-
-        <label>
-          state cap
-          <input type="number" min={100} step={1000} value={b.states} onChange={(e) => set({ states: Number(e.target.value) })} />
-        </label>
-        <p className="muted">Hitting a limit makes the answer inconclusive, never "safe".</p>
-        <StartingStock study={study} />
-      </details>
     </section>
   )
 }
@@ -420,7 +384,7 @@ function StartingStock({ study }: { study: Study }) {
 
   return (
     <>
-      <p className="muted starting-stock-head">counters during the search · blank = as drawn</p>
+      <p className="muted advanced-sub">counters during the search · blank = as drawn</p>
       {counters.map((c) => (
         <label key={c.id}>
           {c.label || c.id}

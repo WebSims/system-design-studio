@@ -1,4 +1,4 @@
-import { Panel, useReactFlow, type Node } from "@xyflow/react";
+import { useReactFlow, type Node } from "@xyflow/react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Design } from "@sds/schema";
@@ -16,12 +16,14 @@ export type TopologyExploration =
   | { kind: "route"; result: DirectedRoute }
   | null;
 
-interface TopologyExplorerProps {
+interface TopologyToolsProps {
   design: Design;
   selectedNodeId: string | null;
   exploration: TopologyExploration;
   onExplorationChange(exploration: TopologyExploration): void;
   onSelectNode(id: string): void;
+  /** Called before the `/` hotkey focuses the search, so a collapsed host can open first. */
+  onReveal?(): void;
 }
 
 function SearchIcon() {
@@ -43,13 +45,18 @@ function RouteIcon() {
   );
 }
 
-export function TopologyExplorer({
+/**
+ * Find, Route, Upstream, Downstream: the rows of the topology tools, without a surface of their own.
+ * The canvas toolbox hosts them beside Link and the zoom controls.
+ */
+export function TopologyTools({
   design,
   selectedNodeId,
   exploration,
   onExplorationChange,
   onSelectNode,
-}: TopologyExplorerProps) {
+  onReveal,
+}: TopologyToolsProps) {
   const { fitView, getNode } = useReactFlow();
   const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -132,12 +139,14 @@ export function TopologyExplorer({
         target?.matches("input, textarea, select") || target?.getAttribute("contenteditable") === "true";
       if (event.key === "/" && !isTyping) {
         event.preventDefault();
-        searchRef.current?.focus();
+        onReveal?.();
+        // The host may have been collapsed; the input exists once it has re-rendered.
+        requestAnimationFrame(() => searchRef.current?.focus());
       }
     };
     window.addEventListener("keydown", onShortcut);
     return () => window.removeEventListener("keydown", onShortcut);
-  }, []);
+  }, [onReveal]);
 
   const showReach = (direction: ReachDirection) => {
     if (!selectedNode) return;
@@ -188,7 +197,6 @@ export function TopologyExplorer({
   const receipt = exploration?.result;
 
   return (
-    <Panel position="top-left" className="topology-panel">
       <div className="topology-explorer" aria-label="Topology explorer">
         <div className="topology-tools-row">
           <form className="topology-search" role="search" onSubmit={findNode}>
@@ -354,6 +362,5 @@ export function TopologyExplorer({
           </div>
         )}
       </div>
-    </Panel>
   );
 }
